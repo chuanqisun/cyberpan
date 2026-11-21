@@ -1,0 +1,1758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>40 — Cyberpan Funnel DJ Studio (Vertical Wall × Funnel × Curve × Drop × Hand CV)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #cv-video { display: none; }
+  header {
+    position: fixed; inset: 0 0 auto 0; height: 34px; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 0 12px; background: rgba(0,0,0,0.88); border-bottom: 1px solid rgba(255,255,255,0.08);
+    pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  button, .pill {
+    pointer-events: auto; cursor: pointer; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    font: inherit; font-size: 9.5px; letter-spacing: 0.08em; border: 1px solid rgba(255,255,255,0.20);
+    border-radius: 2px; height: 21px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px;
+    transition: border-color 120ms, color 120ms, background 120ms;
+  }
+  .pill { border-radius: 99px; padding: 0 8px; }
+  button:hover, .pill:hover { border-color: rgba(255,255,255,0.75); color: #fff; }
+  button.on { border-color: #fff; color: #fff; }
+  .pill.on { border-color: #fff; background: #fff; color: #000; }
+  .pill.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  .pill.sig.on { background: #ff5a1f; color: #000; }
+  .pill.stat { pointer-events: none; cursor: default; color: rgba(255,255,255,0.38); border-color: rgba(255,255,255,0.12); }
+  #playBtn .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  #playBtn.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  #phaseHud { color: rgba(255,255,255,0.72); font-size: 9.5px; letter-spacing: 0.09em; min-width: 118px; }
+  #phaseHud.hot { color: #ff5a1f; }
+  @media (max-width: 980px) { #stamps { display: none; } }
+  @media (max-width: 720px) { #flareBtn, #quantBtn { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="grp">
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+    <span id="phaseHud">40 · FLOW · 01.1 · 122</span>
+  </div>
+  <div class="grp" id="stamps">
+    <button type="button" data-stamp="groove">GROOVE</button>
+    <button type="button" data-stamp="buildDrop">BUILD → DROP</button>
+    <button type="button" data-stamp="fakeout">FAKEOUT</button>
+    <button type="button" data-stamp="calm">CALM</button>
+  </div>
+  <div class="grp">
+    <button class="pill on" id="quantBtn" type="button" title="Toggle Drop Beat-Sync (Q)">SYNC</button>
+    <button class="pill" id="flareBtn" type="button" title="Cycle Funnel Perspective Flare (F)">1.52×</button>
+    <button class="pill" id="bankBtn" type="button" title="Load Pre-Generated Yishama Stainless Soundbank">BANK</button>
+    <span class="pill stat" id="cvStatus">CAM OFF</span>
+    <button class="pill" id="camBtn" type="button">CAM</button>
+    <button class="pill" id="simBtn" type="button">SIM HANDS</button>
+  </div>
+</header>
+<video id="cv-video" playsinline muted></video>
+<canvas id="c"></canvas>
+
+<script type="module">
+'use strict';
+// ============================================================================
+// 40 — CYBERPAN FUNNEL DJ STUDIO (UNIFIED FLAGSHIP FOR ALL 36-IDEAS FEEDBACK)
+// 1. CORRECTED 3D STAGE (#37):
+//    - TOP (PAST):    100% STRAIGHT-UP parallel vertical wall + #27 C¹ log lens,
+//                     1€ adaptive memory halo, hover micro-lens & Shift multi-group
+//    - MIDDLE (NOW):  90° architectural hinge + kick interferometer + 9 strike loci
+//    - BOTTOM (FUTURE): One-point pseudo-perspective floor FUNNELING UPWARD into NOW
+//                     with exact inverse unprojFunnel() for direct future pinning
+// 2. LEFT WING (#30): Live DJ Drop Conductor Piston (STRIP ↓ / FLOW / BUILD ↑ / VACUUM)
+//                     Overrides curve live when dragged/conducted; drops on beat!
+// 3. RIGHT WING (#29): 4-Bar Emotional Curve Spine + auto SILENCE/BUILD/DROP phases
+//                     + 1-click stamps (GROOVE / BUILD->DROP / FAKEOUT / CALM)
+// 4. BI-MANUAL MEDIAPIPE CV (#31):
+//    - LEFT HAND:  Height conducts DJ Piston; Fist = Vacuum Hold; Slam ↓ = Drop!
+//    - RIGHT HAND: Center = aim & pinch live handpan; Right Wing = Air-Pen Curve Draw!
+//    - BOTH SLAM:  Triggers full-stage SUPER DROP!
+// 5. STUDIO BANK (Optional): Click BANK to load ./soundbanks/yishama-stainless.bank.js
+// ============================================================================
+const NOTES = [
+  ['D3','^1',146.83], ['A3','^5',220.00], ['Bb3','^b6',233.08], ['C4','^b7',261.63],
+  ['D4','^1',293.66], ['E4','^2',329.63], ['F4','^b3',349.23], ['G4','^4',392.00], ['A4','^5',440.00],
+].map(([name, deg, freq], idx) => ({ name, deg, freq, idx, pan: (idx - 4) * 0.13 }));
+
+const BPM = 122, BEAT_S = 60 / BPM, STEP_S = BEAT_S / 4, BAR_S = STEP_S * 16;
+const LOOKAHEAD_S = 0.098, FUTURE_STEPS = 48, CURVE_STEPS = 64, FLASH_MS = 440, SAFE_MIN = 0.0002;
+const DEFAULT_WARP = 2.4, FLARE_PRESETS = [1.28, 1.52, 1.76], QUANT_DURS = [1, 2, 3, 4, 6, 8];
+const VAC_THRESH = 0.86, STRIP_THRESH = -0.14, BUILD_DROP_MIN = 0.28, RULER_BARS = [1, 2, 4, 8, 16];
+const CHORDS = [[0, 1, 4, 6, 8], [2, 4, 6, 8, 1], [3, 5, 7, 1, 8], [0, 1, 4, 6, 5]];
+const SUB_ROOTS = [[36.71, 73.42], [58.27, 116.54], [65.41, 130.81], [36.71, 73.42]];
+const CELLS = {
+  calm:   [[8], [6, -2], [4, 4], [4, -4], [6, 2]],
+  groove: [[3, 3, 2], [4, 2, 2], [2, 2, 4], [3, 2, 3], [2, 4, 2]],
+  build:  [[2, 2, 2, 2], [2, 1, 1, 2, 2], [1, 1, 2, 1, 1, 2], [1, 1, 1, 1, 2, 2]],
+  drop:   [[3, 3, 2], [2, 2, 2, 2], [3, 2, 3], [2, 1, 1, 2, 2]]
+};
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const snapDur = (s) => QUANT_DURS.reduce((b, d) => Math.abs(d - s) < Math.abs(b - s) ? d : b, QUANT_DURS[0]);
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.92), h), 0, 1).toFixed(3)})`;
+};
+const harmonicBond = (a, b) => {
+  if (a === b) return 1.0;
+  const r = Math.max(NOTES[a].freq, NOTES[b].freq) / Math.min(NOTES[a].freq, NOTES[b].freq);
+  return Math.abs(r - 2) < 0.03 ? 0.86 : Math.abs(r - 1.5) < 0.03 ? 0.68 : Math.abs(r - 3) < 0.05 ? 0.62 : Math.abs(r - 1.333) < 0.03 ? 0.48 : 0;
+};
+
+// ==================== 1. HYBRID WEB AUDIO ENGINE + OPTIONAL YISHAMA BANK ====================
+let actx = null, masterBus = null, drumBus = null, uiBus = null;
+let handpanBus = null, washHPF = null, washGate = null, duckGain = null;
+let iceRevSend = null, vacDirect = null, subOsc1 = null, subOsc2 = null, subLPF = null, subDuck = null, subGate = null;
+let riserBP = null, riserGain = null, shimGain = null, noiseLoopBuf = null, transientBuf = null, lastClickMs = 0, schedHpHz = 20;
+
+const bank = { state: 'off', buffers: new Map() }; // Optional pre-generated Yishama Stainless bank
+const mkFlt = (type, hz, q = 1) => { const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = hz; f.Q.value = q; return f; };
+const mkGain = (val = 1) => { const g = actx.createGain(); g.gain.value = val; return g; };
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = actx.sampleRate, comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -8.5; comp.knee.value = 10; comp.ratio.value = 5.5; comp.attack.value = 0.003; comp.release.value = 0.14; comp.connect(actx.destination);
+  masterBus = mkGain(0.86); masterBus.connect(comp);
+  drumBus = mkGain(0.94); drumBus.connect(masterBus);
+  uiBus = mkGain(0.22); uiBus.connect(comp);
+
+  // Icy 2.6s Stereo Reverb (bypasses washGate so tail hangs dramatically in VACUUM/SILENCE!)
+  const irLen = Math.floor(sr * 2.6), ir = actx.createBuffer(2, irLen, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < irLen; i++) { lp = lp * 0.62 + (Math.random() * 2 - 1) * 0.38; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * (i < 900 ? i / 900 : 1) * 0.56; }
+  }
+  const conv = actx.createConvolver(); conv.buffer = ir;
+  const revHP = mkFlt('highpass', 300, 0.7);
+  iceRevSend = mkGain(0.30); iceRevSend.connect(conv); conv.connect(revHP); revHP.connect(masterBus);
+  vacDirect = mkGain(0.56); vacDirect.connect(masterBus);
+
+  handpanBus = mkGain(1.0); washHPF = mkFlt('highpass', 20, 0.72); washGate = mkGain(1.0); duckGain = mkGain(1.0);
+  handpanBus.connect(washHPF); washHPF.connect(washGate); washGate.connect(duckGain); duckGain.connect(masterBus);
+
+  subOsc1 = actx.createOscillator(); subOsc1.type = 'sine'; subOsc1.frequency.value = 36.71;
+  subOsc2 = actx.createOscillator(); subOsc2.type = 'triangle'; subOsc2.frequency.value = 73.42;
+  subLPF = mkFlt('lowpass', 165, 0.9); subDuck = mkGain(1.0); subGate = mkGain(SAFE_MIN);
+  subOsc1.connect(mkGain(0.68)).connect(subLPF); subOsc2.connect(mkGain(0.32)).connect(subLPF);
+  subLPF.connect(subDuck); subDuck.connect(subGate); subGate.connect(masterBus); subOsc1.start(); subOsc2.start();
+
+  noiseLoopBuf = actx.createBuffer(1, Math.floor(sr * 3.0), sr);
+  const ld = noiseLoopBuf.getChannelData(0); for (let i = 0; i < ld.length; i++) ld[i] = Math.random() * 2 - 1;
+  transientBuf = actx.createBuffer(1, Math.floor(sr * 0.048), sr);
+  const td = transientBuf.getChannelData(0); for (let i = 0; i < td.length; i++) td[i] = (Math.random() * 2 - 1) * Math.exp(-i / (td.length * 0.22));
+
+  const rSrc = actx.createBufferSource(); rSrc.buffer = noiseLoopBuf; rSrc.loop = true;
+  const rHP = mkFlt('highpass', 190, 0.7); riserBP = mkFlt('bandpass', 280, 1.3); riserGain = mkGain(SAFE_MIN);
+  rSrc.connect(rHP); rHP.connect(riserBP); riserBP.connect(riserGain); riserGain.connect(masterBus); riserGain.connect(iceRevSend); rSrc.start();
+
+  shimGain = mkGain(SAFE_MIN);
+  for (const [hz, w] of [[293.66, 0.35], [440.0, 0.50], [442.2, 0.30], [587.33, 0.22]]) {
+    const o = actx.createOscillator(); o.frequency.value = hz; o.connect(mkGain(w)).connect(shimGain); o.start();
+  }
+  shimGain.connect(iceRevSend); shimGain.connect(masterBus);
+  return actx;
+}
+
+function silenceContinuous() {
+  if (!actx) return;
+  const t = actx.currentTime;
+  for (const g of [riserGain, shimGain, subGate]) { if (g) { g.gain.cancelScheduledValues(t); g.gain.setTargetAtTime(SAFE_MIN, t, 0.025); } }
+}
+
+async function loadYishamaBank() {
+  const btn = document.getElementById('bankBtn');
+  if (bank.state === 'loading') return;
+  if (bank.state === 'ready') {
+    bank.state = 'bypass'; btn.classList.remove('on', 'sig'); btn.textContent = 'SYNTH';
+    setBanner('AUDIO · BUILT-IN SYNTH'); return;
+  }
+  if (bank.state === 'bypass' && bank.buffers.size > 0) {
+    bank.state = 'ready'; btn.classList.add('on', 'sig'); btn.textContent = 'YISHAMA';
+    setBanner('AUDIO · YISHAMA STAINLESS BANK'); return;
+  }
+  ensureAudio(); bank.state = 'loading'; btn.textContent = 'LOAD...'; btn.classList.add('sig');
+  try {
+    if (!window.__HANDPAN_BANKS__?.['yishama-stainless']) {
+      await new Promise((res, rej) => {
+        const sc = document.createElement('script'); sc.src = './soundbanks/yishama-stainless.bank.js';
+        sc.onload = res; sc.onerror = () => rej(new Error('Bank file missing')); document.head.appendChild(sc);
+      });
+    }
+    const raw = window.__HANDPAN_BANKS__?.['yishama-stainless'];
+    if (!raw?.samples) throw new Error('Invalid bank');
+    const dec = async (b64) => {
+      const bin = atob(b64), arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return await actx.decodeAudioData(arr.buffer.slice(0));
+    };
+    const jobs = [];
+    for (const n of NOTES) {
+      for (const key of [`${n.name}|N|v0|r0`, `${n.name}|N|v1|r0`, `${n.name}|H|v0|r0`]) {
+        if (raw.samples[key]) jobs.push(dec(raw.samples[key]).then(buf => bank.buffers.set(key, buf)));
+      }
+    }
+    await Promise.all(jobs);
+    bank.state = 'ready'; btn.classList.add('on', 'sig'); btn.textContent = 'YISHAMA';
+    setBanner('YISHAMA STAINLESS BANK LOADED');
+  } catch {
+    bank.state = 'off'; btn.classList.remove('on', 'sig'); btn.textContent = 'BANK N/A';
+    setBanner('BANK UNAVAILABLE · USING BUILT-IN SYNTH');
+  }
+}
+
+function playHandpan(idx, vel = 0.78, durSteps = 4, when = null, whisper = false, inVacSolo = false) {
+  const ctxA = ensureAudio(), t0 = Math.max(ctxA.currentTime + 0.001, when ?? ctxA.currentTime);
+  const n = NOTES[idx], v = clamp(vel, 0.14, 1.0);
+  const pan = ctxA.createStereoPanner(); pan.pan.setValueAtTime(n.pan, t0);
+  if (inVacSolo) { pan.connect(vacDirect); pan.connect(iceRevSend); }
+  else { if (!whisper) pan.connect(handpanBus); pan.connect(iceRevSend); }
+
+  // Use decoded Yishama Stainless sample bank when loaded!
+  if (bank.state === 'ready') {
+    const key = whisper ? `${n.name}|H|v0|r0` : (v > 0.62 ? `${n.name}|N|v1|r0` : `${n.name}|N|v0|r0`);
+    const buf = bank.buffers.get(key) || bank.buffers.get(`${n.name}|N|v1|r0`);
+    if (buf) {
+      const src = ctxA.createBufferSource(); src.buffer = buf;
+      const g = mkGain(SAFE_MIN), cutSec = clamp(0.45 + durSteps * 0.34, 0.55, buf.duration);
+      g.gain.setValueAtTime(v * (idx === 0 ? 0.78 : 0.64) * (whisper ? 0.68 : 1.0), t0);
+      if (cutSec < buf.duration - 0.15) g.gain.setTargetAtTime(SAFE_MIN, t0 + cutSec * 0.62, cutSec * 0.28);
+      src.connect(g); g.connect(pan); src.start(t0); src.stop(t0 + Math.min(buf.duration, cutSec + 0.8));
+      return;
+    }
+  }
+
+  // Built-in Coupled-Bloom D Kurd Web Audio synth
+  const f0 = n.freq, isDing = idx === 0;
+  const tau1 = (isDing ? 1.52 : 1.08) * Math.pow(220 / f0, 0.22) * (0.36 + Math.pow(durSteps / 8, 0.76) * 1.42) * (whisper ? 1.45 : 1);
+  const vGain = mkGain(v * (isDing ? 0.54 : 0.42) * (whisper ? 0.64 : 1)); vGain.connect(pan);
+  for (const [hz, amp, rise, tau] of [
+    [f0, 0.72, 0.005, tau1], [f0 + 0.72, 0.28, 0.008, tau1 * 0.94],
+    [f0 * 2.001, 0.26 * (0.62 + 0.45 * v), 0.024, tau1 * 0.48], [f0 * 2.998, 0.095 * v, 0.038, tau1 * 0.25]
+  ]) {
+    const osc = ctxA.createOscillator(), g = mkGain(SAFE_MIN);
+    osc.frequency.setValueAtTime(hz * (1 + 0.0022 * v), t0); osc.frequency.exponentialRampToValueAtTime(hz, t0 + 0.042);
+    g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, amp), t0 + rise);
+    g.gain.setTargetAtTime(SAFE_MIN, t0 + rise, tau * 0.62);
+    osc.connect(g); g.connect(vGain); osc.start(t0); osc.stop(t0 + Math.min(4.6, rise + tau * 3.5));
+  }
+  const src = ctxA.createBufferSource(), bp = mkFlt('bandpass', 520 + idx * 115, 1.7), ng = mkGain(SAFE_MIN);
+  src.buffer = transientBuf; ng.gain.setValueAtTime(Math.max(SAFE_MIN, v * (whisper ? 0.08 : 0.20)), t0);
+  ng.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.024);
+  src.connect(bp); bp.connect(ng); ng.connect(pan); src.start(t0);
+}
+
+function triggerSidechain(t0, depth = 0.55) {
+  const floor = clamp(1 - depth, 0.14, 0.92), rel = STEP_S * 2.5;
+  for (const g of [duckGain, subDuck]) {
+    if (!g) continue;
+    g.gain.setValueAtTime(1.0, t0); g.gain.linearRampToValueAtTime(floor, t0 + 0.011); g.gain.exponentialRampToValueAtTime(1.0, t0 + rel);
+  }
+}
+
+function playSubKick(t0, vel = 0.92, heavy = false) {
+  const ctxA = ensureAudio(), v = clamp(vel, 0.2, 1.0), osc = ctxA.createOscillator(), g = mkGain(SAFE_MIN);
+  osc.frequency.setValueAtTime(heavy ? 138 : 128, t0); osc.frequency.exponentialRampToValueAtTime(44, t0 + 0.075);
+  osc.frequency.exponentialRampToValueAtTime(36.71, t0 + (heavy ? 0.36 : 0.24));
+  g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(v * (heavy ? 0.88 : 0.72), t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + (heavy ? 0.44 : 0.30));
+  osc.connect(g); g.connect(drumBus); osc.start(t0); osc.stop(t0 + (heavy ? 0.48 : 0.34));
+
+  const punch = ctxA.createOscillator(), pg = mkGain(SAFE_MIN);
+  punch.type = 'triangle'; punch.frequency.setValueAtTime(420, t0); punch.frequency.exponentialRampToValueAtTime(78, t0 + 0.022);
+  pg.gain.setValueAtTime(v * 0.26, t0); pg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.028);
+  punch.connect(pg); pg.connect(drumBus); punch.start(t0); punch.stop(t0 + 0.032);
+}
+
+function playHat(t0, vel = 0.55, isOffbeat = true) {
+  const ctxA = ensureAudio(), src = ctxA.createBufferSource(); src.buffer = noiseLoopBuf;
+  const hp = mkFlt('highpass', isOffbeat ? 6800 : 7800, 0.7), bp = mkFlt('bandpass', isOffbeat ? 9200 : 10800, isOffbeat ? 1.8 : 2.6);
+  const g = mkGain(SAFE_MIN), pan = ctxA.createStereoPanner(), dur = isOffbeat ? 0.072 : 0.036;
+  g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, vel * (isOffbeat ? 0.24 : 0.11)), t0 + (isOffbeat ? 0.002 : 0.006));
+  g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + dur);
+  pan.pan.setValueAtTime(isOffbeat ? 0.18 : -0.22, t0);
+  src.connect(hp); hp.connect(bp); bp.connect(g); g.connect(pan); pan.connect(drumBus);
+  src.start(t0, Math.random() * 2.0, dur + 0.02);
+}
+
+function playBuildSnare(t0, heat = 0.5, vel = 0.65) {
+  const ctxA = ensureAudio(), h = clamp(heat, 0, 1), body = ctxA.createOscillator(), bg = mkGain(SAFE_MIN);
+  body.type = 'triangle'; body.frequency.setValueAtTime(lerp(220, 560, h), t0); body.frequency.exponentialRampToValueAtTime(lerp(135, 310, h), t0 + 0.048);
+  bg.gain.setValueAtTime(Math.max(SAFE_MIN, vel * 0.28), t0); bg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.068);
+  body.connect(bg); bg.connect(drumBus); body.start(t0); body.stop(t0 + 0.074);
+
+  const src = ctxA.createBufferSource(); src.buffer = noiseLoopBuf;
+  const bp = mkFlt('bandpass', lerp(340, 1850, h), lerp(1.4, 3.6, h)), ng = mkGain(SAFE_MIN), tail = lerp(0.11, 0.055, h);
+  ng.gain.setValueAtTime(SAFE_MIN, t0); ng.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, vel * 0.34), t0 + 0.002); ng.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + tail);
+  src.connect(bp); bp.connect(ng); ng.connect(drumBus); ng.connect(iceRevSend);
+  src.start(t0, Math.random() * 2.0, tail + 0.02);
+}
+
+function playDropImpact(t0, intensity = 0.92, halfTime = false, superDrop = false) {
+  const ctxA = ensureAudio(), p = clamp(intensity, 0.55, 1.0);
+  washHPF.frequency.cancelScheduledValues(t0); washHPF.frequency.setValueAtTime(Math.max(20, schedHpHz), t0);
+  washHPF.frequency.exponentialRampToValueAtTime(20, t0 + 0.016); washHPF.Q.setTargetAtTime(0.72, t0, 0.012); schedHpHz = 20;
+  washGate.gain.cancelScheduledValues(t0); washGate.gain.setValueAtTime(1.0, t0);
+  riserGain.gain.cancelScheduledValues(t0); riserGain.gain.setTargetAtTime(SAFE_MIN, t0, 0.006);
+  shimGain.gain.cancelScheduledValues(t0); shimGain.gain.setTargetAtTime(SAFE_MIN, t0, 0.012);
+
+  const boom = ctxA.createOscillator(), bg = mkGain(SAFE_MIN);
+  boom.frequency.setValueAtTime(superDrop ? 132 : 114, t0); boom.frequency.exponentialRampToValueAtTime(36.71, t0 + 0.24);
+  bg.gain.setValueAtTime(SAFE_MIN, t0); bg.gain.linearRampToValueAtTime((superDrop ? 0.78 : halfTime ? 0.68 : 0.58) * p, t0 + 0.008);
+  bg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + (superDrop ? 1.85 : halfTime ? 1.5 : 1.18));
+  boom.connect(bg); bg.connect(masterBus); boom.start(t0); boom.stop(t0 + 1.9);
+
+  const dlSrc = ctxA.createBufferSource(); dlSrc.buffer = noiseLoopBuf; dlSrc.loop = true;
+  const dlBP = mkFlt('bandpass', superDrop ? 4600 : 3800, 1.45), dlG = mkGain(SAFE_MIN);
+  dlBP.frequency.setValueAtTime(superDrop ? 4600 : 3800, t0); dlBP.frequency.exponentialRampToValueAtTime(150, t0 + 2.1);
+  dlG.gain.setValueAtTime(SAFE_MIN, t0); dlG.gain.linearRampToValueAtTime((superDrop ? 0.36 : 0.28) * p, t0 + 0.018); dlG.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 2.2);
+  dlSrc.connect(dlBP); dlBP.connect(dlG); dlG.connect(masterBus); dlG.connect(iceRevSend); dlSrc.start(t0); dlSrc.stop(t0 + 2.25);
+
+  playHandpan(0, 0.98 * p, 8, t0, false); playHandpan(1, 0.58 * p, 6, t0 + 0.012, false); playHandpan(4, 0.68 * p, 6, t0 + 0.022, false);
+  if (superDrop) playHandpan(8, 0.60 * p, 6, t0 + 0.034, false);
+}
+
+function playClick(pan = 0, hz = 1320, gain = 0.042) {
+  const nowMs = performance.now(); if (nowMs - lastClickMs < 24) return; lastClickMs = nowMs;
+  const ctxA = ensureAudio(), t0 = ctxA.currentTime + 0.001, osc = ctxA.createOscillator(), g = mkGain(SAFE_MIN), p = ctxA.createStereoPanner();
+  osc.type = 'triangle'; osc.frequency.setValueAtTime(hz, t0); osc.frequency.exponentialRampToValueAtTime(Math.max(120, hz * 0.45), t0 + 0.013);
+  g.gain.setValueAtTime(Math.max(SAFE_MIN, gain), t0); g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.016);
+  p.pan.setValueAtTime(clamp(pan, -0.8, 0.8), t0); osc.connect(g); g.connect(p); p.connect(uiBus); osc.start(t0); osc.stop(t0 + 0.02);
+}
+
+// ==================== 2. UNIFIED STATE (37 STAGE + 27 MEMORY + 29 CURVE + 30 PISTON) ====================
+const state = {
+  playing: false, playhead: 32, anchorTime: 0, anchorStep: 32, nextEdmStep: 32, nextId: 1, nextGroupId: 1,
+  // 37 Stage & 27 Lens
+  warp: DEFAULT_WARP, k: 0.055, flareIdx: 1, flare: FLARE_PRESETS[1],
+  past: [], future: [], groups: [], pinnedFuture: [], mutedSteps: new Set(),
+  ripples: [], shocks: [], sympArcs: [], brush: [],
+  locusGlow: new Float32Array(9), locusHeat: new Float32Array(9),
+  // 29 Emotional Curve
+  activeStamp: 'buildDrop', curve: new Map(), markers: new Map(), analysis: new Map(),
+  // 30 Live DJ Conductor Piston (overrides curve when active!)
+  piston: 0.0, pistonMode: 'AUTO', peakTension: 0, quantize: true,
+  pendingDrop: null, dropHoldBars: 0, dropHalfTime: false, vacuumLockedByFist: false,
+  washResX: 0.5, keysHeld: { up: false, down: false },
+  // Live feedback visuals
+  kickPulse: 0, dropFlash: 0, livePhase: 'groove', bannerText: '', bannerAlpha: 0
+};
+const setBanner = (txt) => { state.bannerText = txt; state.bannerAlpha = 1.0; };
+const updatePlayhead = () => { if (state.playing && actx) state.playhead = state.anchorStep + (actx.currentTime - state.anchorTime) / STEP_S; };
+
+// 1€ Adaptive Memory Slots (#27)
+const mem = {
+  bias: 0.72, vUser: 0, fc: 0.0031, adaptNorm: 0.82,
+  slots: Array.from({ length: 16 }, (_, pos) => ({ pos, sal: new Float32Array(9), dur: 2, energy: 0, pinned: 0, noteIdx: 0, srcPastId: -1, sources: [], bornPerf: -9999, pulse: 0 }))
+};
+const pulseMemVel = (amt) => { mem.vUser = clamp(mem.vUser + amt, 0, 3.0); };
+function captureSlot(rel, noteIdx, dur, weight, pinnedAmt, srcPastId, nowPerf, additive = false, groupId = -1) {
+  const sl = mem.slots[mod16(rel)], keepSame = additive && sl.sources.length ? 0.90 : 0.56, keepOther = additive && sl.sources.length ? 0.80 : 0.28;
+  for (let i = 0; i < 9; i++) sl.sal[i] *= (i === noteIdx ? keepSame : keepOther);
+  sl.sal[noteIdx] = clamp(sl.sal[noteIdx] + weight, 0, 1);
+  let bestI = noteIdx, bestW = -1; for (let i = 0; i < 9; i++) if (sl.sal[i] > bestW) { bestW = sl.sal[i]; bestI = i; }
+  sl.noteIdx = bestI; sl.dur = dur;
+  sl.energy = clamp(Math.max(sl.energy * (additive ? 0.85 : 0.45), weight), 0, 1);
+  sl.pinned = clamp(Math.max(sl.pinned, pinnedAmt), 0, 1);
+  if (srcPastId > 0) {
+    sl.srcPastId = srcPastId;
+    if (!additive) sl.sources = [{ pastId: srcPastId, noteIdx, dur, groupId }];
+    else { sl.sources = sl.sources.filter(s => s.pastId !== srcPastId); sl.sources.push({ pastId: srcPastId, noteIdx, dur, groupId }); if (sl.sources.length > 4) sl.sources.shift(); }
+  } else if (!additive) sl.sources = [];
+  sl.bornPerf = nowPerf; sl.pulse = 1.0;
+}
+function syncGroupsToMemory() {
+  const activeIds = new Set(), liveIds = new Set(state.past.map(p => p.id));
+  for (const sl of mem.slots) if (sl.energy > 0.16) for (const src of sl.sources) activeIds.add(src.pastId);
+  for (const g of state.groups) for (const id of [...g.noteIds]) if (!liveIds.has(id) || !activeIds.has(id)) g.noteIds.delete(id);
+  state.groups = state.groups.filter(g => g.noteIds.size > 0);
+  const grouped = new Set(); for (const g of state.groups) for (const id of g.noteIds) grouped.add(id);
+  for (const p of state.past) p.locked = grouped.has(p.id);
+}
+function stepAdaptiveMemory(dt, nowPerf) {
+  mem.vUser *= Math.exp(-dt / 0.74); if (mem.vUser < 0.0005) mem.vUser = 0;
+  const fMin = 0.024 * Math.pow(0.0016 / 0.024, mem.bias);
+  mem.fc = fMin + lerp(0.15, 0.085, mem.bias) * mem.vUser;
+  mem.adaptNorm = clamp((Math.log(0.18) - Math.log(clamp(mem.fc, 0.0016, 0.18))) / (Math.log(0.18) - Math.log(0.0016)), 0, 1);
+  let dropped = false;
+  for (const sl of mem.slots) {
+    sl.pulse = Math.max(0, sl.pulse * Math.exp(-dt * 2.6));
+    if ((!state.playing && mem.vUser <= 0.15) || sl.energy <= 0 || nowPerf - sl.bornPerf < 1100) continue;
+    const was = sl.energy > 0.16, rate = 2 * Math.PI * mem.fc * (state.playing ? 1 : 0.7);
+    sl.energy *= Math.exp(-dt * rate); sl.pinned *= Math.exp(-dt * rate * 0.62);
+    for (let i = 0; i < 9; i++) sl.sal[i] *= Math.exp(-dt * rate);
+    if (was && sl.energy <= 0.16) dropped = true;
+    if (sl.energy < 0.03) { sl.energy = sl.pinned = 0; sl.sal.fill(0); sl.srcPastId = -1; sl.sources = []; }
+  }
+  if (dropped) { syncGroupsToMemory(); recomputeFuture(1.5); }
+}
+
+function exciteSympatheticPast(noteIdx, vel, curStep, nowPerf) {
+  const cands = [];
+  for (let i = state.past.length - 1; i >= 0; i--) {
+    const p = state.past[i], age = curStep - p.step; if (age <= 0.2 || age > 180) continue;
+    const bond = harmonicBond(noteIdx, p.locus); if (bond <= 0.45) continue;
+    const atten = clamp(1 - Math.log(1 + age / 14) / Math.log(16), 0.24, 1);
+    p.symp = Math.max(p.symp || 0, bond * vel * atten);
+    cands.push({ p, bond, score: bond * (p.locked ? 1.4 : 1) * atten });
+  }
+  cands.sort((a, b) => b.score - a.score);
+  for (let k = 0; k < Math.min(4, cands.length); k++) state.sympArcs.push({ fromIdx: noteIdx, past: cands[k].p, bond: cands[k].bond, bornPerf: nowPerf, lifeMs: 420 + cands[k].bond * 340 });
+  if (state.sympArcs.length > 22) state.sympArcs.splice(0, state.sympArcs.length - 22);
+}
+
+// ==================== 3. CORRECTED 3D STAGE GEOMETRY (LEFT PISTON | CENTER WALL+FUNNEL | RIGHT CURVE) ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+const WALL_PAD_LANES = 4.55;
+const geo = {
+  padTop: 48, padBot: 26, nowY: 0, wallH: 180, frontH: 220,
+  // Left Wing (DJ Piston)
+  pistonX: 78, railUp: 160, railDown: 84,
+  // Center Stage (Straight Past Wall + Funnel Future Floor)
+  cx: 0, wallGap: 36, wallHalfW: 165, wallL: 0, wallR: 0, frontL: 0, frontR: 0, locusX: new Float32Array(9), s0: 5,
+  // Right Wing (4-Bar Emotional Curve)
+  curveX0: 0, curveX1: 0, curveW: 180, curveStepPx: 4
+};
+
+function layout() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2); W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  const F = state.flare;
+  geo.nowY = Math.round(H * 0.48);
+  geo.wallH = Math.max(110, geo.nowY - geo.padTop);
+  geo.frontH = Math.max(135, H - geo.nowY - geo.padBot);
+
+  // Left Wing: Live DJ Conductor Piston
+  geo.pistonX = Math.round(clamp(W * 0.075, 44, 92));
+  geo.railUp = clamp(geo.wallH * 0.80, 96, 200);
+  geo.railDown = clamp(geo.frontH * 0.42, 56, 108);
+
+  // Right Wing: 4-Bar Emotional Curve Spine
+  const rightPad = W < 700 ? 14 : 22;
+  geo.curveW = Math.round(clamp(W * 0.175, 114, 224));
+  geo.curveX1 = W - rightPad;
+  geo.curveX0 = geo.curveX1 - geo.curveW;
+  geo.curveStepPx = geo.frontH / CURVE_STEPS;
+
+  // Center Stage: Perfectly centered in the corridor between Left Piston and Right Curve!
+  const leftEdge = geo.pistonX + (W < 760 ? 44 : 58);
+  const rightEdge = geo.curveX0 - (W < 760 ? 18 : 28);
+  const availW = Math.max(220, rightEdge - leftEdge);
+  geo.cx = Math.round((leftEdge + rightEdge) * 0.5);
+  const maxBottomHalf = availW * 0.485;
+  const maxWallHalf = Math.min(228, maxBottomHalf / Math.max(1.2, F));
+  geo.wallGap = clamp(maxWallHalf / WALL_PAD_LANES, 18, 48);
+  geo.wallHalfW = geo.wallGap * WALL_PAD_LANES;
+  geo.wallL = geo.cx - geo.wallHalfW; geo.wallR = geo.cx + geo.wallHalfW;
+  geo.frontL = geo.cx - geo.wallHalfW * F; geo.frontR = geo.cx + geo.wallHalfW * F;
+  for (let i = 0; i < 9; i++) geo.locusX[i] = geo.cx + (i - 4) * geo.wallGap;
+
+  // Exact C¹ vertical velocity join right at NOW hinge!
+  geo.s0 = geo.frontH / (F * FUTURE_STEPS);
+  state.k = Math.pow(Math.max(1, state.warp) - 1, 1.48) * 0.036;
+}
+window.addEventListener('resize', layout); layout();
+
+// Exact Stage Projection Functions (TOP = 100% Straight-Up Vertical Wall, BOTTOM = Pseudo-Perspective Funnel INTO NOW)
+const wallX = (wx) => geo.cx + wx * geo.wallGap;
+const wallY = (ageSteps, k = state.k) => { const a = Math.max(0, ageSteps); return k < 1e-4 ? geo.nowY - a * geo.s0 : geo.nowY - (geo.s0 / k) * Math.log(1 + k * a); };
+const projWall = (wx, ageSteps) => ({ x: wallX(wx), y: wallY(ageSteps), scale: 1.0 });
+const unprojWall = (sx, sy) => {
+  if (sy > geo.nowY) return null;
+  const dy = geo.nowY - sy, k = state.k;
+  return { wx: (sx - geo.cx) / geo.wallGap, age: k < 1e-4 ? dy / geo.s0 : (Math.exp(Math.min(18, (k * dy) / geo.s0)) - 1) / k };
+};
+function projFunnel(wx, offSteps) {
+  const F = state.flare, gamma = (F - 1) / F, u = clamp(offSteps / FUTURE_STEPS, 0, 1.08);
+  const S = 1 / Math.max(0.25, 1 - gamma * u), q = (S - 1) / (F - 1);
+  return { x: geo.cx + wx * geo.wallGap * S, y: geo.nowY + q * geo.frontH, scale: S, u };
+}
+function unprojFunnel(sx, sy) {
+  if (sy < geo.nowY) return null;
+  const F = state.flare, q = (sy - geo.nowY) / geo.frontH, S = 1 + (F - 1) * q, u = (F * q) / S;
+  return { wx: (sx - geo.cx) / (geo.wallGap * S), off: u * FUTURE_STEPS, scale: S, u };
+}
+const stepToStage = (wx, step, curS) => (step < curS ? projWall(wx, curS - step) : projFunnel(wx, step - curS));
+const pistonToY = (p) => p >= 0 ? geo.nowY - p * geo.railUp : geo.nowY + (-p / 0.5) * geo.railDown;
+const yToPiston = (y) => y <= geo.nowY ? clamp((geo.nowY - y) / geo.railUp, 0, 1.0) : -clamp((y - geo.nowY) / geo.railDown, 0, 1.0) * 0.5;
+const curveYOfStep = (s) => s < state.playhead ? wallY(state.playhead - s) : geo.nowY + (s - state.playhead) * geo.curveStepPx;
+const curveStepOfY = (y) => state.playhead + (y - geo.nowY) / geo.curveStepPx;
+const curveXOfE = (e) => geo.curveX0 + clamp(e, 0, 1) * geo.curveW;
+const curveEOfX = (x) => clamp((x - geo.curveX0) / geo.curveW, 0, 1);
+
+// ==================== 4. EMOTIONAL CURVE + PISTON DJ ARBITRATOR + GENERATOR ====================
+const getCurveRaw = (step) => state.curve.has(Math.round(step)) ? state.curve.get(Math.round(step)) : 0.46;
+
+function ensureCurveHorizon() {
+  const lo = Math.floor(state.playhead) - 64, hi = Math.ceil(state.playhead) + CURVE_STEPS + 20;
+  let lastVal = 0.46;
+  for (let s = lo; s <= hi; s++) {
+    if (state.curve.has(s)) lastVal = state.curve.get(s);
+    else { lastVal = lerp(lastVal, lastVal < 0.22 ? 0.14 : 0.46, 0.12); state.curve.set(s, lastVal); }
+  }
+  const cut = Math.floor(state.playhead) - 140;
+  for (const k of state.curve.keys()) if (k < cut) state.curve.delete(k);
+  for (const k of state.markers.keys()) if (k < cut) state.markers.delete(k);
+}
+
+function analyzeTimeline() {
+  ensureCurveHorizon();
+  const lo = Math.floor(state.playhead) - 48, hi = Math.ceil(state.playhead) + CURVE_STEPS + 16;
+  state.analysis.clear();
+  let dropRemain = 0, dropHalfTime = false, silenceRemain = 0, recentPeak = 0, lastDropStep = -999;
+
+  for (let s = lo; s <= hi; s++) {
+    const E = getCurveRaw(s), ePrev = getCurveRaw(s - 1), ePrev2 = getCurveRaw(s - 2);
+    const slope = (E - getCurveRaw(s - 4)) / 4, mk = state.markers.get(s) || null;
+    let distToClimax = 999, hasUpcoming = false;
+    for (let k = 1; k <= 32; k++) {
+      const fk = state.markers.get(s + k);
+      if ((fk && (fk.type === 'silence' || fk.type === 'drop')) || (getCurveRaw(s + k) < 0.10 && E > 0.56)) { distToClimax = k; hasUpcoming = true; break; }
+    }
+    recentPeak = Math.max(E, recentPeak * 0.94);
+
+    const fromLow = (ePrev < 0.16 || ePrev2 < 0.16 || silenceRemain > 0) && E >= 0.42;
+    const fromPeakCliff = ePrev >= 0.84 && E <= 0.72 && E >= 0.44 && (ePrev - E >= 0.18) && getCurveRaw(s + 1) >= 0.38;
+    const isDrop = (mk?.type === 'drop') || (((fromLow && recentPeak > 0.50) || fromPeakCliff) && s - lastDropStep >= 6);
+    if (mk?.type === 'silence') silenceRemain = 8;
+    if (isDrop) { silenceRemain = 0; dropRemain = 32; dropHalfTime = Boolean(mk?.halfTime); lastDropStep = s; }
+
+    let phase = 'groove', buildHeat = 0, isSilenceStart = false;
+    if (!isDrop && (mk?.type === 'silence' || (E < 0.10 && (recentPeak > 0.48 || hasUpcoming)) || (silenceRemain > 0 && E < 0.24))) {
+      phase = 'silence'; isSilenceStart = (mk?.type === 'silence') || (state.analysis.get(s - 1)?.phase !== 'silence');
+      dropRemain = 0; if (silenceRemain > 0) silenceRemain--;
+    } else if (isDrop || (dropRemain > 0 && E >= 0.34)) {
+      phase = 'drop'; if (!isDrop) dropRemain--;
+      if (!isDrop && dropRemain < 16 && slope > 0.018 && E > 0.62) { dropRemain = 0; phase = 'build'; }
+    } else if (E < 0.22) { phase = 'calm'; dropRemain = 0; }
+    else if ((slope > 0.015 && E > 0.48) || (E > 0.64 && (hasUpcoming || slope >= -0.004))) phase = 'build';
+
+    if (phase === 'build') {
+      const prox = distToClimax <= 16 ? clamp((16 - distToClimax) / 16, 0, 1) * 0.38 : 0;
+      buildHeat = clamp(clamp((E - 0.40) / 0.56, 0, 1) * 0.84 + prox + clamp(slope * 4.2, 0, 0.22), 0.06, 1.0);
+    }
+    const snareDiv = phase === 'build' ? (buildHeat >= 0.82 ? 0.5 : buildHeat >= 0.62 ? 1 : buildHeat >= 0.38 ? 2 : 4) : 0;
+    state.analysis.set(s, {
+      step: s, E, slope, phase, buildHeat, snareDiv, isDrop, isSilenceStart,
+      halfTime: phase === 'drop' && dropHalfTime && (s - lastDropStep < 16), marker: mk
+    });
+  }
+}
+
+function getInfo(step) {
+  const s = Math.round(step); if (!state.analysis.has(s)) analyzeTimeline();
+  return state.analysis.get(s) || { step: s, E: 0.46, slope: 0, phase: 'groove', buildHeat: 0, snareDiv: 0, isDrop: false, isSilenceStart: false, halfTime: false, marker: null };
+}
+
+// Live Piston Controls (#30)
+function setPistonDirect(val, allowSlam = false, slamVel = 0) {
+  const prev = state.piston, next = clamp(val, -0.5, 1.0);
+  state.piston = next;
+  if (allowSlam && (state.pistonMode === 'BUILD' || state.pistonMode === 'VACUUM') && state.peakTension >= BUILD_DROP_MIN && slamVel > 0.85 && next < 0.25) {
+    requestDrop(clamp(0.75 + state.peakTension * 0.25, 0.75, 1.0), false); return;
+  }
+  if (next >= VAC_THRESH) { state.pistonMode = 'VACUUM'; state.peakTension = 1.0; }
+  else if (next > 0.08) { state.pistonMode = 'BUILD'; state.peakTension = Math.max(state.peakTension, next); }
+  else if (next <= STRIP_THRESH) { state.pistonMode = 'STRIP'; state.peakTension = 0; state.dropHoldBars = 0; }
+  else if (state.dropHoldBars > 0) state.pistonMode = 'DROP';
+  else state.pistonMode = 'AUTO';
+
+  if (Math.abs(next - prev) > 0.04 && actx) {
+    const crossed = (prev < VAC_THRESH && next >= VAC_THRESH) || (prev >= STRIP_THRESH && next < STRIP_THRESH);
+    if (crossed) playClick(-0.6, next >= VAC_THRESH ? 1680 : 540, 0.05);
+  }
+}
+
+function requestDrop(intensity = 0.92, superDrop = false) {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  state.piston = 0; state.peakTension = 0; state.vacuumLockedByFist = false;
+  state.dropHalfTime = state.washResX < 0.26;
+  const cur = state.playhead;
+  if (!state.quantize) {
+    fireManualDrop(actx.currentTime + 0.008, intensity, superDrop);
+  } else {
+    const nextBeat = Math.ceil((cur + 0.32) / 4) * 4;
+    state.pendingDrop = { targetStep: nextBeat, intensity, superDrop, halfTime: state.dropHalfTime };
+    state.pistonMode = 'VACUUM';
+    setBanner(superDrop ? 'SUPER DROP QUEUED ON BEAT' : 'DROP QUEUED ON BEAT');
+  }
+}
+
+function fireManualDrop(t0, intensity, superDrop) {
+  state.pendingDrop = null; state.pistonMode = 'DROP'; state.dropHoldBars = 4; state.piston = 0;
+  playDropImpact(t0, intensity, state.dropHalfTime, superDrop);
+  state.dropFlash = superDrop ? 1.25 : 1.0; state.kickPulse = 1.3;
+  state.shocks.push({ age: 0, maxAge: superDrop ? 1.45 : 1.15, big: true });
+  setBanner(superDrop ? '▼ SUPER DROP!' : (state.dropHalfTime ? '▼ HALF-TIME DROP' : '▼ BASS DROP'));
+}
+
+function releasePiston() {
+  if ((state.pistonMode === 'BUILD' || state.pistonMode === 'VACUUM') && state.peakTension >= BUILD_DROP_MIN) {
+    requestDrop(clamp(0.76 + state.peakTension * 0.24, 0.76, 1.0), false);
+  } else if (state.pistonMode !== 'STRIP') {
+    state.piston = 0; if (state.dropHoldBars <= 0) state.pistonMode = 'AUTO';
+  }
+}
+
+// Resolve effective DJ state (Live Piston overrides Curve when engaged!)
+function getEffectiveDj(s) {
+  const info = getInfo(s);
+  if (state.pistonMode === 'VACUUM' || state.pendingDrop) {
+    return { ...info, phase: 'silence', buildHeat: 0, snareDiv: 0, isDrop: false, manual: true };
+  }
+  if (state.pistonMode === 'BUILD') {
+    const h = clamp(state.piston / VAC_THRESH, 0.08, 1.0);
+    const snareDiv = h >= 0.80 ? 0.5 : h >= 0.58 ? 1 : h >= 0.34 ? 2 : 4;
+    return { ...info, phase: 'build', buildHeat: h, snareDiv, isDrop: false, manual: true };
+  }
+  if (state.pistonMode === 'STRIP') {
+    return { ...info, phase: 'calm', buildHeat: 0, snareDiv: 0, isDrop: false, manual: true };
+  }
+  if (state.pistonMode === 'DROP' && state.dropHoldBars > 0) {
+    return { ...info, phase: 'drop', buildHeat: 0, snareDiv: 0, halfTime: state.dropHalfTime, manual: true };
+  }
+  return { ...info, manual: false };
+}
+
+// Grammar + #27 Memory-Anchored + Pinned-Future Handpan Generator
+function chooseLocus(step, phase, buildHeat, prevLocus, isDown, memAnchor, srcOverride) {
+  if (memAnchor && hash01(step, memAnchor.pos * 13 + (srcOverride ? srcOverride.pastId : 0), 303) < clamp(0.46 + memAnchor.energy * 0.42 + memAnchor.pinned * 0.22, 0.3, 0.96)) {
+    const chosen = srcOverride ? srcOverride.noteIdx : memAnchor.noteIdx;
+    return { locus: chosen, attn: { pastId: srcOverride ? srcOverride.pastId : memAnchor.srcPastId, weight: clamp(memAnchor.energy, 0.28, 1), locked: memAnchor.pinned > 0.42 } };
+  }
+  const phraseBar = ((Math.floor(step / 16) % 4) + 4) % 4, pool = CHORDS[phraseBar];
+  if (phase === 'drop' && isDown) return { locus: 0, attn: null };
+  if (phase === 'groove' && isDown && (phraseBar === 0 || phraseBar === 3)) return { locus: 0, attn: null };
+  const target = phase === 'build' ? lerp(3.4, 7.6, buildHeat) : phase === 'drop' ? lerp(2.2, 6.2, (step % 16) / 16) : phase === 'calm' ? 2.8 : 3.6;
+  let bestL = 4, bestSc = -1e9;
+  for (let l = 0; l < 9; l++) {
+    let sc = (pool.includes(l) ? 2.1 : 0) - Math.abs(l - target) * 0.68;
+    if (phase === 'build' && l === 0) sc -= 3.2;
+    if (prevLocus >= 0) { const d = Math.abs(l - prevLocus); sc += d === 0 ? -1.4 : d <= 2 ? 1.25 : d <= 4 ? 0.35 : -0.6; }
+    if (memAnchor && memAnchor.sal[l] > 0.1) sc += memAnchor.sal[l] * 2.4;
+    sc += (hash01(step * 19, l * 31, 707) - 0.5) * 1.55;
+    if (sc > bestSc) { bestSc = sc; bestL = l; }
+  }
+  return { locus: bestL, attn: null };
+}
+
+function recomputeFuture(keepLeadSteps = 1.5) {
+  analyzeTimeline();
+  const cut = Math.ceil(state.playhead + keepLeadSteps), horizon = Math.ceil(state.playhead) + FUTURE_STEPS;
+  state.pinnedFuture = state.pinnedFuture.filter(p => p.step >= state.playhead - 0.5);
+  state.future = state.future.filter(n => n.step < cut);
+  const pinnedMap = new Map(); for (const p of state.pinnedFuture) if (p.step >= cut && p.step < horizon) pinnedMap.set(Math.round(p.step), p);
+
+  const prevSorted = [...state.past, ...state.future].sort((a, b) => a.step - b.step);
+  let prevLocus = prevSorted.length ? prevSorted[prevSorted.length - 1].locus : 0, s = cut;
+
+  while (s < horizon) {
+    if (state.mutedSteps.has(s)) { s += 1; continue; }
+    const pin = pinnedMap.get(s);
+    if (pin) {
+      state.future.push({ id: pin.id, step: pin.step, locus: pin.locus, dur: pin.dur, vel: 0.90, phase: getInfo(s).phase, dropNote: false, whisper: false, pinned: true, attn: null, flash: 0, scheduled: false });
+      prevLocus = pin.locus; s += Math.max(1, pin.dur); continue;
+    }
+    const info = getInfo(s), pos = mod16(s), sl = mem.slots[pos];
+    if (info.isDrop) {
+      state.future.push({ id: state.nextId++, step: s, locus: 0, dur: 6, vel: 0.96, phase: 'drop', dropNote: true, whisper: false, pinned: false, attn: null, flash: 0.9, scheduled: false });
+      prevLocus = 0; s += 2; continue;
+    }
+    if (info.phase === 'silence') {
+      if (info.isSilenceStart || (pos === 8 && getInfo(s - 4).phase === 'silence')) {
+        const wL = hash01(s, 11, 99) < 0.55 ? 2 : 8;
+        state.future.push({ id: state.nextId++, step: s, locus: wL, dur: 8, vel: 0.54, phase: 'silence', dropNote: false, whisper: true, pinned: false, attn: null, flash: 0, scheduled: false });
+        prevLocus = wL;
+      }
+      s += 1; continue;
+    }
+    // Honor strong #27 memory anchors directly when phase isn't forcing rapid build!
+    if (sl.energy > 0.22 && (info.phase !== 'build' || info.buildHeat < 0.65)) {
+      const src = sl.sources.length ? sl.sources[((Math.floor(s / 16) % sl.sources.length) + sl.sources.length) % sl.sources.length] : null;
+      const pick = chooseLocus(s, info.phase, info.buildHeat, prevLocus, pos === 0, sl, src);
+      const dur = clamp(src ? src.dur : sl.dur, 1, 6);
+      state.future.push({ id: state.nextId++, step: s, locus: pick.locus, dur, vel: clamp(0.66 + sl.energy * 0.22, 0.45, 0.94), phase: info.phase, dropNote: false, whisper: false, pinned: false, attn: pick.attn, flash: 0, scheduled: false });
+      prevLocus = pick.locus; s += Math.max(1, dur); continue;
+    }
+
+    const bankC = CELLS[info.phase] || CELLS.groove;
+    const cell = bankC[Math.floor(hash01(Math.floor(s / 8), info.phase.length, 41) * bankC.length)];
+    let adv = 0;
+    for (const raw of cell) {
+      if (s >= horizon || pinnedMap.has(s) || state.mutedSteps.has(s)) break;
+      const cur = getInfo(s); if (cur.isDrop || cur.phase === 'silence') break;
+      if (raw < 0) { s += -raw; adv += -raw; continue; }
+      const dur = cur.phase === 'build' && cur.buildHeat > 0.72 ? 1 : cur.phase === 'build' && cur.buildHeat > 0.42 ? Math.min(2, raw) : snapDur(raw);
+      const bs = mod16(s), sl2 = mem.slots[bs].energy > 0.18 ? mem.slots[bs] : null;
+      const pick = chooseLocus(s, cur.phase, cur.buildHeat, prevLocus, bs === 0, sl2, null);
+      const vel = clamp((cur.phase === 'calm' ? 0.48 : cur.phase === 'drop' ? 0.76 : 0.62) + (bs === 0 ? 0.14 : bs % 4 === 0 ? 0.08 : 0) + cur.buildHeat * 0.14, 0.36, 0.95);
+      state.future.push({ id: state.nextId++, step: s, locus: pick.locus, dur, vel, phase: cur.phase, dropNote: false, whisper: false, pinned: false, attn: pick.attn, flash: 0, scheduled: false });
+      prevLocus = pick.locus; s += dur; adv += dur;
+    }
+    if (adv === 0) s += 1;
+  }
+  state.future.sort((a, b) => a.step - b.step);
+}
+
+function applyStamp(kind, startOffset = null) {
+  const base = startOffset != null ? startOffset : Math.ceil(state.playhead / 4) * 4 + 4;
+  state.activeStamp = kind;
+  for (let k = 0; k < 72; k++) state.markers.delete(base + k);
+  if (kind === 'groove') { for (let k = 0; k < 64; k++) state.curve.set(base + k, 0.46 + Math.sin(k * 0.24) * 0.025); }
+  else if (kind === 'calm') { const e0 = getCurveRaw(base - 1); for (let k = 0; k < 64; k++) state.curve.set(base + k, lerp(e0, 0.13 + Math.sin(k * 0.22) * 0.02, clamp(k / 16, 0, 1))); }
+  else if (kind === 'buildDrop') {
+    for (let k = 0; k < 32; k++) state.curve.set(base + k, 0.44 + Math.pow(k / 31, 1.55) * 0.54);
+    state.markers.set(base + 32, { type: 'silence' }); for (let k = 32; k < 40; k++) state.curve.set(base + k, 0.02);
+    state.markers.set(base + 40, { type: 'drop', halfTime: false });
+    for (let k = 40; k < 64; k++) state.curve.set(base + k, 0.86 - ((k - 40) / 24) * 0.12 + Math.sin((k - 40) * 0.78) * 0.03);
+  } else if (kind === 'fakeout') {
+    for (let k = 0; k < 24; k++) state.curve.set(base + k, 0.46 + Math.pow(k / 23, 1.4) * 0.52);
+    state.markers.set(base + 24, { type: 'silence' }); for (let k = 24; k < 40; k++) state.curve.set(base + k, 0.02);
+    state.markers.set(base + 40, { type: 'drop', halfTime: true });
+    for (let k = 40; k < 64; k++) state.curve.set(base + k, 0.82 - ((k - 40) / 24) * 0.08);
+  }
+  recomputeFuture(1.5); updateStampUI();
+  if (actx) playClick(0.35, kind === 'calm' ? 760 : kind === 'groove' ? 1040 : 1480, 0.048);
+}
+
+function seedOpeningStudio() {
+  state.playhead = state.anchorStep = state.nextEdmStep = 32;
+  state.past = []; state.future = []; state.groups = []; state.pinnedFuture = []; state.curve.clear(); state.markers.clear();
+  for (let s = 0; s < 40; s++) state.curve.set(s, 0.46 + Math.sin(s * 0.32) * 0.03);
+  // Seed 2 rich bars of past history on the straight vertical wall + 1 starter selected group!
+  const seed = [[0,0,4,0.86],[4,1,2,0.66],[6,4,2,0.72],[8,6,3,0.78],[11,5,3,0.68],[14,4,2,0.62],[16,0,4,0.88],[20,2,2,0.68],[22,4,2,0.74],[24,6,4,0.82],[28,8,2,0.70],[30,4,2,0.64]];
+  const g1Ids = new Set(), nowP = performance.now();
+  for (const [step, locus, dur, vel] of seed) {
+    const id = state.nextId++;
+    const p = { id, step, locus, dur, vel, phase: 'groove', dropNote: false, whisper: false, locked: step >= 16 && step < 32, flash: 0, symp: 0 };
+    state.past.push(p);
+    if (p.locked) { g1Ids.add(id); captureSlot(mod16(step), locus, dur, 0.72, 0.68, id, nowP, false, 1); }
+  }
+  state.groups.push({ id: state.nextGroupId++, noteIds: g1Ids });
+  applyStamp('buildDrop', 40);
+}
+
+// ==================== 5. LOOKAHEAD AUDIO SCHEDULER ====================
+function spawnRipple(locus, vel, durSteps, heat = 0) {
+  state.ripples.push({ locus, vel, dur: durSteps, heat, age: 0, maxAge: 0.36 + Math.pow(durSteps / 8, 0.8) * 1.75, maxR: 34 + Math.pow(durSteps / 8, 0.76) * 145 });
+  if (state.ripples.length > 26) state.ripples.shift();
+  state.locusGlow[locus] = Math.min(1.2, Math.max(state.locusGlow[locus], 0.56 + vel * 0.54));
+  if (heat > 0) state.locusHeat[locus] = Math.max(state.locusHeat[locus], heat);
+  exciteSympatheticPast(locus, vel, state.playhead, performance.now());
+}
+
+function scheduleEdmStep(s, t0) {
+  // Check Beat-Synced Pending Manual Drop first!
+  if (state.pendingDrop && s >= state.pendingDrop.targetStep) {
+    const pd = state.pendingDrop; fireManualDrop(t0, pd.intensity, pd.superDrop);
+  }
+  const eff = getEffectiveDj(s), bs = mod16(s), barInPhrase = ((Math.floor(s / 16) % 4) + 4) % 4;
+  if (bs === 0 && state.dropHoldBars > 0) { state.dropHoldBars--; if (state.dropHoldBars === 0 && state.pistonMode === 'DROP') state.pistonMode = 'AUTO'; }
+  const subPair = (eff.phase === 'drop' && eff.isDrop) ? SUB_ROOTS[0] : SUB_ROOTS[barInPhrase];
+
+  if (!eff.manual && eff.isDrop) { playDropImpact(t0, 0.94, eff.halfTime, false); }
+  else if (eff.phase === 'build') {
+    const resBoost = lerp(0.8, 1.55, state.washResX);
+    schedHpHz = 60 * Math.pow(1550 / 60, Math.pow(eff.buildHeat, 1.15));
+    washHPF.frequency.setTargetAtTime(schedHpHz, t0, STEP_S * 0.55);
+    washHPF.Q.setTargetAtTime((0.9 + eff.buildHeat * 2.2) * resBoost, t0, STEP_S * 0.55);
+    washGate.gain.setTargetAtTime(1.0, t0, 0.02);
+    iceRevSend.gain.setTargetAtTime(lerp(0.32, 0.74, eff.buildHeat), t0, STEP_S * 0.55);
+  } else if (eff.phase === 'silence') {
+    schedHpHz = 380; washHPF.frequency.setTargetAtTime(380, t0, 0.02);
+    washGate.gain.setTargetAtTime(eff.manual ? SAFE_MIN : 0.35, t0, 0.015);
+    iceRevSend.gain.setTargetAtTime(0.84, t0, 0.02);
+  } else {
+    schedHpHz = 20; washHPF.frequency.setTargetAtTime(20, t0, 0.04);
+    washHPF.Q.setTargetAtTime(0.72, t0, 0.04); washGate.gain.setTargetAtTime(1.0, t0, 0.016);
+    iceRevSend.gain.setTargetAtTime(eff.phase === 'calm' ? 0.44 : 0.28, t0, 0.05);
+  }
+
+  if (eff.phase === 'build') {
+    riserBP.frequency.setTargetAtTime(240 * Math.pow(5400 / 240, Math.pow(eff.buildHeat, 1.2)), t0, STEP_S * 0.5);
+    riserBP.Q.setTargetAtTime(1.1 + eff.buildHeat * 4.4, t0, STEP_S * 0.5);
+    riserGain.gain.setTargetAtTime(0.016 + Math.pow(eff.buildHeat, 1.45) * 0.21, t0, STEP_S * 0.45);
+    shimGain.gain.setTargetAtTime(Math.max(SAFE_MIN, eff.buildHeat > 0.28 ? ((eff.buildHeat - 0.28) / 0.72) * 0.058 : SAFE_MIN), t0, STEP_S * 0.45);
+  } else {
+    riserGain.gain.setTargetAtTime(SAFE_MIN, t0, eff.phase === 'silence' || eff.isDrop ? 0.008 : 0.04);
+    shimGain.gain.setTargetAtTime(SAFE_MIN, t0, eff.phase === 'silence' ? 0.01 : 0.05);
+  }
+
+  if (eff.phase === 'drop' || eff.phase === 'groove') {
+    const isDropZone = eff.phase === 'drop';
+    subOsc1.frequency.setTargetAtTime(subPair[0], t0, 0.025); subOsc2.frequency.setTargetAtTime(subPair[1], t0, 0.025);
+    subLPF.frequency.setTargetAtTime((isDropZone ? 225 : 150) * (bs % 4 === 2 ? 1.18 : 1.0), t0, 0.03);
+    subGate.gain.setTargetAtTime(isDropZone ? 0.38 : 0.21, t0, 0.018);
+  } else { subGate.gain.setTargetAtTime(SAFE_MIN, t0, 0.01); }
+
+  if (eff.phase === 'groove' && bs % 4 === 0) { playSubKick(t0, 0.78, false); triggerSidechain(t0, 0.28); }
+  else if (eff.phase === 'drop' && (eff.halfTime ? (bs === 0 || bs === 10) : bs % 4 === 0)) { playSubKick(t0, 1.0, true); triggerSidechain(t0, 0.64); }
+
+  if (eff.phase === 'groove' || eff.phase === 'drop') {
+    if (bs % 4 === 2) playHat(t0, eff.phase === 'drop' ? 0.80 : 0.50, true);
+    else if (eff.phase === 'drop' && bs % 2 === 1) playHat(t0, 0.34, false);
+  }
+
+  if (eff.phase === 'build' && eff.snareDiv > 0) {
+    const vel = lerp(0.38, 0.96, eff.buildHeat);
+    if (eff.snareDiv === 4 && bs % 4 === 0) playBuildSnare(t0, eff.buildHeat, vel);
+    else if (eff.snareDiv === 2 && bs % 2 === 0) playBuildSnare(t0, eff.buildHeat, vel);
+    else if (eff.snareDiv === 1) playBuildSnare(t0, eff.buildHeat, vel);
+    else if (eff.snareDiv === 0.5) {
+      playBuildSnare(t0, eff.buildHeat, vel * 0.92);
+      playBuildSnare(t0 + STEP_S * 0.5, Math.min(1, eff.buildHeat + 0.05), vel);
+    }
+  }
+}
+
+setInterval(() => {
+  if (!state.playing || !actx) return;
+  updatePlayhead();
+  const nowS = state.playhead, lookSteps = LOOKAHEAD_S / STEP_S;
+  if (!state.future.length || state.future[state.future.length - 1].step < nowS + FUTURE_STEPS - 4) recomputeFuture(1.5);
+  else analyzeTimeline();
+
+  while (state.nextEdmStep <= nowS + lookSteps) {
+    const s = state.nextEdmStep++;
+    scheduleEdmStep(s, Math.max(actx.currentTime + 0.002, state.anchorTime + (s - state.anchorStep) * STEP_S));
+  }
+  const inManualVac = state.pistonMode === 'VACUUM' || Boolean(state.pendingDrop);
+  for (const n of state.future) {
+    if (!n.scheduled && n.step <= nowS + lookSteps) {
+      n.scheduled = true;
+      if (!n.dropNote && !inManualVac) {
+        playHandpan(n.locus, n.vel, n.dur, Math.max(actx.currentTime + 0.002, state.anchorTime + (n.step - state.anchorStep) * STEP_S), n.whisper, false);
+      }
+    }
+  }
+  while (state.future.length && state.future[0].step <= nowS) {
+    const n = state.future.shift();
+    if (!n.scheduled && !n.dropNote && !inManualVac) playHandpan(n.locus, n.vel, n.dur, actx.currentTime + 0.002, n.whisper, false);
+    const eff = getEffectiveDj(n.step);
+    const heat = n.dropNote ? 1.0 : eff.phase === 'build' ? eff.buildHeat * 0.85 : n.pinned ? 0.9 : 0;
+    if (!inManualVac || n.pinned) {
+      spawnRipple(n.locus, n.vel, n.dur, heat);
+      state.past.push({ ...n, flash: heat, locked: false, symp: 0 });
+    }
+  }
+  if (state.past.length > 260) { state.past = state.past.filter(n => n.step >= nowS - 220); syncGroupsToMemory(); }
+}, 22);
+
+function strikeLiveHandpan(locus, vel = 0.90) {
+  const ctxA = ensureAudio(), inVac = state.pistonMode === 'VACUUM' || state.livePhase === 'silence';
+  playHandpan(locus, vel, inVac ? 8 : 5, ctxA.currentTime + 0.002, false, inVac);
+  spawnRipple(locus, vel, inVac ? 8 : 5, 1.0);
+  const id = state.nextId++, nowP = performance.now();
+  state.past.push({ id, step: state.playhead, locus, dur: inVac ? 6 : 4, vel, phase: state.livePhase, dropNote: false, whisper: false, locked: false, flash: 1.0, symp: 0 });
+  pulseMemVel(0.45); captureSlot(mod16(state.playhead), locus, 4, 0.78, 0.52, id, nowP, true, -1);
+  recomputeFuture(1.5);
+}
+
+// ==================== 6. MEDIAPIPE BI-MANUAL CV (LEFT PISTON · RIGHT PAN + CURVE) ====================
+class OneEuro {
+  constructor(minCutoff = 1.6, beta = 0.16, dCutoff = 1.0) { this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff; this.reset(); }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  _alpha(cut, dt) { const tau = 1 / (2 * Math.PI * Math.max(1e-4, cut)); return 1 / (1 + tau / dt); }
+  filter(v, tSec) {
+    if (!Number.isFinite(v) || !Number.isFinite(tSec)) return this.x ?? 0;
+    if (this.x === null || this.t === null) { this.x = v; this.dx = 0; this.t = tSec; return v; }
+    const rawDt = tSec - this.t; if (rawDt <= 1e-6) return this.x;
+    const dt = Math.min(rawDt, 0.25); this.t = tSec;
+    const edx = (v - this.x) / dt, ad = this._alpha(this.dCutoff, dt);
+    this.dx = ad * edx + (1 - ad) * this.dx;
+    const ax = this._alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt);
+    return (this.x = ax * v + (1 - ax) * this.x);
+  }
+}
+const PALM_IDX = [0, 5, 9, 13, 17], TIP_IDX = [8, 12, 16, 20];
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PINCH_ON = 0.056, PINCH_OFF = 0.078;
+
+const makeCvHand = () => ({
+  active: false, seenAt: 0, lms: null, rawCx: 0.5, rawCy: 0.5,
+  fx: new OneEuro(1.8, 0.20, 1.0), fy: new OneEuro(1.8, 0.22, 1.0),
+  nx: 0.5, ny: 0.5, prevNy: 0.5, prevT: 0, vyDown: 0, zone: 'pan',
+  pinchDist: 1, pinchProx: 0, pinched: false, lastPinchAt: 0, pinchFlash: 0,
+  fist: false, fistAmt: 0, fade: 0, slamFlash: 0, lastSlamAt: 0,
+  penActive: false, penMoved: false, penStartMs: 0, penStartX: 0, penStartY: 0, penLastStep: -1, penLastE: 0.46
+});
+
+const videoEl = document.getElementById('cv-video'), cvStatusEl = document.getElementById('cvStatus');
+const camBtn = document.getElementById('camBtn'), simBtn = document.getElementById('simBtn');
+const cv = { mode: 'off', loading: false, sessionId: 0, stream: null, landmarker: null, lastVideoTime: -1, lastDetectMs: 0, handCount: 0, leftLabel: 'Right', simStartMs: 0, hands: { L: makeCvHand(), R: makeCvHand() } };
+
+function setCvStatus(text, sig = false) {
+  cvStatusEl.textContent = text; cvStatusEl.classList.toggle('sig', sig);
+  camBtn.textContent = cv.mode === 'cam' ? 'STOP CAM' : (cv.loading ? 'LOAD...' : 'CAM');
+  camBtn.classList.toggle('on', cv.mode === 'cam'); camBtn.classList.toggle('sig', cv.mode === 'cam' || cv.loading);
+  simBtn.classList.toggle('on', cv.mode === 'sim'); simBtn.classList.toggle('sig', cv.mode === 'sim');
+}
+function stopCv(statusText = 'CAM OFF', sig = false) {
+  cv.sessionId++; cv.loading = false; cv.mode = 'off'; cv.handCount = 0; cv.lastVideoTime = -1;
+  if (cv.stream) { cv.stream.getTracks().forEach(t => t.stop()); cv.stream = null; }
+  videoEl.srcObject = null; state.vacuumLockedByFist = false;
+  for (const h of [cv.hands.L, cv.hands.R]) { h.active = false; h.lms = null; h.pinched = false; h.fist = false; h.penActive = false; h.fade = 0; h.fx.reset(); h.fy.reset(); }
+  setCvStatus(statusText, sig);
+}
+async function enableCamera() {
+  if (cv.mode === 'cam' || cv.loading) { stopCv('CAM OFF', false); return; }
+  ensureAudio(); stopCv('LOADING...', true);
+  const sid = ++cv.sessionId; cv.loading = true; setCvStatus('LOADING...', true);
+  if (!navigator.mediaDevices?.getUserMedia) { cv.loading = false; setCvStatus('NO CAM API', true); return; }
+  let stream = null;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false }); }
+  catch (err) {
+    if (sid !== cv.sessionId) return; cv.loading = false; const nm = err?.name || '';
+    setCvStatus((nm === 'NotAllowedError' || nm === 'PermissionDeniedError') ? 'CAM DENIED' : 'NO WEBCAM', true); return;
+  }
+  if (sid !== cv.sessionId) { stream.getTracks().forEach(t => t.stop()); return; }
+  cv.stream = stream; videoEl.srcObject = stream; try { await videoEl.play(); } catch {}
+  try {
+    if (!cv.landmarker) {
+      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+      const mk = (delegate) => HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+        runningMode: 'VIDEO', numHands: 2
+      });
+      try { cv.landmarker = await mk('GPU'); } catch { cv.landmarker = await mk('CPU'); }
+    }
+  } catch { if (sid === cv.sessionId) stopCv('CV OFFLINE', true); return; }
+  if (sid !== cv.sessionId) return;
+  cv.loading = false; cv.mode = 'cam'; cv.lastVideoTime = -1;
+  setCvStatus('CV · 0 HANDS', true); if (!state.playing) togglePlay(true);
+}
+function toggleSimHands() {
+  ensureAudio();
+  if (cv.mode === 'sim') { stopCv('CAM OFF', false); return; }
+  stopCv('SIM · 2 HANDS', true); cv.mode = 'sim'; cv.simStartMs = performance.now();
+  setCvStatus('SIM · 2 HANDS', true); if (!state.playing) togglePlay(true);
+}
+
+function assignHands(rawList, handedList) {
+  const items = [];
+  for (let i = 0; i < Math.min(2, rawList.length); i++) {
+    const raw = rawList[i]; if (!raw || raw.length < 21) continue;
+    const lms = raw.map(p => ({ x: 1 - p.x, y: p.y, z: p.z || 0 }));
+    let cx = 0, cy = 0; for (const k of PALM_IDX) { cx += lms[k].x; cy += lms[k].y; }
+    items.push({ lms, cx: cx / 5, cy: cy / 5, label: handedList?.[i]?.[0]?.categoryName || '' });
+  }
+  if (!items.length) return { L: null, R: null };
+  if (items.length === 1) {
+    const h = items[0];
+    if (Math.abs(h.cx - 0.5) < 0.04 && h.label) return h.label === cv.leftLabel ? { L: h, R: null } : { L: null, R: h };
+    return h.cx < 0.45 ? { L: h, R: null } : { L: null, R: h };
+  }
+  const [a, b] = items, [lo, hi] = a.cx <= b.cx ? [a, b] : [b, a];
+  if (lo.cx < 0.42 && hi.cx > 0.55 && lo.label && hi.label && lo.label !== hi.label) cv.leftLabel = lo.label;
+  if ((Math.abs(a.cx - b.cx) < 0.13 || lo.cx > 0.48 || hi.cx < 0.48) && a.label && b.label && a.label !== b.label) return a.label === cv.leftLabel ? { L: a, R: b } : { L: b, R: a };
+  return { L: lo, R: hi };
+}
+function computeFistness(lms) {
+  const palmLen = Math.hypot(lms[9].x - lms[0].x, lms[9].y - lms[0].y) || 0.08;
+  let sum = 0; for (const ti of TIP_IDX) sum += Math.hypot(lms[ti].x - lms[0].x, lms[ti].y - lms[0].y);
+  return clamp(1 - ((sum / 4) / palmLen - 1.05) / 0.62, 0, 1);
+}
+
+function paintCurveSpan(sA, eA, sB, eB) {
+  const minS = Math.ceil(state.playhead) + 1, maxS = Math.floor(state.playhead) + CURVE_STEPS;
+  for (let s = Math.min(sA, sB); s <= Math.max(sA, sB); s++) {
+    if (s < minS || s > maxS) continue;
+    state.curve.set(s, clamp(lerp(eA, eB, clamp(sB === sA ? 1 : (s - sA) / (sB - sA), 0, 1)), 0.01, 0.99));
+    state.markers.delete(s);
+  }
+  state.activeStamp = null; updateStampUI(); recomputeFuture(1.5);
+}
+function togglePinpointMarker(rawStep) {
+  const minS = Math.ceil(state.playhead) + 1, maxS = Math.floor(state.playhead) + CURVE_STEPS, nearBeat = Math.round(rawStep / 4) * 4;
+  const step = clamp(Math.abs(rawStep - nearBeat) <= 1.35 ? nearBeat : Math.round(rawStep), minS, maxS);
+  const cur = state.markers.get(step);
+  let afterSilence = getCurveRaw(step) < 0.16;
+  for (let k = 1; k <= 16; k++) if (state.markers.get(step - k)?.type === 'silence') { afterSilence = true; break; }
+  const setDrop = () => {
+    state.markers.set(step, { type: 'drop', halfTime: false });
+    for (let k = 0; k < 24 && step + k <= maxS + 8; k++) state.curve.set(step + k, 0.86 - (k / 24) * 0.10);
+    playClick(0.45, 1680, 0.055); setBanner('CURVE MARKER · ▼ DROP');
+  };
+  if (!cur) {
+    if (afterSilence) setDrop();
+    else { state.markers.set(step, { type: 'silence' }); for (let k = 0; k < 8 && step + k <= maxS + 4; k++) { if (k > 0 && state.markers.get(step + k)?.type === 'drop') break; state.curve.set(step + k, 0.02); } playClick(0.35, 620, 0.05); setBanner('CURVE MARKER · ○ SILENCE'); }
+  } else if (cur.type === 'silence') setDrop();
+  else { state.markers.delete(step); const a = getCurveRaw(step - 2), b = getCurveRaw(step + 8); for (let k = 0; k < 8; k++) state.curve.set(step + k, lerp(a, b, k / 8)); playClick(0.25, 920, 0.04); }
+  state.activeStamp = null; updateStampUI(); recomputeFuture(1.5);
+}
+
+function processHandFrame(rawList, handedList, nowMs) {
+  const assigned = assignHands(rawList, handedList), tSec = nowMs / 1000;
+  for (const id of ['L', 'R']) {
+    const h = assigned[id], slot = cv.hands[id];
+    if (h) {
+      if (!slot.active && nowMs - slot.seenAt > 320) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.penActive = false; slot.prevT = tSec; }
+      slot.active = true; slot.seenAt = nowMs; slot.lms = h.lms; slot.rawCx = h.cx; slot.rawCy = h.cy;
+      const rx = id === 'L' ? clamp((h.cx - 0.04) / 0.38, 0, 1) : clamp((h.cx - 0.42) / 0.54, 0, 1);
+      const ry = clamp(1 - (h.cy - 0.10) / 0.78, 0, 1); // 0 = bottom, 1 = top
+      const nx = clamp(slot.fx.filter(rx, tSec), 0, 1), ny = clamp(slot.fy.filter(ry, tSec), 0, 1);
+      const dt = Math.max(0.012, tSec - (slot.prevT || tSec - 0.016));
+      slot.vyDown = (slot.ny - ny) / dt; slot.prevNy = slot.ny; slot.nx = nx; slot.ny = ny; slot.prevT = tSec;
+
+      const d = Math.hypot(h.lms[4].x - h.lms[8].x, h.lms[4].y - h.lms[8].y);
+      slot.pinchDist = d; slot.pinchProx = clamp(1 - (d - 0.048) / 0.095, 0, 1);
+      slot.fistAmt = computeFistness(h.lms); slot.fist = slot.fistAmt > 0.68;
+
+      if (id === 'R') {
+        // Seamless Dual-Zone Right Hand: Center Stage (<=0.64) = Live Handpan · Right Wing (>0.64) = Air-Pen Curve Sculptor!
+        slot.zone = nx > 0.64 ? 'curve' : 'pan';
+        if (slot.zone === 'pan') {
+          slot.penActive = false;
+          if (!slot.pinched && d < PINCH_ON && (nowMs - slot.lastPinchAt) > 190) {
+            slot.pinched = true; slot.lastPinchAt = nowMs; slot.pinchFlash = 1.0;
+            const aim = clamp(Math.round((nx / 0.64) * 8), 0, 8);
+            strikeLiveHandpan(aim, clamp(lerp(0.62, 1.0, ny), 0.56, 1.0));
+            setBanner(state.pistonMode === 'VACUUM' ? `VACUUM SOLO · ${NOTES[aim].name}` : `R PINCH · ${NOTES[aim].name}`);
+          } else if (slot.pinched && d > PINCH_OFF) slot.pinched = false;
+        } else {
+          const curveU = clamp((nx - 0.64) / 0.36, 0, 1);
+          const cx = lerp(geo.curveX0, geo.curveX1, curveU), cy = lerp(H - geo.padBot - 4, geo.nowY + 8, ny);
+          const curStep = Math.round(curveStepOfY(cy)), curE = curveEOfX(cx);
+          if (!slot.pinched && d < PINCH_ON && (nowMs - slot.lastPinchAt) > 130) {
+            slot.pinched = true; slot.lastPinchAt = nowMs; slot.pinchFlash = 1.0;
+            slot.penActive = true; slot.penMoved = false; slot.penStartMs = nowMs; slot.penStartX = cx; slot.penStartY = cy; slot.penLastStep = curStep; slot.penLastE = curE;
+          } else if (slot.pinched && d <= PINCH_OFF && slot.penActive) {
+            if (!slot.penMoved && Math.hypot(cx - slot.penStartX, cy - slot.penStartY) > 10) slot.penMoved = true;
+            if (slot.penMoved && ptr.mode !== 'curve') {
+              paintCurveSpan(slot.penLastStep, slot.penLastE, curStep, curE);
+              state.brush.push({ x: cx, y: cy, t: nowMs });
+              if (Math.floor(curStep / 4) !== Math.floor(slot.penLastStep / 4)) playClick(0.35, 640 + curE * 1120, 0.03);
+              slot.penLastStep = curStep; slot.penLastE = curE;
+            }
+          } else if (slot.pinched && d > PINCH_OFF) {
+            if (slot.penActive && !slot.penMoved && (nowMs - slot.penStartMs) < 380 && ptr.mode !== 'curve') togglePinpointMarker(curveStepOfY(slot.penStartY));
+            slot.pinched = false; slot.penActive = false; slot.penMoved = false;
+          }
+        }
+      } else {
+        if (!slot.pinched && d < PINCH_ON) slot.pinched = true;
+        else if (slot.pinched && d > PINCH_OFF) slot.pinched = false;
+      }
+    } else {
+      slot.active = false;
+      if (nowMs - slot.seenAt > 360) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.fist = false; slot.penActive = false; slot.lms = null; }
+    }
+  }
+
+  // Left Hand conducts Left-Wing DJ Piston (#30)
+  const L = cv.hands.L, R = cv.hands.R;
+  if (L.active && ptr.mode !== 'piston' && !state.keysHeld.up && !state.keysHeld.down) {
+    state.washResX = lerp(state.washResX, L.nx, 0.22);
+    const rawPiston = L.ny < 0.24 ? lerp(-0.46, 0, L.ny / 0.24) : lerp(0, 1.04, (L.ny - 0.24) / 0.72);
+    const bothSlam = R.active && R.vyDown > 1.35 && L.vyDown > 1.35;
+
+    if ((L.fist || L.pinched) && (state.pistonMode === 'VACUUM' || rawPiston > 0.76)) {
+      if (!state.vacuumLockedByFist) { state.vacuumLockedByFist = true; setBanner('L FIST · VACUUM HOLD LOCK'); }
+      setPistonDirect(1.0, false, 0);
+    } else if (state.vacuumLockedByFist && !L.fist && !L.pinched) {
+      state.vacuumLockedByFist = false; L.slamFlash = 1.0; L.lastSlamAt = nowMs;
+      requestDrop(1.0, bothSlam);
+    } else if ((state.pistonMode === 'BUILD' || state.pistonMode === 'VACUUM') && state.peakTension >= 0.34 && L.vyDown > 1.45 && (nowMs - L.lastSlamAt) > 650) {
+      L.slamFlash = 1.0; L.lastSlamAt = nowMs; if (bothSlam) R.slamFlash = 1.0;
+      requestDrop(clamp(0.78 + state.peakTension * 0.22, 0.78, 1.0), bothSlam);
+    } else if (state.pistonMode !== 'DROP' || rawPiston > 0.30 || rawPiston < -0.18) {
+      if (!(state.pistonMode === 'DROP' && rawPiston < 0.28 && rawPiston > -0.16)) setPistonDirect(rawPiston, false, 0);
+    }
+  } else if (!L.active && state.vacuumLockedByFist) {
+    state.vacuumLockedByFist = false; releasePiston();
+  }
+
+  const n = (assigned.L ? 1 : 0) + (assigned.R ? 1 : 0);
+  if (n !== cv.handCount) { cv.handCount = n; setCvStatus(`${cv.mode === 'sim' ? 'SIM' : 'CV'} · ${n} HAND${n === 1 ? '' : 'S'}`, true); }
+}
+
+function synthHand21(cxM, cyM, side, pinch, fist, tilt, t) {
+  const s = side, c = Math.cos(tilt), sn = Math.sin(tilt), p = clamp(pinch, 0, 1), f = clamp(fist, 0, 1);
+  const j = (ox, oy) => ({ x: clamp(1 - (cxM + ox * c - oy * sn + Math.sin(t * 65 + ox * 150) * 0.0011), 0, 1), y: clamp(cyM + ox * sn + oy * c + Math.cos(t * 59 + oy * 150) * 0.0011, 0, 1), z: 0 });
+  const curl = (yOpen, yClosed) => lerp(yOpen, yClosed, f);
+  return [
+    j(-s * 0.012, 0.078), j(-s * 0.036, 0.052), j(lerp(-s * 0.062, -s * 0.050, Math.max(p, f)), lerp(0.024, 0.018, Math.max(p, f))),
+    j(lerp(-s * 0.078, -s * 0.052, Math.max(p, f)), lerp(-0.004, -0.014, Math.max(p, f))), j(lerp(-s * 0.090, -s * 0.048, Math.max(p, f)), lerp(-0.028, -0.044, Math.max(p, f))),
+    j(-s * 0.034, -0.020), j(lerp(-s * 0.044, -s * 0.048, p), curl(-0.062, -0.028)),
+    j(lerp(-s * 0.049, -s * 0.052, p), curl(-0.094, -0.006)), j(lerp(-s * 0.052, -s * 0.048, Math.max(p, f)), lerp(curl(-0.122, 0.018), -0.052, p)),
+    j(-s * 0.008, -0.026), j(-s * 0.010, curl(-0.072, -0.030)), j(-s * 0.012, curl(-0.106, -0.004)), j(-s * 0.014, curl(-0.136, 0.022)),
+    j(s * 0.016, -0.022), j(s * 0.020, curl(-0.066, -0.026)), j(s * 0.023, curl(-0.098, -0.002)), j(s * 0.026, curl(-0.124, 0.024)),
+    j(s * 0.038, -0.010), j(s * 0.046, curl(-0.046, -0.016)), j(s * 0.052, curl(-0.072, 0.006)), j(s * 0.057, curl(-0.094, 0.028))
+  ];
+}
+
+function tickCv(nowMs) {
+  if (cv.mode === 'cam' && cv.landmarker && videoEl.readyState >= 2 && videoEl.currentTime !== cv.lastVideoTime) {
+    cv.lastVideoTime = videoEl.currentTime;
+    const ts = Math.max(cv.lastDetectMs + 1, Math.round(nowMs)); cv.lastDetectMs = ts;
+    try { const res = cv.landmarker.detectForVideo(videoEl, ts); processHandFrame(res?.landmarks || [], res?.handedness || [], nowMs); } catch {}
+  } else if (cv.mode === 'sim') {
+    // 18-second full-studio choreography:
+    // 0..3.6s:  R Hand moves into Right Wing -> air-draws rising curve on 4-bar spine!
+    // 3.6..8.2s: L Hand lifts DJ Piston into roaring BUILD -> R Hand glides to Center Stage and strikes handpan notes!
+    // 8.2..10.2s: L Hand makes FIST VACUUM HOLD -> R Hand pinches a haunting Vacuum Solo note!
+    // 10.2..10.75s: BOTH HANDS SLAM DOWN -> SUPER DROP shockwave across the funnel & wall!
+    // 10.75..18s: Euphoric DROP groove with live Right Hand handpan pinches!
+    const t = (nowMs - cv.simStartMs) / 1000, cyc = t % 18.0;
+    let lY = 0.66, lFist = 0, rX = 0.62, rY = 0.50, rPinch = 0;
+    if (cyc < 3.6) {
+      const u = cyc / 3.6;
+      rX = lerp(0.82, 0.94, u); rY = lerp(0.68, 0.30, u); rPinch = 1.0;
+      lY = 0.66 + Math.sin(t * 2.0) * 0.02;
+    } else if (cyc < 8.2) {
+      const u = (cyc - 3.6) / 4.6;
+      lY = lerp(0.66, 0.14, Math.pow(u, 1.15));
+      rX = 0.56 + 0.14 * Math.sin(t * 1.4); rY = lerp(0.50, 0.24, u);
+      const ph = (cyc - 3.8) % 1.4; if (ph < 0.26) rPinch = Math.sin((ph / 0.26) * Math.PI);
+    } else if (cyc < 10.2) {
+      lY = 0.14; lFist = 1.0; rX = 0.60; rY = 0.26;
+      if (cyc > 8.9 && cyc < 9.3) rPinch = Math.sin(((cyc - 8.9) / 0.40) * Math.PI);
+    } else if (cyc < 10.75) {
+      const u = (cyc - 10.2) / 0.55;
+      lY = lerp(0.14, 0.70, Math.pow(u, 0.6)); rY = lerp(0.26, 0.70, Math.pow(u, 0.6)); rX = 0.60; lFist = 0;
+    } else {
+      lY = 0.66 + Math.sin(t * 3.2) * 0.03; rX = 0.54 + 0.16 * Math.sin(t * 1.1); rY = 0.48 + 0.10 * Math.cos(t * 1.3);
+      const ph = (cyc - 11.0) % 1.45; if (ph < 0.28) rPinch = Math.sin((ph / 0.28) * Math.PI);
+    }
+    const hL = synthHand21(0.20 + 0.06 * Math.sin(t * 0.6), lY, -1, 0, lFist, 0.08 * Math.sin(t), t);
+    const hR = synthHand21(rX, rY, 1, rPinch, 0, -0.08 * Math.cos(t), t + 1.4);
+    processHandFrame([hL, hR], [[{ categoryName: 'Right' }], [{ categoryName: 'Left' }]], nowMs);
+  }
+}
+
+// ==================== 7. MULTI-ZONE POINTER, SELECTION (#27), FUNNEL PIN (#37), PISTON (#30), CURVE (#29) ====================
+const ptr = {
+  mode: null, pid: null, sx: 0, sy: 0, cx: 0, cy: 0, moved: false, shift: false,
+  lastY: 0, lastT: 0, lastStep: -1, lastE: 0.46, pinObj: null,
+  hoverZone: null, hoverWallAge: -1, hoverWallX: 0, hoverLocus: -1, hoverCurveStep: -1
+};
+
+function hitTestZone(x, y) {
+  if (Math.abs(x - geo.pistonX) <= 38 && y >= geo.nowY - geo.railUp - 26 && y <= geo.nowY + geo.railDown + 26) return 'piston';
+  if (x >= geo.curveX0 - 14 && x <= geo.curveX1 + 14 && y >= geo.nowY - 6 && y <= H - geo.padBot + 14) return 'curve';
+  if (x >= geo.wallL - 14 && x <= geo.wallR + 14 && Math.abs(y - geo.nowY) <= 22) return 'now';
+  if (x >= geo.wallL - 14 && x <= geo.wallR + 14 && y >= geo.padTop && y < geo.nowY - 14) return 'wall';
+  if (y > geo.nowY + 14 && y <= H - geo.padBot) {
+    const f = unprojFunnel(x, y);
+    if (f && Math.abs(f.wx) <= WALL_PAD_LANES + 0.35 && f.off >= 0.4 && f.off <= FUTURE_STEPS + 1) return 'funnel';
+  }
+  return null;
+}
+
+function finalizeWallSelection(x0, y0, x1, y1, additive) {
+  const rx0 = Math.min(x0, x1), rx1 = Math.max(x0, x1), ry0 = Math.min(y0, y1), ry1 = Math.max(y0, y1);
+  const matched = [];
+  for (const p of state.past) {
+    const age = state.playhead - p.step; if (age < 0) continue;
+    const pt = projWall(p.locus - 4, age);
+    if (pt.x >= rx0 - 10 && pt.x <= rx1 + 10 && pt.y >= ry0 - 10 && pt.y <= ry1 + 10) matched.push(p);
+  }
+  const nowP = performance.now();
+  if (!matched.length) {
+    if (!additive) {
+      state.groups = []; for (const p of state.past) p.locked = false;
+      for (const sl of mem.slots) { sl.pinned *= 0.2; sl.energy *= 0.45; }
+      recomputeFuture(1.5); setBanner('MEMORY GROUPS CLEARED');
+    }
+    return;
+  }
+  if (!additive) {
+    state.groups = [];
+    for (const sl of mem.slots) { sl.energy *= 0.25; sl.pinned = 0; sl.sources = []; }
+  }
+  const gid = state.nextGroupId++, ids = new Set(matched.map(p => p.id));
+  state.groups.push({ id: gid, noteIds: ids });
+  pulseMemVel(0.55);
+  for (const p of matched) {
+    p.locked = true; p.flash = 1.0;
+    captureSlot(mod16(p.step), p.locus, p.dur, 0.88, 0.86, p.id, nowP, additive, gid);
+  }
+  syncGroupsToMemory(); recomputeFuture(1.5);
+  playClick(0, 1460, 0.055);
+  setBanner(`LOCKED G${state.groups.length} (${matched.length} NOTES) → FUNNEL`);
+}
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const x = e.clientX, y = e.clientY, z = hitTestZone(x, y);
+  ensureAudio();
+  if (e.button === 2 && z === 'funnel') {
+    const f = unprojFunnel(x, y); if (!f) return;
+    const step = Math.round(state.playhead + f.off);
+    state.pinnedFuture = state.pinnedFuture.filter(p => Math.abs(p.step - step) > 1.2);
+    state.mutedSteps.add(step); recomputeFuture(1.5); playClick(0, 520, 0.045); setBanner('MUTED FUTURE BEAT'); return;
+  }
+  if (!z) return;
+  canvas.setPointerCapture(e.pointerId);
+  ptr.mode = z; ptr.pid = e.pointerId; ptr.sx = ptr.cx = x; ptr.sy = ptr.cy = y; ptr.moved = false; ptr.shift = e.shiftKey;
+  if (z === 'piston') {
+    if (!state.playing) togglePlay(true);
+    ptr.lastY = y; ptr.lastT = performance.now(); setPistonDirect(yToPiston(y), false, 0);
+  } else if (z === 'curve') {
+    ptr.lastStep = Math.round(curveStepOfY(y)); ptr.lastE = curveEOfX(x);
+  } else if (z === 'now') {
+    const l = clamp(Math.round((x - geo.cx) / geo.wallGap + 4), 0, 8);
+    strikeLiveHandpan(l, 0.92);
+  } else if (z === 'funnel') {
+    const f = unprojFunnel(x, y); if (!f) return;
+    const locus = clamp(Math.round(f.wx + 4), 0, 8), step = Math.max(Math.ceil(state.playhead + 1), Math.round(state.playhead + f.off));
+    state.mutedSteps.delete(step);
+    state.pinnedFuture = state.pinnedFuture.filter(p => Math.abs(p.step - step) > 0.6 || p.locus !== locus);
+    const pin = { id: state.nextId++, step, locus, dur: 2 };
+    state.pinnedFuture.push(pin); ptr.pinObj = pin;
+    playClick(NOTES[locus].pan, 1280 + locus * 85, 0.05); recomputeFuture(1.5);
+    setBanner(`PINNED ${NOTES[locus].name} IN FUNNEL`);
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const x = e.clientX, y = e.clientY; ptr.cx = x; ptr.cy = y;
+  const z = hitTestZone(x, y); ptr.hoverZone = z;
+  ptr.hoverLocus = z === 'now' ? clamp(Math.round((x - geo.cx) / geo.wallGap + 4), 0, 8) : -1;
+  ptr.hoverCurveStep = z === 'curve' ? Math.round(curveStepOfY(y)) : -1;
+  if (z === 'wall') { const w = unprojWall(x, y); ptr.hoverWallAge = w ? w.age : -1; ptr.hoverWallX = x; } else ptr.hoverWallAge = -1;
+  canvas.style.cursor = z === 'piston' ? 'ns-resize' : z === 'wall' ? 'crosshair' : (z === 'curve' || z === 'funnel' || z === 'now') ? 'pointer' : 'default';
+
+  if (ptr.pid !== e.pointerId || !ptr.mode) return;
+  if (!ptr.moved && Math.hypot(x - ptr.sx, y - ptr.sy) > 5) ptr.moved = true;
+  if (ptr.mode === 'piston') {
+    const nowP = performance.now(), vy = (y - ptr.lastY) / Math.max(0.008, (nowP - ptr.lastT) / 1000);
+    ptr.lastY = y; ptr.lastT = nowP; setPistonDirect(yToPiston(y), true, vy / 220);
+  } else if (ptr.mode === 'curve' && ptr.moved) {
+    const s = Math.round(curveStepOfY(y)), val = curveEOfX(x);
+    paintCurveSpan(ptr.lastStep, ptr.lastE, s, val);
+    state.brush.push({ x: clamp(x, geo.curveX0, geo.curveX1), y: clamp(y, geo.nowY + 2, H - geo.padBot), t: performance.now() });
+    if (Math.floor(s / 4) !== Math.floor(ptr.lastStep / 4)) playClick(0.35, 620 + val * 1150, 0.032);
+    ptr.lastStep = s; ptr.lastE = val;
+  } else if (ptr.mode === 'funnel' && ptr.pinObj && ptr.moved) {
+    const f = unprojFunnel(x, y); if (!f) return;
+    const endStep = state.playhead + f.off;
+    ptr.pinObj.dur = snapDur(clamp(endStep - ptr.pinObj.step, 1, 8));
+    recomputeFuture(1.5);
+  }
+});
+
+const endPtr = (e) => {
+  if (ptr.pid !== e.pointerId) return;
+  if (ptr.mode === 'piston') releasePiston();
+  else if (ptr.mode === 'curve' && !ptr.moved) togglePinpointMarker(curveStepOfY(e.clientY));
+  else if (ptr.mode === 'wall') finalizeWallSelection(ptr.sx, ptr.sy, ptr.cx, ptr.cy, ptr.shift);
+  ptr.mode = ptr.pid = ptr.pinObj = null;
+};
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  state.warp = clamp(state.warp + Math.sign(e.deltaY) * 0.24, 1.0, 4.0);
+  state.k = Math.pow(Math.max(1, state.warp) - 1, 1.48) * 0.036;
+  setBanner(`PAST LENS · ${state.warp.toFixed(1)}×`);
+}, { passive: false });
+
+// Header Buttons & Keyboard Shortcuts
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+const phaseHud = document.getElementById('phaseHud'), quantBtn = document.getElementById('quantBtn'), flareBtn = document.getElementById('flareBtn'), bankBtn = document.getElementById('bankBtn');
+const stampBtns = [...document.querySelectorAll('#stamps button')];
+const updateStampUI = () => { for (const b of stampBtns) b.classList.toggle('on', b.dataset.stamp === state.activeStamp); };
+
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  const ctxA = ensureAudio();
+  if (want) {
+    state.playing = true; state.anchorTime = ctxA.currentTime; state.anchorStep = state.playhead;
+    state.nextEdmStep = Math.ceil(state.playhead); for (const n of state.future) n.scheduled = false;
+  } else { updatePlayhead(); state.playing = false; silenceContinuous(); }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+function toggleQuant() {
+  state.quantize = !state.quantize; quantBtn.classList.toggle('on', state.quantize); quantBtn.textContent = state.quantize ? 'SYNC' : 'INST';
+  setBanner(state.quantize ? 'DROP · BEAT-SYNC ON' : 'DROP · INSTANT');
+}
+function cycleFlare() {
+  state.flareIdx = (state.flareIdx + 1) % FLARE_PRESETS.length; state.flare = FLARE_PRESETS[state.flareIdx];
+  flareBtn.textContent = `${state.flare.toFixed(2)}×`; layout();
+  setBanner(`FUNNEL FLARE · ${state.flare.toFixed(2)}×`);
+}
+
+playBtn.addEventListener('click', () => togglePlay());
+quantBtn.addEventListener('click', toggleQuant);
+flareBtn.addEventListener('click', cycleFlare);
+bankBtn.addEventListener('click', loadYishamaBank);
+camBtn.addEventListener('click', enableCamera);
+simBtn.addEventListener('click', toggleSimHands);
+for (const b of stampBtns) b.addEventListener('click', () => applyStamp(b.dataset.stamp));
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'q') return toggleQuant();
+  if (k === 'f') return cycleFlare();
+  if (k === 'w' || e.key === 'ArrowUp') { ensureAudio(); if (!state.playing) togglePlay(true); state.keysHeld.up = true; return; }
+  if (k === 's' || e.key === 'ArrowDown') { ensureAudio(); if (!state.playing) togglePlay(true); state.keysHeld.down = true; return; }
+  if (k === 'd' || e.key === 'Enter') { e.preventDefault(); requestDrop(0.95, false); return; }
+  if (e.key >= '1' && e.key <= '9') strikeLiveHandpan(Number(e.key) - 1, 0.92);
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if ((k === 'w' || e.key === 'ArrowUp') && state.keysHeld.up) { state.keysHeld.up = false; releasePiston(); }
+  else if (k === 's' || e.key === 'ArrowDown') state.keysHeld.down = false;
+});
+
+// ==================== 8. UNIFIED 60FPS RENDERER (PISTON | WALL × FUNNEL | CURVE | CV HANDS) ====================
+let lastFrameMs = performance.now(), lastSeenStep = -1;
+const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const ring = (x, y, r, fill = false, stroke = true) => { ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); if (fill) ctx.fill(); if (stroke) ctx.stroke(); };
+
+function drawFrame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastFrameMs) / 1000); lastFrameMs = nowMs;
+  if (state.keysHeld.up) setPistonDirect(state.piston + dt * 0.42);
+  else if (state.keysHeld.down) setPistonDirect(state.piston - dt * 0.55);
+
+  tickCv(nowMs);
+  updatePlayhead(); analyzeTimeline(); stepAdaptiveMemory(dt, nowMs);
+  const curInt = Math.floor(state.playhead), effNow = getEffectiveDj(curInt);
+  state.livePhase = effNow.phase;
+
+  if (state.playing && curInt !== lastSeenStep) {
+    lastSeenStep = curInt; const bs = mod16(curInt);
+    if (!effNow.manual && effNow.isDrop) { state.dropFlash = 1.0; state.kickPulse = 1.25; state.shocks.push({ age: 0, maxAge: 1.15, big: true }); }
+    else if (effNow.phase === 'drop' && (effNow.halfTime ? (bs === 0 || bs === 10) : bs % 4 === 0)) { state.kickPulse = 0.96; state.shocks.push({ age: 0, maxAge: 0.42, big: false }); }
+    else if (effNow.phase === 'groove' && bs % 4 === 0) state.kickPulse = 0.56;
+  }
+
+  state.kickPulse *= Math.exp(-dt * 7.5);
+  state.dropFlash = Math.max(0, state.dropFlash - dt / 0.85);
+  state.bannerAlpha = Math.max(0, state.bannerAlpha - dt * 0.68);
+  for (let i = 0; i < 9; i++) { state.locusGlow[i] *= Math.exp(-dt * 4.8); if (state.locusHeat[i] > 0) state.locusHeat[i] = Math.max(0, state.locusHeat[i] - dt / (FLASH_MS / 1000)); }
+  for (let i = state.ripples.length - 1; i >= 0; i--) { const r = state.ripples[i]; r.age += dt; if (r.heat > 0) r.heat = Math.max(0, r.heat - dt / 0.7); if (r.age >= r.maxAge) state.ripples.splice(i, 1); }
+  for (let i = state.shocks.length - 1; i >= 0; i--) { state.shocks[i].age += dt; if (state.shocks[i].age >= state.shocks[i].maxAge) state.shocks.splice(i, 1); }
+  for (let i = state.sympArcs.length - 1; i >= 0; i--) if (nowMs - state.sympArcs[i].bornPerf > state.sympArcs[i].lifeMs) state.sympArcs.splice(i, 1);
+  for (const p of state.past) { if (p.flash > 0) p.flash = Math.max(0, p.flash - dt / 0.5); if (p.symp > 0) p.symp = Math.max(0, p.symp * Math.exp(-dt * 2.2)); }
+  while (state.brush.length && nowMs - state.brush[0].t > 500) state.brush.shift();
+  for (const h of [cv.hands.L, cv.hands.R]) { h.fade = clamp(h.fade + (h.active ? dt * 6.5 : -dt * 3.8), 0, 1); h.pinchFlash = Math.max(0, h.pinchFlash - dt * 3.0); h.slamFlash = Math.max(0, h.slamFlash - dt * 2.6); }
+
+  const barNum = String(Math.floor(state.playhead / 16) + 1).padStart(2, '0'), beatNum = (Math.floor(state.playhead / 4) % 4) + 1;
+  const tag = effNow.manual ? (state.pistonMode === 'VACUUM' ? 'VACUUM' : state.pistonMode) : effNow.phase.toUpperCase();
+  phaseHud.textContent = `40 · ${tag} · ${barNum}.${beatNum} · ${BPM}`;
+  phaseHud.classList.toggle('hot', tag === 'BUILD' || tag === 'DROP' || tag === 'VACUUM' || state.dropFlash > 0.1);
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.font = '9.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textBaseline = 'middle';
+
+  drawStageArchitecture(effNow);
+  drawAttentionAndSympArcs(nowMs);
+  drawPastWallNotes();
+  drawFunnelFutureNotes();
+  drawNowFoldHinge(effNow);
+  drawLeftPiston(effNow);
+  drawRightCurve(nowMs);
+  drawCvOverlays();
+
+  // Marquee selection box on Straight Past Wall (#27)
+  if (ptr.mode === 'wall' && ptr.moved) {
+    const x0 = Math.min(ptr.sx, ptr.cx), y0 = Math.min(ptr.sy, ptr.cy), w = Math.abs(ptr.cx - ptr.sx), h = Math.abs(ptr.cy - ptr.sy);
+    ctx.fillStyle = 'rgba(255,90,31,0.08)'; ctx.fillRect(x0, y0, w, h);
+    ctx.strokeStyle = 'rgba(255,90,31,0.82)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.strokeRect(x0 + 0.5, y0 + 0.5, w, h); ctx.setLineDash([]);
+  }
+
+  if (state.bannerAlpha > 0.02 && state.bannerText) {
+    ctx.font = '10px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255,90,31,${(state.bannerAlpha * 0.92).toFixed(3)})`;
+    ctx.fillText(state.bannerText, geo.cx, geo.padTop + 10);
+  }
+  requestAnimationFrame(drawFrame);
+}
+
+// 1. STRAIGHT VERTICAL PAST WALL + PSEUDO-PERSPECTIVE FUTURE FUNNEL ARCHITECTURE (#37)
+function drawStageArchitecture(effNow) {
+  const heat = effNow.phase === 'build' ? effNow.buildHeat : Math.max(state.dropFlash, effNow.phase === 'drop' ? 0.35 : 0);
+
+  // Subtle architectural cast-crease shading on the funnel floor right beneath NOW
+  const gFloor = ctx.createLinearGradient(0, geo.nowY, 0, geo.nowY + geo.frontH);
+  gFloor.addColorStop(0, 'rgba(255,255,255,0.045)');
+  gFloor.addColorStop(0.22, 'rgba(255,255,255,0.015)');
+  gFloor.addColorStop(1, 'rgba(255,255,255,0.002)');
+  ctx.fillStyle = gFloor;
+  ctx.beginPath();
+  ctx.moveTo(geo.wallL, geo.nowY); ctx.lineTo(geo.wallR, geo.nowY);
+  ctx.lineTo(geo.frontR, H - geo.padBot); ctx.lineTo(geo.frontL, H - geo.padBot);
+  ctx.closePath(); ctx.fill();
+
+  // Outer silhouette boundaries: STRAIGHT UP on Past Wall, STRAIGHT FLARING RAILS on Future Funnel!
+  ctx.strokeStyle = mixInk(heat * 0.5, 0.24); ctx.lineWidth = 1;
+  line(geo.wallL, geo.padTop, geo.wallL, geo.nowY);
+  line(geo.wallR, geo.padTop, geo.wallR, geo.nowY);
+  line(geo.wallL, geo.nowY, geo.frontL, H - geo.padBot);
+  line(geo.wallR, geo.nowY, geo.frontR, H - geo.padBot);
+
+  // 9 Musical Lanes: Strictly parallel vertical UP the wall, converging perspective rails UP the funnel!
+  for (let i = 0; i < 9; i++) {
+    const wx = i - 4, topP = projWall(wx, 0), botP = projFunnel(wx, FUTURE_STEPS), isRoot = i === 0 || i === 4;
+    ctx.strokeStyle = isRoot ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.045)'; ctx.lineWidth = 1;
+    line(topP.x, geo.padTop, topP.x, geo.nowY);
+    ctx.strokeStyle = isRoot ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.055)';
+    line(topP.x, geo.nowY, botP.x, botP.y);
+  }
+
+  // Logarithmic Past Bar Ruler on the Straight Vertical Wall (#27)
+  ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+  for (const bars of RULER_BARS) {
+    const y = wallY(bars * 16); if (y < geo.padTop + 6 || y > geo.nowY - 12) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+    line(geo.wallL, y, geo.wallR, y);
+    ctx.fillStyle = 'rgba(255,255,255,0.24)'; ctx.fillText(`-${bars}B`, geo.wallL - 6, y);
+  }
+
+  // Perspective Future Beat & Bar Cross-Bars marching UP the funnel toward NOW!
+  const firstBeat = Math.ceil(state.playhead / 4) * 4;
+  for (let s = firstBeat; s <= state.playhead + FUTURE_STEPS; s += 4) {
+    const off = s - state.playhead; if (off < 0.25) continue;
+    const isBar = mod16(s) === 0, pL = projFunnel(-WALL_PAD_LANES, off), pR = projFunnel(WALL_PAD_LANES, off);
+    const info = getInfo(s);
+    ctx.strokeStyle = info.isDrop ? 'rgba(255,90,31,0.52)' : isBar ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.042)';
+    ctx.lineWidth = info.isDrop ? 1.4 : 1;
+    line(pL.x, pL.y, pR.x, pR.y);
+  }
+
+  // Corner stage tags
+  ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.textAlign = 'left'; ctx.fillText(`PAST WALL ↑ · LENS ${state.warp.toFixed(1)}× · DRAG SELECT`, geo.wallL + 4, geo.padTop - 4);
+  ctx.fillText(`↓ FUTURE FUNNEL (${state.flare.toFixed(2)}×) · CLICK PIN · RMB MUTE`, geo.frontL + 4, H - geo.padBot + 12);
+}
+
+// 2. LUMINOUS WALL-TO-FUNNEL ATTENTION ARCS + SYMPATHETIC RESONANCE (#27 × #37)
+function drawAttentionAndSympArcs(nowMs) {
+  const pastById = new Map(); for (const p of state.past) pastById.set(p.id, p);
+
+  // Attention arcs linking selected/remembered vertical wall notes into future funnel predictions!
+  for (const n of state.future) {
+    if (!n.attn || !n.attn.pastId) continue;
+    const src = pastById.get(n.attn.pastId); if (!src) continue;
+    const age = state.playhead - src.step, off = n.step - state.playhead;
+    if (age < 0 || off < 0 || off > FUTURE_STEPS) continue;
+    const pA = projWall(src.locus - 4, age), pB = projFunnel(n.locus - 4, off);
+    if (pA.y < geo.padTop) continue;
+    const a = clamp(n.attn.weight * (1 - off / FUTURE_STEPS) * 0.44, 0.06, 0.46);
+    ctx.strokeStyle = mixInk(n.attn.locked ? 0.92 : 0.2, a);
+    ctx.lineWidth = n.attn.locked ? 1.15 : 0.8;
+    const bend = (pA.x + pB.x) * 0.5 + (pA.x < geo.cx ? -26 : 26);
+    ctx.beginPath(); ctx.moveTo(pA.x, pA.y); ctx.quadraticCurveTo(bend, geo.nowY, pB.x, pB.y); ctx.stroke();
+  }
+
+  // Sympathetic resonance arcs from live strikes up the straight vertical wall
+  for (const arc of state.sympArcs) {
+    const u = (nowMs - arc.bornPerf) / arc.lifeMs; if (u >= 1) continue;
+    const age = state.playhead - arc.past.step; if (age < 0.1) continue;
+    const pB = projWall(arc.past.locus - 4, age); if (pB.y < geo.padTop) continue;
+    const x0 = geo.locusX[arc.fromIdx], a = (1 - u) * arc.bond * 0.42;
+    ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`; ctx.lineWidth = 0.85;
+    ctx.beginPath(); ctx.moveTo(x0, geo.nowY); ctx.quadraticCurveTo((x0 + pB.x) * 0.5 + (x0 < pB.x ? -16 : 16), (geo.nowY + pB.y) * 0.5, pB.x, pB.y); ctx.stroke();
+  }
+}
+
+// 3. STRAIGHT PAST WALL NOTES + MULTI-GROUP BRACKETS + HOVER MICRO-LENS (#27)
+function drawPastWallNotes() {
+  for (const p of state.past) {
+    const age = state.playhead - p.step; if (age < 0) continue;
+    const pt = projWall(p.locus - 4, age); if (pt.y < geo.padTop - 6 || pt.y > geo.nowY + 2) continue;
+    const ageEnd = Math.max(0, age - p.dur), ptEnd = projWall(p.locus - 4, ageEnd);
+    const fade = clamp(1 - Math.log(1 + age / 14) / Math.log(22), 0.16, 0.94);
+    const heat = Math.max(p.flash || 0, p.locked ? 0.92 : 0);
+
+    // Micro-lens hover magnification on dense upper past wall!
+    let mag = 1;
+    if (ptr.hoverWallAge > 0 && Math.abs(pt.y - ptr.cy) < 42) mag = 1 + (1 - Math.abs(pt.y - ptr.cy) / 42) * 0.45;
+    if (ptEnd.y > pt.y + 1.5) {
+      ctx.strokeStyle = mixInk(heat, fade * 0.48); ctx.lineWidth = p.locked ? 1.45 : 1.0;
+      line(pt.x, pt.y, pt.x, Math.min(geo.nowY, ptEnd.y));
+    }
+    const r = (2.0 + Math.sqrt(p.dur) * 0.78) * mag;
+    ctx.fillStyle = mixInk(heat, fade); ring(pt.x, pt.y, r, true, false);
+    if (p.locked || p.symp > 0.25) {
+      ctx.strokeStyle = mixInk(p.locked ? 0.95 : 0, (p.locked ? 0.72 : p.symp * 0.65) * fade); ctx.lineWidth = 0.95;
+      ring(pt.x, pt.y, r + 3.4, false, true);
+    }
+  }
+
+  // Group bounding brackets (G1, G2...) on Straight Vertical Past Wall!
+  state.groups.forEach((g, gi) => {
+    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, cnt = 0;
+    for (const p of state.past) {
+      if (!g.noteIds.has(p.id)) continue;
+      const age = state.playhead - p.step; if (age < 0) continue;
+      const pt = projWall(p.locus - 4, age); if (pt.y < geo.padTop) continue;
+      minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y); cnt++;
+    }
+    if (!cnt) return;
+    ctx.strokeStyle = 'rgba(255,90,31,0.52)'; ctx.lineWidth = 1;
+    ctx.strokeRect(minX - 9, minY - 8, (maxX - minX) + 18, (maxY - minY) + 16);
+    ctx.fillStyle = 'rgba(255,90,31,0.88)'; ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'left';
+    ctx.fillText(`G${gi + 1}`, minX - 8, minY - 12);
+  });
+}
+
+// 4. PSEUDO-PERSPECTIVE FUNNEL FUTURE NOTES (SCALING WITH PERSPECTIVE S!)
+function drawFunnelFutureNotes() {
+  for (const n of state.future) {
+    const off = n.step - state.playhead; if (off < 0 || off > FUTURE_STEPS) continue;
+    const p0 = projFunnel(n.locus - 4, off), p1 = projFunnel(n.locus - 4, Math.min(FUTURE_STEPS, off + n.dur));
+    const prox = clamp(1 - off / FUTURE_STEPS, 0, 1), info = getInfo(n.step);
+    const heat = n.dropNote || n.pinned ? 1.0 : info.phase === 'build' ? info.buildHeat * 0.85 : (n.attn?.locked ? 0.72 : 0);
+    const sa = 0.28 + prox * 0.68, rad = (2.4 + Math.sqrt(n.dur) * 1.15) * lerp(0.88, 1.32, (p0.scale - 1) / Math.max(0.2, state.flare - 1));
+
+    if (p1.y > p0.y + rad) {
+      ctx.strokeStyle = mixInk(heat, sa * 0.45); ctx.lineWidth = 0.9 * p0.scale * 0.78;
+      line(p0.x, p0.y + rad * 0.8, p1.x, p1.y);
+    }
+    if (n.pinned) {
+      // Crisp perspective-scaled Diamond Pin for user-planted funnel notes!
+      ctx.fillStyle = `rgba(255,90,31,${(0.32 + prox * 0.35).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(255,90,31,${sa.toFixed(3)})`; ctx.lineWidth = 1.45;
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y - rad * 1.15); ctx.lineTo(p0.x + rad * 1.15, p0.y);
+      ctx.lineTo(p0.x, p0.y + rad * 1.15); ctx.lineTo(p0.x - rad * 1.15, p0.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.fillStyle = mixInk(heat, n.dropNote ? 0.40 : n.whisper ? 0.04 : 0.07 + heat * 0.16);
+      ctx.strokeStyle = mixInk(heat, n.whisper ? sa * 0.62 : sa); ctx.lineWidth = n.dropNote ? 1.6 : 1.05;
+      ring(p0.x, p0.y, rad, true, true);
+      if (n.dropNote) { ctx.strokeStyle = `rgba(255,90,31,${(sa * 0.58).toFixed(3)})`; ctx.lineWidth = 0.95; ring(p0.x, p0.y, rad + 4.5); }
+    }
+  }
+}
+
+// 5. ARCHITECTURAL 90° NOW FOLD HINGE + INTERFEROMETER + 9 STRIKE LOCI
+function drawNowFoldHinge(effNow) {
+  const kp = state.kickPulse, df = state.dropFlash;
+  const lineHeat = Math.max(df, effNow.phase === 'build' ? effNow.buildHeat * 0.78 : effNow.phase === 'silence' ? 0.55 : 0);
+
+  // Resonant ripples radiating along the NOW crease
+  for (const r of state.ripples) {
+    const cx = geo.locusX[r.locus], u = clamp(r.age / r.maxAge, 0, 1);
+    ctx.strokeStyle = mixInk(r.heat, Math.pow(1 - u, 1.4) * (0.60 + r.vel * 0.26)); ctx.lineWidth = 1.2 - u * 0.45;
+    ring(cx, geo.nowY, 4 + (1 - Math.pow(1 - u, 2.1)) * r.maxR);
+  }
+
+  // Drop shockwaves propagating up the straight wall and down the funnel!
+  for (const sh of state.shocks) {
+    const u = clamp(sh.age / sh.maxAge, 0, 1), a = Math.pow(1 - u, 1.5) * (sh.big ? 0.85 : 0.26), dy = u * (sh.big ? 135 : 30);
+    ctx.strokeStyle = sh.big ? `rgba(255,90,31,${a.toFixed(3)})` : `rgba(255,255,255,${a.toFixed(3)})`;
+    ctx.lineWidth = sh.big ? 2.0 * (1 - u * 0.5) : 0.9;
+    line(geo.wallL, geo.nowY - dy, geo.wallR, geo.nowY - dy);
+    const q = clamp(dy / geo.frontH, 0, 1), S = 1 + (state.flare - 1) * q;
+    line(geo.cx - geo.wallHalfW * S, geo.nowY + dy, geo.cx + geo.wallHalfW * S, geo.nowY + dy);
+  }
+
+  // Kick-breathing hinge line
+  ctx.strokeStyle = mixInk(lineHeat, effNow.phase === 'silence' ? 0.34 : 0.72 + kp * 0.26); ctx.lineWidth = 1.15 + df * 1.25;
+  ctx.beginPath();
+  if (kp > 0.03) {
+    for (let i = 0; i <= 40; i++) {
+      const u = i / 40, wave = Math.sin(u * Math.PI * 6 + state.playhead * 1.9) * Math.sin(u * Math.PI) * kp * 4.8;
+      i === 0 ? ctx.moveTo(lerp(geo.wallL - 8, geo.wallR + 8, u), geo.nowY + wave) : ctx.lineTo(lerp(geo.wallL - 8, geo.wallR + 8, u), geo.nowY + wave);
+    }
+  } else { ctx.moveTo(geo.wallL - 8, geo.nowY); ctx.lineTo(geo.wallR + 8, geo.nowY); }
+  ctx.stroke();
+
+  const rAim = (cv.hands.R.active && cv.hands.R.zone === 'pan') ? clamp(Math.round((cv.hands.R.nx / 0.64) * 8), 0, 8) : -1;
+  for (let i = 0; i < 9; i++) {
+    const sx = geo.locusX[i], glow = state.locusGlow[i], heat = Math.max(state.locusHeat[i], df * 0.72, rAim === i ? 0.9 : 0);
+    const hov = ptr.hoverLocus === i || rAim === i, isRoot = i === 0 || i === 4, th = (isRoot ? 6.5 : 4.5) + glow * 3.2 + kp * (isRoot ? 2.2 : 0.8);
+    ctx.strokeStyle = mixInk(heat, hov ? 0.98 : 0.46 + glow * 0.52); ctx.lineWidth = glow > 0.14 || hov ? 1.5 : 1;
+    line(sx, geo.nowY - th, sx, geo.nowY + th);
+    if (glow > 0.08 || hov) { ctx.fillStyle = mixInk(heat, clamp(glow + (hov ? 0.48 : 0), 0, 1)); ring(sx, geo.nowY, 2.2 + glow * 2.4, true, false); }
+    ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(heat, hov || glow > 0.18 ? 0.94 : isRoot ? 0.46 : 0.26); ctx.fillText(NOTES[i].name, sx, geo.nowY - th - 7);
+  }
+}
+
+// 6. LEFT WING: LIVE DJ DROP CONDUCTOR PISTON (#30)
+function drawLeftPiston(effNow) {
+  const px = geo.pistonX, yTop = geo.nowY - geo.railUp, yBot = geo.nowY + geo.railDown;
+  const yVac = pistonToY(VAC_THRESH), yStrip = pistonToY(STRIP_THRESH), pY = pistonToY(state.piston);
+  const manualHot = state.pistonMode === 'BUILD' || state.pistonMode === 'VACUUM' || state.pistonMode === 'DROP';
+  const heat = state.pistonMode === 'VACUUM' ? 1.0 : state.pistonMode === 'BUILD' ? clamp(state.piston / VAC_THRESH, 0.2, 1) : state.dropFlash;
+
+  // Spine & zone ticks
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1; line(px, yTop, px, yBot);
+  ctx.strokeStyle = 'rgba(255,90,31,0.48)'; line(px - 10, yVac, px + 10, yVac);
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; line(px - 12, geo.nowY, px + 12, geo.nowY);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; line(px - 8, yStrip, px + 8, yStrip);
+
+  // Active energy fill bar along piston rail
+  if (Math.abs(state.piston) > 0.02) {
+    ctx.strokeStyle = mixInk(state.piston > 0 ? heat : 0, state.piston > 0 ? 0.85 : 0.45);
+    ctx.lineWidth = 2.6; line(px, geo.nowY, px, pY);
+  }
+
+  // Snare subdivision ruler ticks along BUILD region
+  for (const [lvl, lbl] of [[0.22, '1/4'], [0.46, '1/8'], [0.68, '1/16'], [0.84, '1/32']]) {
+    const ty = pistonToY(lvl), lit = state.piston >= lvl && state.pistonMode === 'BUILD';
+    ctx.strokeStyle = lit ? 'rgba(255,90,31,0.88)' : 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1;
+    line(px + 5, ty, px + 11, ty);
+    ctx.font = '8px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = lit ? '#ff5a1f' : 'rgba(255,255,255,0.24)'; ctx.fillText(lbl, px + 14, ty);
+  }
+
+  // Piston puck
+  ctx.fillStyle = manualHot ? mixInk(heat, 0.92) : '#000';
+  ctx.strokeStyle = mixInk(heat, manualHot ? 1.0 : 0.65); ctx.lineWidth = 1.6;
+  ring(px, pY, 7.5 + (state.pistonMode === 'VACUUM' ? 2.5 : 0), true, true);
+  if (state.vacuumLockedByFist) {
+    ctx.strokeStyle = 'rgba(255,90,31,0.78)'; ctx.lineWidth = 1; ring(px, pY, 14, false, true);
+  }
+
+  // Labels
+  ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+  ctx.fillStyle = state.pistonMode === 'VACUUM' ? '#ff5a1f' : 'rgba(255,255,255,0.34)'; ctx.fillText('VACUUM ↑', px, yTop - 12);
+  ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.fillText('STRIP ↓', px, yBot + 12);
+  ctx.fillStyle = manualHot ? '#ff5a1f' : 'rgba(255,255,255,0.44)';
+  ctx.fillText(effNow.manual ? state.pistonMode : 'CURVE AUTO', px, yTop - 24);
+}
+
+// 7. RIGHT WING: 4-BAR EMOTIONAL CURVE SPINE (#29)
+function drawRightCurve(nowMs) {
+  const x0 = geo.curveX0, x1 = geo.curveX1, gx = Math.round(curveXOfE(0.46)) + 0.5;
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.12)'; line(x0 + 0.5, geo.padTop, x0 + 0.5, H - geo.padBot);
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.setLineDash([2, 5]); line(gx, geo.padTop, gx, H - geo.padBot); ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; line(x1 - 0.5, geo.padTop, x1 - 0.5, H - geo.padBot);
+  ctx.strokeStyle = 'rgba(255,255,255,0.34)'; line(x0, geo.nowY, x1, geo.nowY);
+
+  ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.24)';
+  ctx.textAlign = 'left'; ctx.fillText('CURVE · 4 BARS', x0 + 2, geo.padTop - 4);
+  ctx.fillText('SIL', x0 + 2, H - geo.padBot + 12);
+  ctx.textAlign = 'center'; ctx.fillText('GRV', gx, H - geo.padBot + 12);
+  ctx.textAlign = 'right'; ctx.fillText('MAX', x1 - 2, H - geo.padBot + 12);
+
+  const pts = [];
+  const lo = Math.floor(state.playhead) - 44, hi = Math.ceil(state.playhead) + CURVE_STEPS;
+  for (let s = lo; s <= hi; s++) {
+    const y = curveYOfStep(s); if (y < geo.padTop - 4 || y > H - geo.padBot + 4) continue;
+    const info = getInfo(s); pts.push({ s, y: clamp(y, geo.padTop, H - geo.padBot), x: curveXOfE(info.E), info });
+  }
+  if (pts.length > 1) {
+    const grad = ctx.createLinearGradient(x0, 0, x1, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0.015)'); grad.addColorStop(0.55, 'rgba(255,255,255,0.06)'); grad.addColorStop(1, 'rgba(255,90,31,0.16)');
+    ctx.fillStyle = grad; ctx.beginPath(); ctx.moveTo(x0, pts[0].y);
+    for (const p of pts) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(x0, pts[pts.length - 1].y); ctx.closePath(); ctx.fill();
+  }
+  for (const { s, y, x, info } of pts) {
+    const isPast = s < state.playhead, pf = isPast ? clamp(1 - (state.playhead - s) / 40, 0.14, 0.72) : 1.0;
+    if (info.isSilenceStart || info.marker?.type === 'silence') {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.75 * pf).toFixed(3)})`; ctx.lineWidth = 1.1; ring(x0 + 10, y, 3.6);
+      ctx.fillStyle = `rgba(255,255,255,${(0.68 * pf).toFixed(3)})`; ctx.font = '8px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'left'; ctx.fillText('SIL', x0 + 17, y);
+    }
+    if (info.isDrop) {
+      ctx.strokeStyle = `rgba(255,90,31,${(0.92 * pf).toFixed(3)})`; ctx.lineWidth = 1.4; line(x0, y, x1, y);
+      ctx.fillStyle = `rgba(255,90,31,${(0.96 * pf).toFixed(3)})`; ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+      ctx.fillText(info.halfTime ? '▼ HALF' : '▼ DROP', x1 - 3, y - 6);
+    }
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], isPast = b.s < state.playhead;
+    const heat = b.info.phase === 'build' ? b.info.buildHeat : b.info.phase === 'drop' ? 0.85 : 0;
+    ctx.strokeStyle = mixInk(heat, isPast ? clamp(1 - (state.playhead - b.s) / 40, 0.16, 0.72) : (b.info.phase === 'silence' ? 0.34 : 0.90));
+    ctx.lineWidth = isPast ? 1.1 : (b.info.phase === 'build' || b.info.phase === 'drop' ? 2.0 : 1.4);
+    line(a.x, a.y, b.x, b.y);
+  }
+  if (state.brush.length > 1) {
+    ctx.lineCap = 'round';
+    for (let i = 1; i < state.brush.length; i++) {
+      const a = state.brush[i - 1], b = state.brush[i]; if (b.t - a.t > 140) continue;
+      const life = clamp(1 - (nowMs - b.t) / 500, 0, 1);
+      ctx.strokeStyle = `rgba(255,90,31,${(life * 0.94).toFixed(3)})`; ctx.lineWidth = 1.8 + life * 2.2; line(a.x, a.y, b.x, b.y);
+    }
+  }
+  // NOW curve energy bead
+  const curE = lerp(getCurveRaw(Math.floor(state.playhead)), getCurveRaw(Math.ceil(state.playhead)), state.playhead - Math.floor(state.playhead));
+  ctx.fillStyle = mixInk(state.dropFlash, 0.96); ring(curveXOfE(curE), geo.nowY, 3.4 + state.kickPulse * 1.8, true, false);
+}
+
+// 8. 21-POINT MEDIAPIPE HAND WIREFRAMES & TETHERS (#31)
+function drawSkeleton(slot, ax, ay, scalePx, hot) {
+  const f = slot.fade, pts = slot.lms.map(p => [ax + (p.x - slot.rawCx) * scalePx, ay + (p.y - slot.rawCy) * scalePx]);
+  ctx.fillStyle = mixInk(hot, 0.045 * f); ctx.beginPath();
+  PALM_IDX.forEach((idx, i) => i === 0 ? ctx.moveTo(pts[idx][0], pts[idx][1]) : ctx.lineTo(pts[idx][0], pts[idx][1]));
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = mixInk(hot, (0.28 + hot * 0.48) * f); ctx.lineWidth = 1.1; ctx.beginPath();
+  for (const [a, b] of HAND_BONES) { ctx.moveTo(pts[a][0], pts[a][1]); ctx.lineTo(pts[b][0], pts[b][1]); }
+  ctx.stroke();
+  for (let i = 0; i < 21; i++) {
+    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+    ctx.fillStyle = mixInk(i === 4 || i === 8 ? Math.max(hot, slot.pinchProx) : hot, (isTip ? 0.80 : 0.34) * f);
+    ring(pts[i][0], pts[i][1], isTip ? 2.0 : 1.1, true, false);
+  }
+  return pts;
+}
+
+function drawCvOverlays() {
+  const L = cv.hands.L, R = cv.hands.R, skScale = clamp(Math.min(W, H) * 0.36, 130, 225);
+  if (L.lms && L.fade > 0.01) {
+    const f = L.fade, pY = pistonToY(state.piston), hx = geo.pistonX + 52, hy = clamp(pY, geo.padTop + 42, H - geo.padBot - 42);
+    const hot = Math.max(L.fistAmt, L.slamFlash, state.pistonMode === 'BUILD' || state.pistonMode === 'VACUUM' ? 0.82 : 0);
+    ctx.strokeStyle = mixInk(hot, (0.28 + hot * 0.48) * f); ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+    line(geo.pistonX, pY, hx, hy); ctx.setLineDash([]);
+    drawSkeleton(L, hx, hy, skScale, hot);
+    ctx.font = '8px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(hot, 0.84 * f);
+    ctx.fillText(L.fist ? 'L · FIST VACUUM' : 'L · DJ PISTON', hx, hy + 38);
+  }
+  if (R.lms && R.fade > 0.01) {
+    const f = R.fade, hot = R.pinched ? 1.0 : Math.max(R.pinchProx * 0.85, R.pinchFlash, R.slamFlash);
+    if (R.zone === 'curve') {
+      const curveU = clamp((R.nx - 0.64) / 0.36, 0, 1);
+      const px = lerp(geo.curveX0, geo.curveX1, curveU), py = lerp(H - geo.padBot - 4, geo.nowY + 8, R.ny);
+      ctx.strokeStyle = mixInk(hot, 0.94 * f); ctx.lineWidth = R.pinched ? 1.8 : 1.1;
+      ring(px, py, R.pinched ? 7 : 10 - R.pinchProx * 3, false, true);
+      if (R.pinched) { ctx.fillStyle = `rgba(255,90,31,${(0.95 * f).toFixed(3)})`; ring(px, py, 2.8, true, false); }
+      const skX = clamp(px - 44, geo.wallR + 18, W - 40), skY = clamp(py - 18, geo.padTop + 40, H - geo.padBot - 36);
+      const pts = drawSkeleton(R, skX, skY, skScale * 0.85, hot);
+      ctx.strokeStyle = mixInk(hot, (0.32 + hot * 0.52) * f); ctx.lineWidth = 1; line(pts[8][0], pts[8][1], px, py);
+      ctx.font = '8px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = mixInk(hot, 0.90 * f); ctx.fillText(R.pinched ? 'R · AIR-PEN' : 'R · CURVE AIM', px - 10, py - 9);
+    } else {
+      const aim = clamp(Math.round((R.nx / 0.64) * 8), 0, 8), tx = geo.locusX[aim];
+      const hx = lerp(geo.wallL + 16, geo.wallR - 16, clamp(R.nx / 0.64, 0, 1)), hy = clamp(lerp(H - geo.padBot - 44, geo.padTop + 44, R.ny), geo.padTop + 42, H - geo.padBot - 42);
+      ctx.strokeStyle = mixInk(hot, (0.24 + hot * 0.48) * f); ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+      line(hx, hy, tx, geo.nowY); ctx.setLineDash([]);
+      ctx.strokeStyle = mixInk(hot, 0.88 * f); ctx.lineWidth = 1.3; ring(tx, geo.nowY, 8 + R.pinchFlash * 7, false, true);
+      drawSkeleton(R, hx, hy, skScale * 0.92, hot);
+      ctx.font = '8px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = mixInk(hot, 0.84 * f); ctx.fillText(`R · ${NOTES[aim].name}`, hx, hy + 38);
+    }
+  }
+}
+
+seedOpeningStudio();
+requestAnimationFrame(drawFrame);
+</script>
+</body>
+</html>

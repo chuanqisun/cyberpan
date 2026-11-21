@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>39 — MediaPipe Hand-Conducted Emotional Curve Sculptor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; user-select: none; touch-action: none;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #cv-video { display: none; }
+  #bar {
+    position: fixed; inset: 0 0 auto 0; height: 34px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 0 14px; background: rgba(0,0,0,0.86); border-bottom: 1px solid rgba(255,255,255,0.08);
+    pointer-events: none; z-index: 10;
+  }
+  #bar .grp { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  button, .pill {
+    pointer-events: auto; cursor: pointer; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    font: inherit; font-size: 10px; letter-spacing: 0.08em; border: 1px solid rgba(255,255,255,0.20);
+    border-radius: 2px; height: 22px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px;
+    transition: border-color 120ms, color 120ms, background 120ms;
+  }
+  .pill { border-radius: 99px; padding: 0 9px; }
+  button:hover, .pill:hover { border-color: rgba(255,255,255,0.74); color: #fff; }
+  button.on { border-color: #fff; color: #fff; }
+  .pill.on { border-color: #fff; background: #fff; color: #000; }
+  .pill.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  .pill.sig.on { background: #ff5a1f; color: #000; }
+  .pill.stat { pointer-events: none; cursor: default; color: rgba(255,255,255,0.38); border-color: rgba(255,255,255,0.12); }
+  #playBtn .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  #playBtn.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  #meta, .hint { color: rgba(255,255,255,0.36); letter-spacing: 0.05em; font-size: 10px; }
+  #phaseLbl { color: rgba(255,255,255,0.82); letter-spacing: 0.09em; font-size: 10px; min-width: 58px; }
+  #phaseLbl.hot { color: #ff5a1f; }
+  .hint b { color: rgba(255,255,255,0.68); font-weight: 500; }
+  @media (max-width: 1120px) { .hint { display: none; } }
+  @media (max-width: 680px) { #meta { display: none; } }
+</style>
+</head>
+<body>
+<header id="bar">
+  <div class="grp">
+    <button id="playBtn" type="button" aria-label="Play or Pause"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+    <span id="meta">39 · D KURD · 122 BPM</span>
+    <span id="phaseLbl">GROOVE</span>
+  </div>
+  <div class="grp" id="stamps">
+    <button type="button" data-stamp="groove">GROOVE</button>
+    <button type="button" data-stamp="buildDrop">BUILD → DROP</button>
+    <button type="button" data-stamp="fakeout">FAKEOUT</button>
+    <button type="button" data-stamp="calm">CALM</button>
+  </div>
+  <div class="grp">
+    <span class="hint"><b>R PINCH+DRAG</b> air-draw curve · <b>TAP</b> marker · <b>L PINCH</b> handpan · <b>L FIST</b> wash</span>
+    <span class="pill stat" id="cvStatus">CAM OFF</span>
+    <button class="pill" id="camBtn" type="button">ENABLE CAM</button>
+    <button class="pill" id="simBtn" type="button">SIM HANDS</button>
+  </div>
+</header>
+<video id="cv-video" playsinline muted></video>
+<canvas id="stage"></canvas>
+
+<script type="module">
+'use strict';
+// ============================================================================
+// 39 — MEDIAPIPE HAND-CONDUCTED EMOTIONAL CURVE SCULPTOR (#29 × #31)
+// RIGHT HAND (Air-Pen Curve Sculptor):
+//   - Open hand aims a live reticle over the 4-bar future emotional curve
+//   - Pinch + Drag paints the #ff5a1f air-brush directly onto the curve!
+//   - Quick Pinch Tap (<320ms, <18px) drops/cycles SILENCE / DROP markers!
+// LEFT HAND (Live Stage Handpan & Instant DJ Wash):
+//   - Horizontal X aims 9 D Kurd loci on NOW · Pinch strikes live handpan
+//   - Vertical Y sets strike velocity & harmonic brightness
+//   - Closed Fist holds an instant live HPF Wash preview (non-destructive)
+// Full mouse/touch/keyboard fallback preserved from #29.
+// ============================================================================
+const NOTES = ['D3', 'A3', 'Bb3', 'C4', 'D4', 'E4', 'F4', 'G4', 'A4'];
+const FREQS = [146.83, 220.00, 233.08, 261.63, 293.66, 329.63, 349.23, 392.00, 440.00];
+const DURS = [1, 2, 3, 4, 6, 8], BPM = 122, STEP_S = 60 / BPM / 4, FUTURE_STEPS = 64;
+const LOOKAHEAD_S = 0.11, TOP_PAD = 46, BOT_PAD = 26, FLASH_S = 0.48, SAFE_MIN = 0.0002;
+const CHORDS = [[0, 1, 4, 6, 8], [2, 4, 6, 8, 1], [3, 5, 7, 1, 8], [0, 1, 4, 6, 5]];
+const SUB_ROOTS = [[36.71, 73.42], [58.27, 116.54], [65.41, 130.81], [36.71, 73.42]];
+const CELLS = {
+  calm:   [[8], [6, -2], [4, 4], [4, -4], [6, 2]],
+  groove: [[3, 3, 2], [4, 2, 2], [2, 2, 4], [3, 2, 3], [2, 4, 2]],
+  build:  [[2, 2, 2, 2], [2, 1, 1, 2, 2], [1, 1, 2, 1, 1, 2], [1, 1, 1, 1, 2, 2]],
+  drop:   [[3, 3, 2], [2, 2, 2, 2], [3, 2, 3], [2, 1, 1, 2, 2]]
+};
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((s % 16) + 16) % 16;
+const snapDur = (s) => DURS.reduce((b, d) => Math.abs(d - s) < Math.abs(b - s) ? d : b, DURS[0]);
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${a.toFixed(3)})`;
+};
+
+// ==================== 1. HYBRID WEB AUDIO ENGINE (D KURD × ORGANIC HOUSE) ====================
+let actx = null, masterBus = null, drumBus = null, uiBus = null, handpanBus = null, handpanWashHPF = null, handpanDuckGain = null;
+let reverbSend = null, subOsc1 = null, subOsc2 = null, subLPF = null, subDuckGain = null, subGateGain = null;
+let riserBP = null, riserGain = null, shimmerGain = null, noiseLoopBuf = null, transientNoiseBuf = null, lastClickMs = 0, schedHpHz = 20;
+const mkFilter = (c, type, hz, q = 1) => { const f = c.createBiquadFilter(); f.type = type; f.frequency.value = hz; f.Q.value = q; return f; };
+const mkGain = (c, val = 1) => { const g = c.createGain(); g.gain.value = val; return g; };
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -9; comp.knee.value = 12; comp.ratio.value = 4.5; comp.attack.value = 0.004; comp.release.value = 0.14; comp.connect(actx.destination);
+  masterBus = mkGain(actx, 0.84); masterBus.connect(comp);
+  drumBus = mkGain(actx, 0.92); drumBus.connect(masterBus);
+  uiBus = mkGain(actx, 0.22); uiBus.connect(comp);
+
+  const irLen = Math.floor(actx.sampleRate * 2.3), ir = actx.createBuffer(2, irLen, actx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < irLen; i++) { lp = lp * 0.70 + (Math.random() * 2 - 1) * 0.30; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * (i < 1100 ? i / 1100 : 1) * 0.62; }
+  }
+  const conv = actx.createConvolver(); conv.buffer = ir;
+  reverbSend = mkGain(actx, 0.30); reverbSend.connect(conv); conv.connect(masterBus);
+
+  handpanBus = mkGain(actx, 1.0); handpanWashHPF = mkFilter(actx, 'highpass', 20, 0.72); handpanDuckGain = mkGain(actx, 1.0);
+  handpanBus.connect(handpanWashHPF); handpanWashHPF.connect(handpanDuckGain); handpanDuckGain.connect(masterBus);
+
+  subOsc1 = actx.createOscillator(); subOsc1.type = 'sine'; subOsc1.frequency.value = 36.71;
+  subOsc2 = actx.createOscillator(); subOsc2.type = 'triangle'; subOsc2.frequency.value = 73.42;
+  subLPF = mkFilter(actx, 'lowpass', 155, 0.9); subDuckGain = mkGain(actx, 1.0); subGateGain = mkGain(actx, SAFE_MIN);
+  subOsc1.connect(mkGain(actx, 0.68)).connect(subLPF); subOsc2.connect(mkGain(actx, 0.32)).connect(subLPF);
+  subLPF.connect(subDuckGain); subDuckGain.connect(subGateGain); subGateGain.connect(masterBus); subOsc1.start(); subOsc2.start();
+
+  noiseLoopBuf = actx.createBuffer(1, Math.floor(actx.sampleRate * 3.0), actx.sampleRate);
+  const ld = noiseLoopBuf.getChannelData(0); for (let i = 0; i < ld.length; i++) ld[i] = Math.random() * 2 - 1;
+  transientNoiseBuf = actx.createBuffer(1, Math.floor(actx.sampleRate * 0.045), actx.sampleRate);
+  const td = transientNoiseBuf.getChannelData(0); for (let i = 0; i < td.length; i++) td[i] = (Math.random() * 2 - 1) * Math.exp(-i / (td.length * 0.22));
+
+  const riserSrc = actx.createBufferSource(); riserSrc.buffer = noiseLoopBuf; riserSrc.loop = true;
+  const riserHP = mkFilter(actx, 'highpass', 190, 0.7); riserBP = mkFilter(actx, 'bandpass', 260, 1.2); riserGain = mkGain(actx, SAFE_MIN);
+  riserSrc.connect(riserHP); riserHP.connect(riserBP); riserBP.connect(riserGain); riserGain.connect(masterBus); riserGain.connect(reverbSend); riserSrc.start();
+  shimmerGain = mkGain(actx, SAFE_MIN);
+  for (const [hz, w] of [[440.0, 0.55], [442.2, 0.35], [587.33, 0.25]]) { const o = actx.createOscillator(); o.frequency.value = hz; o.connect(mkGain(actx, w)).connect(shimmerGain); o.start(); }
+  shimmerGain.connect(reverbSend); shimmerGain.connect(masterBus);
+  return actx;
+}
+
+function silenceContinuousBuses() {
+  if (!actx) return;
+  const now = actx.currentTime;
+  for (const g of [riserGain, shimmerGain, subGateGain]) {
+    if (g) { g.gain.cancelScheduledValues(now); g.gain.setTargetAtTime(SAFE_MIN, now, 0.025); }
+  }
+}
+
+function playHandpan(locus, vel = 0.76, durSteps = 4, when = null, whisper = false, brightBias = 0.5) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.001, when ?? ctx.currentTime);
+  const f0 = FREQS[locus], isDing = locus === 0, v = clamp(vel, 0.14, 1.0);
+  const tau1 = (isDing ? 1.52 : 1.08) * Math.pow(220 / f0, 0.22) * (0.34 + Math.pow(durSteps / 8, 0.76) * 1.42) * (whisper ? 1.45 : 1);
+  const vGain = mkGain(ctx, 1), panner = ctx.createStereoPanner();
+  vGain.gain.setValueAtTime(v * (isDing ? 0.54 : 0.42) * (whisper ? 0.65 : 1), t0);
+  panner.pan.setValueAtTime((locus / 8 - 0.5) * 0.72, t0);
+  vGain.connect(panner); if (!whisper) panner.connect(handpanBus); panner.connect(reverbSend);
+
+  const br = lerp(0.75, 1.32, clamp(brightBias, 0, 1));
+  for (const [hz, amp, rise, tau] of [
+    [f0, 0.72, 0.005, tau1], [f0 + 0.72, 0.28, 0.008, tau1 * 0.94],
+    [f0 * 2.001, 0.26 * (0.62 + 0.45 * v) * br, 0.024, tau1 * 0.48], [f0 * 2.998, 0.095 * v * br, 0.038, tau1 * 0.25]
+  ]) {
+    const osc = ctx.createOscillator(), g = mkGain(ctx, SAFE_MIN);
+    osc.frequency.setValueAtTime(hz * (1 + 0.0022 * v), t0); osc.frequency.exponentialRampToValueAtTime(hz, t0 + 0.042);
+    g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, amp), t0 + rise);
+    g.gain.setTargetAtTime(SAFE_MIN, t0 + rise, tau * 0.62);
+    osc.connect(g); g.connect(vGain); osc.start(t0); osc.stop(t0 + Math.min(4.8, rise + tau * 3.6));
+  }
+  const src = ctx.createBufferSource(), bp = mkFilter(ctx, 'bandpass', 520 + locus * 115, 1.7), ng = mkGain(ctx, SAFE_MIN);
+  src.buffer = transientNoiseBuf; ng.gain.setValueAtTime(Math.max(SAFE_MIN, v * (whisper ? 0.08 : 0.20)), t0);
+  ng.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.024);
+  src.connect(bp); bp.connect(ng); ng.connect(panner); src.start(t0);
+}
+
+function triggerSidechain(t0, depth = 0.55) {
+  const floor = clamp(1 - depth, 0.14, 0.92), rel = STEP_S * 2.5;
+  for (const g of [handpanDuckGain, subDuckGain]) {
+    if (!g) continue;
+    g.gain.setValueAtTime(1.0, t0); g.gain.linearRampToValueAtTime(floor, t0 + 0.011); g.gain.exponentialRampToValueAtTime(1.0, t0 + rel);
+  }
+}
+
+function playSubKick(t0, vel = 0.92, heavy = false) {
+  const ctx = ensureAudio(), v = clamp(vel, 0.2, 1.0), osc = ctx.createOscillator(), g = mkGain(ctx, SAFE_MIN);
+  osc.frequency.setValueAtTime(heavy ? 136 : 128, t0); osc.frequency.exponentialRampToValueAtTime(44, t0 + 0.075);
+  osc.frequency.exponentialRampToValueAtTime(36.71, t0 + (heavy ? 0.36 : 0.24));
+  g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(v * (heavy ? 0.88 : 0.72), t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + (heavy ? 0.44 : 0.30));
+  osc.connect(g); g.connect(drumBus); osc.start(t0); osc.stop(t0 + (heavy ? 0.48 : 0.34));
+
+  const punch = ctx.createOscillator(), pg = mkGain(ctx, SAFE_MIN);
+  punch.type = 'triangle'; punch.frequency.setValueAtTime(420, t0); punch.frequency.exponentialRampToValueAtTime(78, t0 + 0.022);
+  pg.gain.setValueAtTime(v * 0.26, t0); pg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.028);
+  punch.connect(pg); pg.connect(drumBus); punch.start(t0); punch.stop(t0 + 0.032);
+
+  const click = ctx.createBufferSource(), bp = mkFilter(ctx, 'bandpass', 2200, 1.4), cg = mkGain(ctx, SAFE_MIN);
+  click.buffer = transientNoiseBuf; cg.gain.setValueAtTime(v * 0.16, t0); cg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.014);
+  click.connect(bp); bp.connect(cg); cg.connect(drumBus); click.start(t0);
+}
+
+function playHat(t0, vel = 0.55, isOffbeat = true) {
+  const ctx = ensureAudio(), src = ctx.createBufferSource(); src.buffer = noiseLoopBuf;
+  const hp = mkFilter(ctx, 'highpass', isOffbeat ? 6800 : 7800, 0.7), bp = mkFilter(ctx, 'bandpass', isOffbeat ? 9200 : 10800, isOffbeat ? 1.8 : 2.6);
+  const g = mkGain(ctx, SAFE_MIN), pan = ctx.createStereoPanner(), dur = isOffbeat ? 0.072 : 0.036;
+  g.gain.setValueAtTime(SAFE_MIN, t0); g.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, vel * (isOffbeat ? 0.24 : 0.11)), t0 + (isOffbeat ? 0.002 : 0.006));
+  g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + dur);
+  pan.pan.setValueAtTime(isOffbeat ? 0.18 : -0.22, t0);
+  src.connect(hp); hp.connect(bp); bp.connect(g); g.connect(pan); pan.connect(drumBus);
+  src.start(t0, Math.random() * 2.0, dur + 0.02);
+}
+
+function playBuildSnare(t0, heat = 0.5, vel = 0.65) {
+  const ctx = ensureAudio(), h = clamp(heat, 0, 1), body = ctx.createOscillator(), bg = mkGain(ctx, SAFE_MIN);
+  body.type = 'triangle'; body.frequency.setValueAtTime(lerp(220, 560, h), t0); body.frequency.exponentialRampToValueAtTime(lerp(135, 310, h), t0 + 0.048);
+  bg.gain.setValueAtTime(Math.max(SAFE_MIN, vel * 0.28), t0); bg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.068);
+  body.connect(bg); bg.connect(drumBus); body.start(t0); body.stop(t0 + 0.074);
+
+  const src = ctx.createBufferSource(); src.buffer = noiseLoopBuf;
+  const bp = mkFilter(ctx, 'bandpass', lerp(340, 1850, h), lerp(1.4, 3.6, h)), ng = mkGain(ctx, SAFE_MIN), tail = lerp(0.11, 0.055, h);
+  ng.gain.setValueAtTime(SAFE_MIN, t0); ng.gain.linearRampToValueAtTime(Math.max(SAFE_MIN, vel * 0.34), t0 + 0.002); ng.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + tail);
+  src.connect(bp); bp.connect(ng); ng.connect(drumBus); ng.connect(reverbSend);
+  src.start(t0, Math.random() * 2.0, tail + 0.02);
+}
+
+function playDropImpact(t0, halfTime = false) {
+  const ctx = ensureAudio();
+  handpanWashHPF.frequency.cancelScheduledValues(t0);
+  handpanWashHPF.frequency.setValueAtTime(Math.max(20, schedHpHz), t0);
+  handpanWashHPF.frequency.exponentialRampToValueAtTime(20, t0 + 0.016);
+  handpanWashHPF.Q.setTargetAtTime(0.72, t0, 0.012); schedHpHz = 20;
+
+  const boom = ctx.createOscillator(), bg = mkGain(ctx, SAFE_MIN);
+  boom.frequency.setValueAtTime(112, t0); boom.frequency.exponentialRampToValueAtTime(36.71, t0 + 0.22);
+  bg.gain.setValueAtTime(SAFE_MIN, t0); bg.gain.linearRampToValueAtTime(halfTime ? 0.68 : 0.56, t0 + 0.008);
+  bg.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + (halfTime ? 1.55 : 1.15));
+  boom.connect(bg); bg.connect(masterBus); boom.start(t0); boom.stop(t0 + 1.6);
+
+  const dlSrc = ctx.createBufferSource(); dlSrc.buffer = noiseLoopBuf; dlSrc.loop = true;
+  const dlBP = mkFilter(ctx, 'bandpass', 3800, 1.45), dlG = mkGain(ctx, SAFE_MIN);
+  dlBP.frequency.setValueAtTime(3800, t0); dlBP.frequency.exponentialRampToValueAtTime(160, t0 + 2.1);
+  dlG.gain.setValueAtTime(SAFE_MIN, t0); dlG.gain.linearRampToValueAtTime(0.30, t0 + 0.018); dlG.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 2.2);
+  dlSrc.connect(dlBP); dlBP.connect(dlG); dlG.connect(masterBus); dlG.connect(reverbSend);
+  dlSrc.start(t0); dlSrc.stop(t0 + 2.25);
+
+  playHandpan(0, 0.96, 8, t0, false); playHandpan(1, 0.56, 6, t0 + 0.012, false); playHandpan(4, 0.66, 6, t0 + 0.022, false);
+}
+
+function playClick(pan = 0.25, hz = 1520, gain = 0.045) {
+  const nowMs = performance.now(); if (nowMs - lastClickMs < 26) return; lastClickMs = nowMs;
+  const ctx = ensureAudio(), t0 = ctx.currentTime + 0.001, osc = ctx.createOscillator(), g = mkGain(ctx, SAFE_MIN), p = ctx.createStereoPanner();
+  osc.type = 'triangle'; osc.frequency.setValueAtTime(hz, t0); osc.frequency.exponentialRampToValueAtTime(Math.max(120, hz * 0.45), t0 + 0.013);
+  g.gain.setValueAtTime(Math.max(SAFE_MIN, gain), t0); g.gain.exponentialRampToValueAtTime(SAFE_MIN, t0 + 0.016);
+  p.pan.setValueAtTime(clamp(pan, -0.8, 0.8), t0); osc.connect(g); g.connect(p); p.connect(uiBus); osc.start(t0); osc.stop(t0 + 0.02);
+}
+
+// ==================== 2. EMOTIONAL CURVE MODEL & PHASE CLASSIFIER ====================
+const state = {
+  playing: false, playhead: 16, anchorTime: 0, anchorStep: 16, nextEdmStep: 16, nextId: 1,
+  activeStamp: 'buildDrop', curve: new Map(), markers: new Map(), analysis: new Map(),
+  past: [], future: [], ripples: [], shocks: [], brush: [],
+  locusGlow: new Float32Array(9), locusHeat: new Float32Array(9),
+  kickPulse: 0, dropFlash: 0, livePhase: 'groove',
+  liveWash: 0, bannerText: '', bannerAlpha: 0
+};
+const setBanner = (txt) => { state.bannerText = txt; state.bannerAlpha = 1.0; };
+const getCurveRaw = (step) => state.curve.has(Math.round(step)) ? state.curve.get(Math.round(step)) : 0.46;
+
+function ensureCurveHorizon() {
+  const lo = Math.floor(state.playhead) - 48, hi = Math.ceil(state.playhead) + FUTURE_STEPS + 20;
+  let lastVal = 0.46;
+  for (let s = lo; s <= hi; s++) {
+    if (state.curve.has(s)) lastVal = state.curve.get(s);
+    else { lastVal = lerp(lastVal, lastVal < 0.22 ? 0.14 : 0.46, 0.12); state.curve.set(s, lastVal); }
+  }
+  const cut = Math.floor(state.playhead) - 72;
+  for (const k of state.curve.keys()) if (k < cut) state.curve.delete(k);
+  for (const k of state.markers.keys()) if (k < cut) state.markers.delete(k);
+}
+
+function analyzeTimeline() {
+  ensureCurveHorizon();
+  const lo = Math.floor(state.playhead) - 44, hi = Math.ceil(state.playhead) + FUTURE_STEPS + 16;
+  state.analysis.clear();
+  let dropRemain = 0, dropHalfTime = false, silenceRemain = 0, recentPeak = 0, lastDropStep = -999;
+
+  for (let s = lo; s <= hi; s++) {
+    const E = getCurveRaw(s), ePrev = getCurveRaw(s - 1), ePrev2 = getCurveRaw(s - 2);
+    const slope = (E - getCurveRaw(s - 4)) / 4, mk = state.markers.get(s) || null;
+    let distToClimax = 999, hasUpcoming = false;
+    for (let k = 1; k <= 32; k++) {
+      const fk = state.markers.get(s + k);
+      if ((fk && (fk.type === 'silence' || fk.type === 'drop')) || (getCurveRaw(s + k) < 0.10 && E > 0.56)) { distToClimax = k; hasUpcoming = true; break; }
+    }
+    recentPeak = Math.max(E, recentPeak * 0.94);
+
+    const fromLow = (ePrev < 0.16 || ePrev2 < 0.16 || silenceRemain > 0) && E >= 0.42;
+    const fromPeakCliff = ePrev >= 0.84 && E <= 0.72 && E >= 0.44 && (ePrev - E >= 0.18) && getCurveRaw(s + 1) >= 0.38;
+    const isDrop = (mk?.type === 'drop') || (((fromLow && recentPeak > 0.50) || fromPeakCliff) && s - lastDropStep >= 6);
+    if (mk?.type === 'silence') silenceRemain = 8;
+    if (isDrop) { silenceRemain = 0; dropRemain = 32; dropHalfTime = Boolean(mk?.halfTime); lastDropStep = s; }
+
+    let phase = 'groove', buildHeat = 0, isSilenceStart = false;
+    if (!isDrop && (mk?.type === 'silence' || (E < 0.10 && (recentPeak > 0.48 || hasUpcoming)) || (silenceRemain > 0 && E < 0.24))) {
+      phase = 'silence'; isSilenceStart = (mk?.type === 'silence') || (state.analysis.get(s - 1)?.phase !== 'silence');
+      dropRemain = 0; if (silenceRemain > 0) silenceRemain--;
+    } else if (isDrop || (dropRemain > 0 && E >= 0.34)) {
+      phase = 'drop'; if (!isDrop) dropRemain--;
+      if (!isDrop && dropRemain < 16 && slope > 0.018 && E > 0.62) { dropRemain = 0; phase = 'build'; }
+    } else if (E < 0.22) { phase = 'calm'; dropRemain = 0; }
+    else if ((slope > 0.015 && E > 0.48) || (E > 0.64 && (hasUpcoming || slope >= -0.004))) phase = 'build';
+
+    if (phase === 'build') {
+      const prox = distToClimax <= 16 ? clamp((16 - distToClimax) / 16, 0, 1) * 0.38 : 0;
+      buildHeat = clamp(clamp((E - 0.40) / 0.56, 0, 1) * 0.84 + prox + clamp(slope * 4.2, 0, 0.22), 0.06, 1.0);
+    }
+    const snareDiv = phase === 'build' ? (buildHeat >= 0.82 ? 0.5 : buildHeat >= 0.62 ? 1 : buildHeat >= 0.38 ? 2 : 4) : 0;
+    state.analysis.set(s, {
+      step: s, E, slope, phase, buildHeat, snareDiv, isDrop, isSilenceStart,
+      isBuildStart: phase === 'build' && state.analysis.get(s - 1)?.phase !== 'build',
+      halfTime: phase === 'drop' && dropHalfTime && (s - lastDropStep < 16), marker: mk
+    });
+  }
+}
+
+function getInfo(step) {
+  const s = Math.round(step); if (!state.analysis.has(s)) analyzeTimeline();
+  return state.analysis.get(s) || { step: s, E: 0.46, slope: 0, phase: 'groove', buildHeat: 0, snareDiv: 0, isDrop: false, isSilenceStart: false, isBuildStart: false, halfTime: false, marker: null };
+}
+
+function chooseHandpanLocus(step, phase, buildHeat, prevLocus, isDownbeat) {
+  const phraseBar = ((Math.floor(step / 16) % 4) + 4) % 4, pool = CHORDS[phraseBar];
+  if (phase === 'drop' && isDownbeat) return 0;
+  if (phase === 'groove' && isDownbeat && (phraseBar === 0 || phraseBar === 3)) return 0;
+  const target = phase === 'build' ? lerp(3.4, 7.6, buildHeat) : phase === 'drop' ? lerp(2.2, 6.2, (step % 16) / 16) : phase === 'calm' ? 2.8 : 3.6;
+  let bestL = 4, bestSc = -1e9;
+  for (let l = 0; l < 9; l++) {
+    let sc = (pool.includes(l) ? 2.1 : 0) - Math.abs(l - target) * 0.68;
+    if (phase === 'build' && l === 0) sc -= 3.5;
+    if (phase === 'build' && (l === 2 || l === 3 || l === 5 || l === 8)) sc += 1.2 * buildHeat;
+    if (prevLocus >= 0) { const d = Math.abs(l - prevLocus); sc += d === 0 ? -1.4 : d <= 2 ? 1.25 : d <= 4 ? 0.35 : -0.6; }
+    sc += (hash01(step * 19, l * 31, 707) - 0.5) * 1.65;
+    if (sc > bestSc) { bestSc = sc; bestL = l; }
+  }
+  return bestL;
+}
+
+function recomputeFuture(keepLeadSteps = 1.5) {
+  analyzeTimeline();
+  const cut = Math.ceil(state.playhead + keepLeadSteps), horizon = Math.ceil(state.playhead) + FUTURE_STEPS;
+  state.future = state.future.filter(n => n.step < cut);
+  const prevSorted = [...state.past, ...state.future].sort((a, b) => a.step - b.step);
+  let prevLocus = prevSorted.length ? prevSorted[prevSorted.length - 1].locus : 0, s = cut;
+
+  while (s < horizon) {
+    const info = getInfo(s);
+    if (info.isDrop) {
+      state.future.push({ id: state.nextId++, step: s, locus: 0, dur: 6, vel: 0.96, phase: 'drop', dropNote: true, whisper: false, flash: 0.9, scheduled: false });
+      prevLocus = 0; s += 2; continue;
+    }
+    if (info.phase === 'silence') {
+      if (info.isSilenceStart || (mod16(s) === 8 && getInfo(s - 4).phase === 'silence')) {
+        const wLocus = hash01(s, 11, 99) < 0.55 ? 2 : 8;
+        state.future.push({ id: state.nextId++, step: s, locus: wLocus, dur: 8, vel: 0.54, phase: 'silence', dropNote: false, whisper: true, flash: 0, scheduled: false });
+        prevLocus = wLocus;
+      }
+      s += 1; continue;
+    }
+    const bank = CELLS[info.phase] || CELLS.groove;
+    const cell = bank[Math.floor(hash01(Math.floor(s / 8), info.phase.length, 41) * bank.length)];
+    let advanced = 0;
+    for (const raw of cell) {
+      if (s >= horizon) break;
+      const cur = getInfo(s); if (cur.isDrop || cur.phase === 'silence') break;
+      if (raw < 0) { s += -raw; advanced += -raw; continue; }
+      const dur = cur.phase === 'build' && cur.buildHeat > 0.72 ? 1 : cur.phase === 'build' && cur.buildHeat > 0.42 ? Math.min(2, raw) : snapDur(raw);
+      const bs = mod16(s), isDown = bs === 0, locus = chooseHandpanLocus(s, cur.phase, cur.buildHeat, prevLocus, isDown);
+      const vel = clamp((cur.phase === 'calm' ? 0.46 : cur.phase === 'drop' ? 0.74 : 0.60) + (isDown ? 0.14 : bs % 4 === 0 ? 0.08 : 0) + cur.buildHeat * 0.16, 0.34, 0.95);
+      state.future.push({ id: state.nextId++, step: s, locus, dur, vel, phase: cur.phase, dropNote: false, whisper: false, flash: 0, scheduled: false });
+      prevLocus = locus; s += dur; advanced += dur;
+    }
+    if (advanced === 0) s += 1;
+  }
+  state.future.sort((a, b) => a.step - b.step);
+}
+
+function applyStamp(kind, startOffset = null) {
+  const base = startOffset != null ? startOffset : Math.ceil(state.playhead / 4) * 4 + 4;
+  state.activeStamp = kind;
+  for (let k = 0; k < 72; k++) state.markers.delete(base + k);
+
+  if (kind === 'groove') {
+    for (let k = 0; k < 64; k++) state.curve.set(base + k, 0.46 + Math.sin(k * 0.24) * 0.025);
+  } else if (kind === 'calm') {
+    const e0 = getCurveRaw(base - 1);
+    for (let k = 0; k < 64; k++) state.curve.set(base + k, lerp(e0, 0.13 + Math.sin(k * 0.22) * 0.02, clamp(k / 16, 0, 1)));
+  } else if (kind === 'buildDrop') {
+    for (let k = 0; k < 32; k++) state.curve.set(base + k, 0.44 + Math.pow(k / 31, 1.55) * 0.54);
+    state.markers.set(base + 32, { type: 'silence' });
+    for (let k = 32; k < 40; k++) state.curve.set(base + k, 0.02);
+    state.markers.set(base + 40, { type: 'drop', halfTime: false });
+    for (let k = 40; k < 64; k++) state.curve.set(base + k, 0.86 - ((k - 40) / 24) * 0.12 + Math.sin((k - 40) * 0.78) * 0.03);
+  } else if (kind === 'fakeout') {
+    for (let k = 0; k < 24; k++) state.curve.set(base + k, 0.46 + Math.pow(k / 23, 1.4) * 0.52);
+    state.markers.set(base + 24, { type: 'silence' });
+    for (let k = 24; k < 40; k++) state.curve.set(base + k, 0.02);
+    state.markers.set(base + 40, { type: 'drop', halfTime: true });
+    for (let k = 40; k < 64; k++) state.curve.set(base + k, 0.82 - ((k - 40) / 24) * 0.08);
+  }
+  recomputeFuture(1.5); updateStampUI();
+  if (actx) playClick(0.35, kind === 'calm' ? 760 : kind === 'groove' ? 1040 : 1480, 0.05);
+}
+
+function seedOpeningSet() {
+  state.playhead = state.anchorStep = state.nextEdmStep = 16;
+  state.past = []; state.future = []; state.curve.clear(); state.markers.clear();
+  for (let s = 0; s < 24; s++) state.curve.set(s, 0.46 + Math.sin(s * 0.35) * 0.03);
+  for (const [step, locus, dur, vel] of [[0, 0, 4, 0.84], [4, 1, 2, 0.62], [6, 4, 2, 0.70], [8, 6, 3, 0.74], [11, 5, 3, 0.66], [14, 4, 2, 0.60]]) {
+    state.past.push({ id: state.nextId++, step, locus, dur, vel, phase: 'groove', dropNote: false, whisper: false, flash: 0 });
+  }
+  applyStamp('buildDrop', 24);
+}
+
+// ==================== 3. REAL-TIME LOOKAHEAD SCHEDULER ====================
+const updatePlayhead = () => { if (state.playing && actx) state.playhead = state.anchorStep + (actx.currentTime - state.anchorTime) / STEP_S; };
+
+function spawnRipple(locus, vel, durSteps, heat = 0) {
+  state.ripples.push({ locus, vel, dur: durSteps, heat, age: 0, maxAge: 0.38 + Math.pow(durSteps / 8, 0.8) * 1.9, maxR: 38 + Math.pow(durSteps / 8, 0.76) * 165 });
+  if (state.ripples.length > 26) state.ripples.shift();
+  state.locusGlow[locus] = Math.min(1.2, Math.max(state.locusGlow[locus], 0.58 + vel * 0.55));
+  if (heat > 0) state.locusHeat[locus] = Math.max(state.locusHeat[locus], heat);
+}
+
+function scheduleEdmStep(s, t0) {
+  const info = getInfo(s), bs = mod16(s), barInPhrase = ((Math.floor(s / 16) % 4) + 4) % 4;
+  const subPair = (info.phase === 'drop' && info.isDrop) ? SUB_ROOTS[0] : SUB_ROOTS[barInPhrase];
+  const liveW = state.liveWash; // Left-hand closed fist live DJ Wash preview!
+
+  if (info.isDrop) { playDropImpact(t0, info.halfTime); }
+  else if (liveW > 0.12) {
+    schedHpHz = lerp(60, 1380, Math.pow(liveW, 1.15));
+    handpanWashHPF.frequency.setTargetAtTime(schedHpHz, t0, 0.03);
+    handpanWashHPF.Q.setTargetAtTime(0.9 + liveW * 2.4, t0, 0.03);
+    reverbSend.gain.setTargetAtTime(lerp(0.34, 0.76, liveW), t0, 0.03);
+  } else if (info.phase === 'build') {
+    schedHpHz = 60 * Math.pow(1400 / 60, Math.pow(info.buildHeat, 1.15));
+    handpanWashHPF.frequency.setTargetAtTime(schedHpHz, t0, STEP_S * 0.6);
+    handpanWashHPF.Q.setTargetAtTime(0.85 + info.buildHeat * 2.1, t0, STEP_S * 0.6);
+    reverbSend.gain.setTargetAtTime(lerp(0.32, 0.68, info.buildHeat), t0, STEP_S * 0.6);
+  } else if (info.phase === 'silence') {
+    schedHpHz = 340; handpanWashHPF.frequency.setTargetAtTime(340, t0, 0.025);
+    handpanWashHPF.Q.setTargetAtTime(0.8, t0, 0.025); reverbSend.gain.setTargetAtTime(0.80, t0, 0.02);
+  } else {
+    schedHpHz = 20; handpanWashHPF.frequency.setTargetAtTime(20, t0, 0.045);
+    handpanWashHPF.Q.setTargetAtTime(0.72, t0, 0.045); reverbSend.gain.setTargetAtTime(info.phase === 'calm' ? 0.42 : 0.28, t0, 0.06);
+  }
+
+  const effHeat = Math.max(info.phase === 'build' ? info.buildHeat : 0, liveW);
+  if (effHeat > 0.08 && info.phase !== 'silence') {
+    riserBP.frequency.setTargetAtTime(240 * Math.pow(5200 / 240, Math.pow(effHeat, 1.22)), t0, STEP_S * 0.5);
+    riserBP.Q.setTargetAtTime(1.1 + effHeat * 4.2, t0, STEP_S * 0.5);
+    riserGain.gain.setTargetAtTime(0.014 + Math.pow(effHeat, 1.45) * 0.20, t0, STEP_S * 0.45);
+    shimmerGain.gain.setTargetAtTime(Math.max(SAFE_MIN, effHeat > 0.30 ? ((effHeat - 0.30) / 0.70) * 0.055 : SAFE_MIN), t0, STEP_S * 0.45);
+  } else {
+    riserGain.gain.setTargetAtTime(SAFE_MIN, t0, info.phase === 'silence' || info.isDrop ? 0.008 : 0.04);
+    shimmerGain.gain.setTargetAtTime(SAFE_MIN, t0, info.phase === 'silence' ? 0.010 : 0.05);
+  }
+
+  if ((info.phase === 'drop' || info.phase === 'groove') && liveW < 0.45) {
+    const isDropZone = info.phase === 'drop';
+    subOsc1.frequency.setTargetAtTime(subPair[0], t0, 0.025); subOsc2.frequency.setTargetAtTime(subPair[1], t0, 0.025);
+    subLPF.frequency.setTargetAtTime((isDropZone ? 215 : 145) * (bs % 4 === 2 ? 1.18 : 1.0), t0, 0.03);
+    subGateGain.gain.setTargetAtTime((isDropZone ? 0.36 : 0.21) * (1 - liveW), t0, 0.018);
+  } else { subGateGain.gain.setTargetAtTime(SAFE_MIN, t0, 0.010); }
+
+  if (liveW < 0.42) {
+    if (info.phase === 'groove' && bs % 4 === 0) { playSubKick(t0, 0.78, false); triggerSidechain(t0, 0.28); }
+    else if (info.phase === 'drop' && (info.halfTime ? (bs === 0 || bs === 10) : bs % 4 === 0)) { playSubKick(t0, 1.0, true); triggerSidechain(t0, 0.62); }
+  }
+
+  if ((info.phase === 'groove' || info.phase === 'drop') && liveW < 0.65) {
+    if (bs % 4 === 2) playHat(t0, info.phase === 'drop' ? 0.78 : 0.50, true);
+    else if (info.phase === 'drop' && bs % 2 === 1) playHat(t0, 0.34, false);
+  }
+
+  if (info.phase === 'build' && info.snareDiv > 0) {
+    const vel = lerp(0.36, 0.96, info.buildHeat);
+    if (info.snareDiv === 4 && bs % 4 === 0) playBuildSnare(t0, info.buildHeat, vel);
+    else if (info.snareDiv === 2 && bs % 2 === 0) playBuildSnare(t0, info.buildHeat, vel);
+    else if (info.snareDiv === 1) playBuildSnare(t0, info.buildHeat, vel);
+    else if (info.snareDiv === 0.5) {
+      playBuildSnare(t0, info.buildHeat, vel * 0.92);
+      playBuildSnare(t0 + STEP_S * 0.5, Math.min(1, info.buildHeat + 0.05), vel);
+    }
+  }
+}
+
+setInterval(() => {
+  if (!state.playing || !actx) return;
+  updatePlayhead();
+  const nowS = state.playhead, lookSteps = LOOKAHEAD_S / STEP_S;
+  if (!state.future.length || state.future[state.future.length - 1].step < nowS + FUTURE_STEPS - 4) recomputeFuture(1.5);
+  else analyzeTimeline();
+
+  while (state.nextEdmStep <= nowS + lookSteps) {
+    const s = state.nextEdmStep++;
+    scheduleEdmStep(s, Math.max(actx.currentTime + 0.002, state.anchorTime + (s - state.anchorStep) * STEP_S));
+  }
+  for (const n of state.future) {
+    if (!n.scheduled && n.step <= nowS + lookSteps) {
+      n.scheduled = true;
+      if (!n.dropNote) playHandpan(n.locus, n.vel, n.dur, Math.max(actx.currentTime + 0.002, state.anchorTime + (n.step - state.anchorStep) * STEP_S), n.whisper);
+    }
+  }
+  while (state.future.length && state.future[0].step <= nowS) {
+    const n = state.future.shift();
+    if (!n.scheduled && !n.dropNote) playHandpan(n.locus, n.vel, n.dur, actx.currentTime + 0.002, n.whisper);
+    const heat = n.dropNote ? 1.0 : n.phase === 'build' ? getInfo(n.step).buildHeat * 0.85 : 0;
+    spawnRipple(n.locus, n.vel, n.dur, heat); state.past.push({ ...n, flash: heat });
+  }
+  if (state.past.length > 160) state.past = state.past.filter(n => n.step >= nowS - 64);
+}, 24);
+
+// ==================== 4. GEOMETRY & CURVE / HANDPAN ACTIONS ====================
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+const metaEl = document.getElementById('meta'), phaseLbl = document.getElementById('phaseLbl');
+const stampBtns = [...document.querySelectorAll('#stamps button')];
+const updateStampUI = () => { for (const b of stampBtns) b.classList.toggle('on', b.dataset.stamp === state.activeStamp); };
+
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  const ctx = ensureAudio();
+  if (want) {
+    state.playing = true; state.anchorTime = ctx.currentTime; state.anchorStep = state.playhead;
+    state.nextEdmStep = Math.ceil(state.playhead); for (const n of state.future) n.scheduled = false;
+  } else { updatePlayhead(); state.playing = false; silenceContinuousBuses(); }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', () => togglePlay());
+for (const b of stampBtns) b.addEventListener('click', () => applyStamp(b.dataset.stamp));
+
+const canvas = document.getElementById('stage'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1, nowY = 0, stepPx = 8, scoreX0 = 48, scoreW = 420, colW = 46, curveX0 = 500, curveW = 280, curveX1 = 780;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2); W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  nowY = Math.round(H * 0.34); stepPx = Math.max(5.5, (H - nowY - BOT_PAD) / FUTURE_STEPS);
+  const leftPad = W < 620 ? 32 : 52, rightPad = W < 620 ? 16 : 28, gap = W < 620 ? 18 : 34;
+  const usable = Math.max(260, W - leftPad - rightPad - gap);
+  curveW = Math.round(clamp(W * 0.36, 136, usable * 0.45));
+  scoreW = Math.round(usable - curveW); scoreX0 = leftPad; colW = scoreW / 9;
+  curveX0 = scoreX0 + scoreW + gap; curveX1 = curveX0 + curveW;
+}
+window.addEventListener('resize', resize); resize();
+
+const locusX = (i) => scoreX0 + (i + 0.5) * colW, yOfStep = (s) => nowY + (s - state.playhead) * stepPx;
+const stepOfY = (y) => state.playhead + (y - nowY) / stepPx, xOfE = (e) => curveX0 + clamp(e, 0, 1) * curveW;
+const eOfX = (x) => clamp((x - curveX0) / curveW, 0, 1), locusOfX = (x) => clamp(Math.round((x - scoreX0) / colW - 0.5), 0, 8);
+const ptr = { mode: null, pid: null, sx: 0, sy: 0, cx: 0, cy: 0, moved: false, lastStep: -1, lastE: 0.46, hoverCurve: false, hoverStep: -1, hoverLocus: -1 };
+
+function paintCurveSpan(sA, eA, sB, eB) {
+  const minS = Math.ceil(state.playhead) + 1, maxS = Math.floor(state.playhead) + FUTURE_STEPS;
+  for (let s = Math.min(sA, sB); s <= Math.max(sA, sB); s++) {
+    if (s < minS || s > maxS) continue;
+    state.curve.set(s, clamp(lerp(eA, eB, clamp(sB === sA ? 1 : (s - sA) / (sB - sA), 0, 1)), 0.01, 0.99));
+    state.markers.delete(s);
+  }
+  state.activeStamp = null; updateStampUI(); recomputeFuture(1.5);
+}
+
+function togglePinpointMarker(rawStep) {
+  const minS = Math.ceil(state.playhead) + 1, maxS = Math.floor(state.playhead) + FUTURE_STEPS, nearBeat = Math.round(rawStep / 4) * 4;
+  const step = clamp(Math.abs(rawStep - nearBeat) <= 1.35 ? nearBeat : Math.round(rawStep), minS, maxS);
+  const cur = state.markers.get(step);
+  let afterSilence = getCurveRaw(step) < 0.16;
+  for (let k = 1; k <= 16; k++) if (state.markers.get(step - k)?.type === 'silence') { afterSilence = true; break; }
+
+  const setDrop = () => {
+    state.markers.set(step, { type: 'drop', halfTime: false });
+    for (let k = 0; k < 24 && step + k <= maxS + 8; k++) state.curve.set(step + k, 0.86 - (k / 24) * 0.10);
+    playClick(0.45, 1680, 0.06); setBanner('MARKER · ▼ DROP');
+  };
+  if (!cur) {
+    if (afterSilence) setDrop();
+    else {
+      state.markers.set(step, { type: 'silence' });
+      for (let k = 0; k < 8 && step + k <= maxS + 4; k++) { if (k > 0 && state.markers.get(step + k)?.type === 'drop') break; state.curve.set(step + k, 0.02); }
+      playClick(0.35, 620, 0.05); setBanner('MARKER · ○ SILENCE');
+    }
+  } else if (cur.type === 'silence') setDrop();
+  else {
+    state.markers.delete(step);
+    const a = getCurveRaw(step - 2), b = getCurveRaw(step + 8);
+    for (let k = 0; k < 8; k++) state.curve.set(step + k, lerp(a, b, k / 8));
+    playClick(0.25, 920, 0.04); setBanner('MARKER CLEARED');
+  }
+  state.activeStamp = null; updateStampUI(); recomputeFuture(1.5);
+}
+
+function strikeLiveHandpan(locus, vel = 0.90, brightBias = 0.55) {
+  const ctxA = ensureAudio();
+  const inSilence = state.livePhase === 'silence';
+  playHandpan(locus, vel, inSilence ? 8 : 6, ctxA.currentTime + 0.002, inSilence, brightBias);
+  spawnRipple(locus, vel, inSilence ? 8 : 6, 1.0);
+  state.past.push({ id: state.nextId++, step: state.playhead, locus, dur: inSilence ? 6 : 4, vel, phase: state.livePhase, dropNote: false, whisper: inSilence, flash: 1.0 });
+}
+
+// ==================== 5. MEDIAPIPE BI-MANUAL CV + AIR-PEN + SIM HANDS ====================
+class OneEuro {
+  constructor(minCutoff = 1.6, beta = 0.16, dCutoff = 1.0) { this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff; this.reset(); }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  _alpha(cut, dt) { const tau = 1 / (2 * Math.PI * Math.max(1e-4, cut)); return 1 / (1 + tau / dt); }
+  filter(v, tSec) {
+    if (!Number.isFinite(v) || !Number.isFinite(tSec)) return this.x ?? 0;
+    if (this.x === null || this.t === null) { this.x = v; this.dx = 0; this.t = tSec; return v; }
+    const rawDt = tSec - this.t; if (rawDt <= 1e-6) return this.x;
+    const dt = Math.min(rawDt, 0.25); this.t = tSec;
+    const edx = (v - this.x) / dt, ad = this._alpha(this.dCutoff, dt);
+    this.dx = ad * edx + (1 - ad) * this.dx;
+    const ax = this._alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt);
+    return (this.x = ax * v + (1 - ax) * this.x);
+  }
+}
+
+const PALM_IDX = [0, 5, 9, 13, 17], TIP_IDX = [8, 12, 16, 20];
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PINCH_ON = 0.056, PINCH_OFF = 0.078, PINCH_COOLDOWN_MS = 190;
+
+const makeCvHand = () => ({
+  active: false, seenAt: 0, lms: null, rawCx: 0.5, rawCy: 0.5,
+  fx: new OneEuro(1.8, 0.20, 1.0), fy: new OneEuro(1.8, 0.20, 1.0),
+  nx: 0.5, ny: 0.5, sx: 0, sy: 0,
+  pinchDist: 1, pinchProx: 0, pinched: false, lastPinchAt: 0, pinchFlash: 0,
+  fist: false, fistAmt: 0, fade: 0,
+  // Right-hand air-pen stroke tracking
+  penActive: false, penMoved: false, penStartMs: 0, penStartX: 0, penStartY: 0, penLastStep: -1, penLastE: 0.46
+});
+
+const videoEl = document.getElementById('cv-video'), cvStatusEl = document.getElementById('cvStatus');
+const camBtn = document.getElementById('camBtn'), simBtn = document.getElementById('simBtn');
+const cv = { mode: 'off', loading: false, sessionId: 0, stream: null, landmarker: null, lastVideoTime: -1, lastDetectMs: 0, handCount: 0, leftLabel: 'Right', simStartMs: 0, hands: { L: makeCvHand(), R: makeCvHand() } };
+
+function setCvStatus(text, sig = false) {
+  cvStatusEl.textContent = text; cvStatusEl.classList.toggle('sig', sig);
+  camBtn.textContent = cv.mode === 'cam' ? 'DISABLE CAM' : (cv.loading ? 'LOADING...' : 'ENABLE CAM');
+  camBtn.classList.toggle('on', cv.mode === 'cam'); camBtn.classList.toggle('sig', cv.mode === 'cam' || cv.loading);
+  simBtn.classList.toggle('on', cv.mode === 'sim'); simBtn.classList.toggle('sig', cv.mode === 'sim');
+}
+
+function stopCv(statusText = 'CAM OFF', sig = false) {
+  cv.sessionId++; cv.loading = false; cv.mode = 'off'; cv.handCount = 0; cv.lastVideoTime = -1;
+  if (cv.stream) { cv.stream.getTracks().forEach(t => t.stop()); cv.stream = null; }
+  videoEl.srcObject = null; state.liveWash = 0;
+  for (const h of [cv.hands.L, cv.hands.R]) { h.active = false; h.lms = null; h.pinched = false; h.fist = false; h.penActive = false; h.fade = 0; h.fx.reset(); h.fy.reset(); }
+  setCvStatus(statusText, sig);
+}
+
+async function enableCamera() {
+  if (cv.mode === 'cam' || cv.loading) { stopCv('CAM OFF', false); return; }
+  ensureAudio(); stopCv('LOADING CV...', true);
+  const sid = ++cv.sessionId; cv.loading = true; setCvStatus('LOADING CV...', true);
+  if (!navigator.mediaDevices?.getUserMedia) { cv.loading = false; setCvStatus('NO CAM API', true); return; }
+  let stream = null;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false }); }
+  catch (err) {
+    if (sid !== cv.sessionId) return; cv.loading = false; const nm = err?.name || '';
+    setCvStatus((nm === 'NotAllowedError' || nm === 'PermissionDeniedError') ? 'CAM DENIED' : (nm === 'NotFoundError' || nm === 'DevicesNotFoundError') ? 'NO WEBCAM' : 'CAM ERROR', true); return;
+  }
+  if (sid !== cv.sessionId) { stream.getTracks().forEach(t => t.stop()); return; }
+  cv.stream = stream; videoEl.srcObject = stream; try { await videoEl.play(); } catch {}
+  try {
+    if (!cv.landmarker) {
+      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+      const mk = (delegate) => HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+        runningMode: 'VIDEO', numHands: 2
+      });
+      try { cv.landmarker = await mk('GPU'); } catch { cv.landmarker = await mk('CPU'); }
+    }
+  } catch { if (sid === cv.sessionId) stopCv('CV OFFLINE', true); return; }
+  if (sid !== cv.sessionId) return;
+  cv.loading = false; cv.mode = 'cam'; cv.lastVideoTime = -1;
+  setCvStatus('CV LIVE · 0 HANDS', true); if (!state.playing) togglePlay(true);
+}
+
+function toggleSimHands() {
+  ensureAudio();
+  if (cv.mode === 'sim') { stopCv('CAM OFF', false); return; }
+  stopCv('SIM CURVE · 2 HANDS', true); cv.mode = 'sim'; cv.simStartMs = performance.now();
+  setCvStatus('SIM CURVE · 2 HANDS', true); if (!state.playing) togglePlay(true);
+}
+
+function assignHands(rawList, handedList) {
+  const items = [];
+  for (let i = 0; i < Math.min(2, rawList.length); i++) {
+    const raw = rawList[i]; if (!raw || raw.length < 21) continue;
+    const lms = raw.map(p => ({ x: 1 - p.x, y: p.y, z: p.z || 0 }));
+    let cx = 0, cy = 0; for (const k of PALM_IDX) { cx += lms[k].x; cy += lms[k].y; }
+    items.push({ lms, cx: cx / 5, cy: cy / 5, label: handedList?.[i]?.[0]?.categoryName || '' });
+  }
+  if (!items.length) return { L: null, R: null };
+  if (items.length === 1) {
+    const h = items[0];
+    if (Math.abs(h.cx - 0.5) < 0.04 && h.label) return h.label === cv.leftLabel ? { L: h, R: null } : { L: null, R: h };
+    return h.cx < 0.5 ? { L: h, R: null } : { L: null, R: h };
+  }
+  const [a, b] = items, [lo, hi] = a.cx <= b.cx ? [a, b] : [b, a];
+  if (lo.cx < 0.44 && hi.cx > 0.56 && lo.label && hi.label && lo.label !== hi.label) cv.leftLabel = lo.label;
+  if ((Math.abs(a.cx - b.cx) < 0.13 || lo.cx > 0.50 || hi.cx < 0.50) && a.label && b.label && a.label !== b.label) return a.label === cv.leftLabel ? { L: a, R: b } : { L: b, R: a };
+  return { L: lo, R: hi };
+}
+
+function computeFistness(lms) {
+  const palmLen = Math.hypot(lms[9].x - lms[0].x, lms[9].y - lms[0].y) || 0.08;
+  let sum = 0; for (const ti of TIP_IDX) sum += Math.hypot(lms[ti].x - lms[0].x, lms[ti].y - lms[0].y);
+  return clamp(1 - ((sum / 4) / palmLen - 1.05) / 0.62, 0, 1);
+}
+
+function processHandFrame(rawList, handedList, nowMs) {
+  const assigned = assignHands(rawList, handedList), tSec = nowMs / 1000;
+  for (const id of ['L', 'R']) {
+    const h = assigned[id], slot = cv.hands[id];
+    if (h) {
+      if (!slot.active && nowMs - slot.seenAt > 320) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.penActive = false; }
+      slot.active = true; slot.seenAt = nowMs; slot.lms = h.lms; slot.rawCx = h.cx; slot.rawCy = h.cy;
+      // Use index tip (8) blended with palm for precise curve air-pen drawing on Right Hand
+      const ax = id === 'R' ? lerp(h.cx, h.lms[8].x, 0.55) : h.cx;
+      const ay = id === 'R' ? lerp(h.cy, h.lms[8].y, 0.55) : h.cy;
+      const rx = id === 'L' ? clamp((ax - 0.05) / 0.44, 0, 1) : clamp((ax - 0.51) / 0.44, 0, 1);
+      const ry = clamp((ay - 0.10) / 0.78, 0, 1); // 0 = top, 1 = bottom (matches future Y flow!)
+      slot.nx = clamp(slot.fx.filter(rx, tSec), 0, 1);
+      slot.ny = clamp(slot.fy.filter(ry, tSec), 0, 1);
+
+      const d = Math.hypot(h.lms[4].x - h.lms[8].x, h.lms[4].y - h.lms[8].y);
+      slot.pinchDist = d; slot.pinchProx = clamp(1 - (d - 0.048) / 0.095, 0, 1);
+      slot.fistAmt = computeFistness(h.lms);
+      slot.fist = slot.fistAmt > 0.68 && !slot.pinched;
+
+      if (id === 'L') {
+        slot.sx = lerp(scoreX0 + colW * 0.5, scoreX0 + scoreW - colW * 0.5, slot.nx);
+        slot.sy = lerp(TOP_PAD + 30, H - BOT_PAD - 30, slot.ny);
+        if (!slot.pinched && d < PINCH_ON && (nowMs - slot.lastPinchAt) > PINCH_COOLDOWN_MS && !slot.fist) {
+          slot.pinched = true; slot.lastPinchAt = nowMs; slot.pinchFlash = 1.0;
+          const aim = clamp(Math.round(slot.nx * 8), 0, 8);
+          const vel = clamp(lerp(0.98, 0.58, slot.ny), 0.54, 1.0);
+          strikeLiveHandpan(aim, vel, 1 - slot.ny);
+          setBanner(`L HANDPAN · ${NOTES[aim]}`);
+        } else if (slot.pinched && d > PINCH_OFF) slot.pinched = false;
+      } else {
+        // Right Hand = Air-Pen over the 4-bar future emotional curve!
+        const cx = lerp(curveX0, curveX1, slot.nx);
+        const cy = lerp(nowY + 10, H - BOT_PAD - 4, slot.ny);
+        slot.sx = cx; slot.sy = cy;
+        const curStep = Math.round(stepOfY(cy)), curE = eOfX(cx);
+
+        if (!slot.pinched && d < PINCH_ON && (nowMs - slot.lastPinchAt) > 130) {
+          slot.pinched = true; slot.lastPinchAt = nowMs; slot.pinchFlash = 1.0;
+          slot.penActive = true; slot.penMoved = false; slot.penStartMs = nowMs;
+          slot.penStartX = cx; slot.penStartY = cy; slot.penLastStep = curStep; slot.penLastE = curE;
+        } else if (slot.pinched && d <= PINCH_OFF && slot.penActive) {
+          if (!slot.penMoved && Math.hypot(cx - slot.penStartX, cy - slot.penStartY) > 12) slot.penMoved = true;
+          if (slot.penMoved && ptr.mode !== 'curve') {
+            paintCurveSpan(slot.penLastStep, slot.penLastE, curStep, curE);
+            state.brush.push({ x: cx, y: cy, t: nowMs });
+            if (Math.floor(curStep / 4) !== Math.floor(slot.penLastStep / 4)) playClick(0.35, 640 + curE * 1120, 0.032);
+            slot.penLastStep = curStep; slot.penLastE = curE;
+          }
+        } else if (slot.pinched && d > PINCH_OFF) {
+          if (slot.penActive && !slot.penMoved && (nowMs - slot.penStartMs) < 380 && ptr.mode !== 'curve') {
+            togglePinpointMarker(stepOfY(slot.penStartY));
+          }
+          slot.pinched = false; slot.penActive = false; slot.penMoved = false;
+        }
+      }
+    } else {
+      slot.active = false;
+      if (nowMs - slot.seenAt > 360) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.fist = false; slot.penActive = false; slot.lms = null; }
+    }
+  }
+
+  // Left-hand closed fist applies live non-destructive HPF DJ Wash preview!
+  const L = cv.hands.L;
+  const targetWash = (L.active && L.fist) ? clamp(lerp(1.0, 0.35, L.ny), 0.35, 1.0) : 0;
+  state.liveWash = lerp(state.liveWash, targetWash, targetWash > state.liveWash ? 0.22 : 0.16);
+  if (L.active && L.fist && state.bannerAlpha < 0.25) setBanner('L FIST · LIVE HPF WASH');
+
+  const n = (assigned.L ? 1 : 0) + (assigned.R ? 1 : 0);
+  if (n !== cv.handCount) { cv.handCount = n; setCvStatus(`${cv.mode === 'sim' ? 'SIM CURVE' : 'CV LIVE'} · ${n} HAND${n === 1 ? '' : 'S'}`, true); }
+}
+
+function synthHand21(cxM, cyM, side, pinch, fist, tilt, t) {
+  const s = side, c = Math.cos(tilt), sn = Math.sin(tilt), p = clamp(pinch, 0, 1), f = clamp(fist, 0, 1);
+  const j = (ox, oy) => ({ x: clamp(1 - (cxM + ox * c - oy * sn + Math.sin(t * 63 + ox * 150) * 0.0011), 0, 1), y: clamp(cyM + ox * sn + oy * c + Math.cos(t * 57 + oy * 150) * 0.0011, 0, 1), z: 0 });
+  const curl = (yOpen, yClosed) => lerp(yOpen, yClosed, f);
+  return [
+    j(-s * 0.012, 0.078), j(-s * 0.036, 0.052), j(lerp(-s * 0.062, -s * 0.050, Math.max(p, f)), lerp(0.024, 0.018, Math.max(p, f))),
+    j(lerp(-s * 0.078, -s * 0.052, Math.max(p, f)), lerp(-0.004, -0.014, Math.max(p, f))), j(lerp(-s * 0.090, -s * 0.048, Math.max(p, f)), lerp(-0.028, -0.044, Math.max(p, f))),
+    j(-s * 0.034, -0.020), j(lerp(-s * 0.044, -s * 0.048, p), curl(-0.062, -0.028)),
+    j(lerp(-s * 0.049, -s * 0.052, p), curl(-0.094, -0.006)), j(lerp(-s * 0.052, -s * 0.048, Math.max(p, f)), lerp(curl(-0.122, 0.018), -0.052, p)),
+    j(-s * 0.008, -0.026), j(-s * 0.010, curl(-0.072, -0.030)), j(-s * 0.012, curl(-0.106, -0.004)), j(-s * 0.014, curl(-0.136, 0.022)),
+    j(s * 0.016, -0.022), j(s * 0.020, curl(-0.066, -0.026)), j(s * 0.023, curl(-0.098, -0.002)), j(s * 0.026, curl(-0.124, 0.024)),
+    j(s * 0.038, -0.010), j(s * 0.046, curl(-0.046, -0.016)), j(s * 0.052, curl(-0.072, 0.006)), j(s * 0.057, curl(-0.094, 0.028))
+  ];
+}
+
+function tickCv(nowMs) {
+  if (cv.mode === 'cam' && cv.landmarker && videoEl.readyState >= 2 && videoEl.currentTime !== cv.lastVideoTime) {
+    cv.lastVideoTime = videoEl.currentTime;
+    const ts = Math.max(cv.lastDetectMs + 1, Math.round(nowMs)); cv.lastDetectMs = ts;
+    try { const res = cv.landmarker.detectForVideo(videoEl, ts); processHandFrame(res?.landmarks || [], res?.handedness || [], nowMs); } catch {}
+  } else if (cv.mode === 'sim') {
+    // 16-second choreographed curve-sculpting demo:
+    // 0..3.8s: R Hand air-draws a sweeping BUILD ramp -> SILENCE valley -> DROP plateau!
+    // 3.8..10.5s: R Hand hovers peacefully while set rides the sculpted build/silence/drop; L Hand plays live D Kurd pinches!
+    // 10.5..12.8s: L Hand makes a brief FIST live wash preview, then releases cleanly!
+    // 12.8..16.0s: R Hand sweeps a serene CALM cool-down tail!
+    const t = (nowMs - cv.simStartMs) / 1000, cyc = t % 16.0;
+    let rX = 0.72, rY = 0.34, rPinch = 0;
+    if (cyc < 2.2) {
+      const u = cyc / 2.2;
+      rX = lerp(0.68, 0.93, Math.pow(u, 1.3)); rY = lerp(0.28, 0.56, u); rPinch = 1.0;
+    } else if (cyc < 3.0) {
+      const u = (cyc - 2.2) / 0.8;
+      rX = lerp(0.93, 0.54, Math.min(1, u * 1.4)); rY = lerp(0.56, 0.66, u); rPinch = 1.0;
+    } else if (cyc < 4.2) {
+      const u = (cyc - 3.0) / 1.2;
+      rX = lerp(0.54, 0.89, Math.min(1, u * 1.7)); rY = lerp(0.66, 0.84, u); rPinch = 1.0;
+    } else if (cyc < 12.8) {
+      rX = 0.74 + Math.sin(t * 0.8) * 0.08; rY = 0.42 + Math.cos(t * 0.6) * 0.14; rPinch = 0;
+    } else if (cyc < 15.0) {
+      const u = (cyc - 12.8) / 2.2;
+      rX = lerp(0.84, 0.59, u); rY = lerp(0.45, 0.80, u); rPinch = 1.0;
+    } else {
+      rX = 0.70; rY = 0.30; rPinch = 0;
+    }
+
+    let lX = 0.25 + 0.16 * Math.sin(t * 0.95), lY = 0.46 + 0.10 * Math.cos(t * 0.7), lPinch = 0, lFist = 0;
+    if (cyc > 10.6 && cyc < 12.3) { lFist = 1.0; lY = 0.28; }
+    else {
+      const ph = (t + 0.4) % 1.48;
+      if (ph < 0.26) lPinch = Math.sin((ph / 0.26) * Math.PI);
+    }
+    const hL = synthHand21(lX, lY, -1, lPinch, lFist, 0.08 * Math.sin(t), t);
+    const hR = synthHand21(rX, rY, 1, rPinch, 0, -0.08 * Math.cos(t), t + 1.7);
+    processHandFrame([hL, hR], [[{ categoryName: 'Right' }], [{ categoryName: 'Left' }]], nowMs);
+  }
+}
+
+camBtn.addEventListener('click', enableCamera);
+simBtn.addEventListener('click', toggleSimHands);
+
+// ==================== 6. POINTER & KEYBOARD FALLBACK ====================
+canvas.addEventListener('pointerdown', (e) => {
+  const x = e.clientX, y = e.clientY;
+  if (x >= curveX0 - 16 && x <= curveX1 + 18 && y >= nowY - 6 && y <= H - BOT_PAD + 14) {
+    ensureAudio(); canvas.setPointerCapture(e.pointerId);
+    ptr.mode = 'curve'; ptr.pid = e.pointerId; ptr.sx = ptr.cx = x; ptr.sy = ptr.cy = y; ptr.moved = false;
+    ptr.lastStep = Math.round(stepOfY(y)); ptr.lastE = eOfX(x);
+  } else if (x >= scoreX0 - 12 && x <= scoreX0 + scoreW + 12 && Math.abs(y - nowY) <= 34) {
+    ptr.mode = 'pan'; ptr.pid = e.pointerId; strikeLiveHandpan(locusOfX(x));
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const x = e.clientX, y = e.clientY; ptr.cx = x; ptr.cy = y;
+  ptr.hoverCurve = x >= curveX0 - 14 && x <= curveX1 + 14 && y >= nowY && y <= H - BOT_PAD + 8;
+  ptr.hoverStep = Math.round(stepOfY(y));
+  ptr.hoverLocus = (x >= scoreX0 - 10 && x <= scoreX0 + scoreW + 10 && Math.abs(y - nowY) <= 30) ? locusOfX(x) : -1;
+  if (ptr.mode === 'curve' && e.pointerId === ptr.pid) {
+    if (!ptr.moved && Math.hypot(x - ptr.sx, y - ptr.sy) > 5) ptr.moved = true;
+    if (ptr.moved) {
+      const s = Math.round(stepOfY(y)), val = eOfX(x);
+      paintCurveSpan(ptr.lastStep, ptr.lastE, s, val);
+      state.brush.push({ x: clamp(x, curveX0, curveX1), y: clamp(y, nowY + 2, H - BOT_PAD), t: performance.now() });
+      if (Math.floor(s / 4) !== Math.floor(ptr.lastStep / 4)) playClick(0.35, 620 + val * 1150, 0.032);
+      ptr.lastStep = s; ptr.lastE = val;
+    }
+  }
+});
+
+const endPointer = (e) => {
+  if (ptr.pid !== e.pointerId) return;
+  if (ptr.mode === 'curve' && !ptr.moved) togglePinpointMarker(stepOfY(e.clientY));
+  ptr.mode = ptr.pid = null;
+};
+canvas.addEventListener('pointerup', endPointer); canvas.addEventListener('pointercancel', endPointer);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (!e.repeat && e.key >= '1' && e.key <= '9') strikeLiveHandpan(Number(e.key) - 1);
+});
+
+// ==================== 7. 60FPS HiDPI RENDERER + 21-POINT HAND WIREFRAMES ====================
+let lastFrameMs = performance.now(), lastSeenIntStep = -1;
+const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const ring = (x, y, r, fill = false, stroke = true) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); if (fill) ctx.fill(); if (stroke) ctx.stroke(); };
+
+function drawFrame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastFrameMs) / 1000); lastFrameMs = nowMs;
+  tickCv(nowMs);
+  updatePlayhead(); analyzeTimeline();
+  const curInt = Math.floor(state.playhead), nowInfo = getInfo(curInt); state.livePhase = nowInfo.phase;
+
+  if (state.playing && curInt !== lastSeenIntStep) {
+    lastSeenIntStep = curInt; const bs = mod16(curInt);
+    if (nowInfo.isDrop) { state.dropFlash = 1.0; state.kickPulse = 1.25; state.shocks.push({ age: 0, maxAge: 1.15, big: true }); }
+    else if (nowInfo.phase === 'drop' && (nowInfo.halfTime ? (bs === 0 || bs === 10) : bs % 4 === 0)) { state.kickPulse = 0.95; state.shocks.push({ age: 0, maxAge: 0.44, big: false }); }
+    else if (nowInfo.phase === 'groove' && bs % 4 === 0) state.kickPulse = 0.56;
+  }
+  state.kickPulse *= Math.exp(-dt * 7.5);
+  state.dropFlash = Math.max(0, state.dropFlash - dt / 0.85);
+  state.bannerAlpha = Math.max(0, state.bannerAlpha - dt * 0.72);
+  for (let i = 0; i < 9; i++) { state.locusGlow[i] *= Math.exp(-dt * 4.8); if (state.locusHeat[i] > 0) state.locusHeat[i] = Math.max(0, state.locusHeat[i] - dt / FLASH_S); }
+  for (let i = state.ripples.length - 1; i >= 0; i--) { const r = state.ripples[i]; r.age += dt; if (r.heat > 0) r.heat = Math.max(0, r.heat - dt / (FLASH_S * 1.4)); if (r.age >= r.maxAge) state.ripples.splice(i, 1); }
+  for (let i = state.shocks.length - 1; i >= 0; i--) { state.shocks[i].age += dt; if (state.shocks[i].age >= state.shocks[i].maxAge) state.shocks.splice(i, 1); }
+  for (const n of state.past) if (n.flash > 0) n.flash = Math.max(0, n.flash - dt / FLASH_S);
+  while (state.brush.length && nowMs - state.brush[0].t > 500) state.brush.shift();
+  for (const h of [cv.hands.L, cv.hands.R]) {
+    h.fade = clamp(h.fade + (h.active ? dt * 6.5 : -dt * 3.8), 0, 1);
+    h.pinchFlash = Math.max(0, h.pinchFlash - dt * 3.0);
+  }
+
+  metaEl.textContent = `39 · D KURD · ${BPM} BPM · ${Math.floor(state.playhead / 16) + 1}.${(Math.floor(state.playhead / 4) % 4) + 1}`;
+  phaseLbl.textContent = state.liveWash > 0.2 ? 'WASH' : nowInfo.phase.toUpperCase();
+  phaseLbl.classList.toggle('hot', state.liveWash > 0.2 || nowInfo.phase === 'build' || nowInfo.phase === 'drop' || state.dropFlash > 0.1);
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.font = '10px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textBaseline = 'middle';
+
+  const minVisS = Math.floor(stepOfY(TOP_PAD)) - 1, maxVisS = Math.ceil(stepOfY(H - BOT_PAD)) + 1;
+  for (let s = minVisS; s <= maxVisS; s++) {
+    if (s % 4 !== 0) continue;
+    const y = Math.round(yOfStep(s)) + 0.5; if (y < TOP_PAD || y > H - BOT_PAD) continue;
+    const isBar = mod16(s) === 0;
+    ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.042)'; ctx.lineWidth = 1;
+    line(scoreX0 - 10, y, scoreX0 + scoreW + 8, y); line(curveX0, y, curveX1, y);
+    if (isBar && s >= 0) { ctx.fillStyle = s <= state.playhead ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.16)'; ctx.textAlign = 'right'; ctx.fillText(String(Math.floor(s / 16) + 1), scoreX0 - 16, y); }
+  }
+
+  drawCurveSpine(minVisS, maxVisS, nowMs);
+  drawHandpanField();
+  drawNowHorizon(nowInfo);
+  drawCvHands();
+
+  if (state.bannerAlpha > 0.02 && state.bannerText) {
+    ctx.font = '10px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255,90,31,${(state.bannerAlpha * 0.92).toFixed(3)})`;
+    ctx.fillText(state.bannerText, W * 0.5, TOP_PAD + 10);
+  }
+  requestAnimationFrame(drawFrame);
+}
+
+function drawCurveSpine(minVisS, maxVisS, nowMs) {
+  const gx = Math.round(xOfE(0.46)) + 0.5;
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.10)'; line(curveX0 + 0.5, TOP_PAD, curveX0 + 0.5, H - BOT_PAD);
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.setLineDash([2, 5]); line(gx, TOP_PAD, gx, H - BOT_PAD); ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)'; line(curveX1 - 0.5, TOP_PAD, curveX1 - 0.5, H - BOT_PAD);
+
+  ctx.font = '9px ui-monospace, "SF Mono", Menlo, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.26)';
+  ctx.textAlign = 'left'; ctx.fillText('SILENCE', curveX0 + 4, H - BOT_PAD + 12);
+  ctx.textAlign = 'center'; ctx.fillText('GROOVE', gx, H - BOT_PAD + 12);
+  ctx.textAlign = 'right'; ctx.fillText('CLIMAX', curveX1 - 2, H - BOT_PAD + 12);
+  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fillText('EMOTIONAL CURVE · 4 BARS · R-HAND AIR-PEN', curveX0 + 4, TOP_PAD - 6);
+
+  const pts = [];
+  for (let s = minVisS; s <= maxVisS; s++) {
+    const y = yOfStep(s); if (y < TOP_PAD - stepPx || y > H - BOT_PAD + stepPx) continue;
+    const info = getInfo(s); pts.push({ s, y: clamp(y, TOP_PAD, H - BOT_PAD), x: xOfE(info.E), info });
+  }
+  if (pts.length > 1) {
+    const grad = ctx.createLinearGradient(curveX0, 0, curveX1, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0.015)'); grad.addColorStop(0.55, 'rgba(255,255,255,0.06)'); grad.addColorStop(1, 'rgba(255,90,31,0.16)');
+    ctx.fillStyle = grad; ctx.beginPath(); ctx.moveTo(curveX0, pts[0].y);
+    for (const p of pts) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(curveX0, pts[pts.length - 1].y); ctx.closePath(); ctx.fill();
+  }
+
+  for (const { s, y, x, info } of pts) {
+    if (y < TOP_PAD || y > H - BOT_PAD) continue;
+    const isPast = s < state.playhead, bs = mod16(s), pastFade = isPast ? clamp(1 - (state.playhead - s) / 36, 0.14, 0.72) : 1.0;
+    const heat = info.phase === 'build' ? info.buildHeat : info.phase === 'drop' ? 0.72 : 0;
+
+    if (info.phase === 'silence') {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.24 * pastFade).toFixed(3)})`; ctx.lineWidth = 1.2;
+      line(curveX0 + 3, y - stepPx * 0.4, curveX0 + 3, y + stepPx * 0.4);
+    } else {
+      ctx.strokeStyle = mixInk(heat, (info.phase === 'calm' ? 0.14 : info.phase === 'drop' ? 0.34 : 0.20 + heat * 0.24) * pastFade);
+      ctx.lineWidth = info.phase === 'drop' && bs % 4 === 0 ? 1.8 : 0.9;
+      line(curveX0 + 2, y, x, y);
+    }
+
+    if ((info.phase === 'groove' || info.phase === 'drop') && !isPast) {
+      if (info.phase === 'drop' ? (info.halfTime ? (bs === 0 || bs === 10) : bs % 4 === 0) : bs % 4 === 0) {
+        ctx.fillStyle = mixInk(info.phase === 'drop' ? 0.8 : 0, info.phase === 'drop' ? 0.92 : 0.56);
+        ctx.fillRect(curveX0 + 2, y - 1.4, info.phase === 'drop' ? 8 : 5, 2.8);
+      } else if (bs % 4 === 2) { ctx.fillStyle = 'rgba(255,255,255,0.34)'; ring(curveX0 + 14, y, 1.3, true, false); }
+    }
+
+    if (info.phase === 'build' && info.snareDiv > 0) {
+      if (bs % 2 === 0 && !isPast && x - curveX0 > 24) {
+        ctx.strokeStyle = mixInk(info.buildHeat, 0.14 + info.buildHeat * 0.16); ctx.lineWidth = 0.8;
+        line(Math.max(curveX0 + 6, x - 18 - info.buildHeat * 24), y + stepPx, x - 3, y - stepPx * 0.3);
+      }
+      if (info.snareDiv === 4 ? bs % 4 === 0 : info.snareDiv === 2 ? bs % 2 === 0 : true) {
+        const tickLen = 5 + info.buildHeat * 9;
+        ctx.strokeStyle = mixInk(info.buildHeat, (0.58 + info.buildHeat * 0.4) * pastFade); ctx.lineWidth = info.snareDiv <= 1 ? 1.35 : 1.0;
+        line(x - tickLen, y, x + 2, y);
+        if (info.snareDiv === 0.5) line(x - tickLen * 0.72, y + stepPx * 0.48, x + 2, y + stepPx * 0.48);
+      }
+      if (info.isBuildStart && !isPast) {
+        ctx.fillStyle = 'rgba(255,90,31,0.70)'; ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+        ctx.fillText('▲ RISER · ROLL', curveX1 - 4, y - 5);
+      }
+    }
+
+    if (info.isSilenceStart || info.marker?.type === 'silence') {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.78 * pastFade).toFixed(3)})`; ctx.lineWidth = 1.2; ring(curveX0 + 12, y, 4.2);
+      ctx.fillStyle = `rgba(255,255,255,${(0.72 * pastFade).toFixed(3)})`; ctx.font = '9px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'left';
+      ctx.fillText('SILENCE', curveX0 + 21, y);
+    }
+    if (info.isDrop) {
+      ctx.strokeStyle = `rgba(255,90,31,${(0.95 * pastFade).toFixed(3)})`; ctx.lineWidth = 1.6; line(curveX0, y, curveX1, y);
+      ctx.fillStyle = `rgba(255,90,31,${(0.98 * pastFade).toFixed(3)})`;
+      ctx.beginPath(); ctx.moveTo(x, y + 4.5); ctx.lineTo(x - 4.5, y - 3.5); ctx.lineTo(x + 4.5, y - 3.5); ctx.closePath(); ctx.fill();
+      ctx.font = '9.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+      ctx.fillText(info.halfTime ? '▼ HALF-DROP' : '▼ DROP', curveX1 - 4, y - 7);
+    }
+  }
+
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], isPast = b.s < state.playhead;
+    const heat = b.info.phase === 'build' ? b.info.buildHeat : b.info.phase === 'drop' ? 0.85 : 0;
+    ctx.strokeStyle = mixInk(heat, isPast ? clamp(1 - (state.playhead - b.s) / 36, 0.16, 0.78) : (b.info.phase === 'silence' ? 0.32 : 0.88));
+    ctx.lineWidth = isPast ? 1.2 : (b.info.phase === 'build' || b.info.phase === 'drop' ? 2.1 : 1.5);
+    line(a.x, a.y, b.x, b.y);
+  }
+
+  if (state.brush.length > 1) {
+    ctx.lineCap = 'round';
+    for (let i = 1; i < state.brush.length; i++) {
+      const a = state.brush[i - 1], b = state.brush[i]; if (b.t - a.t > 140) continue;
+      const life = clamp(1 - (nowMs - b.t) / 500, 0, 1);
+      ctx.strokeStyle = `rgba(255,90,31,${(life * 0.94).toFixed(3)})`; ctx.lineWidth = 1.8 + life * 2.4; line(a.x, a.y, b.x, b.y);
+    }
+  }
+
+  if (ptr.mode === 'curve' && ptr.moved) {
+    const bx = clamp(ptr.cx, curveX0, curveX1), by = clamp(ptr.cy, nowY + 2, H - BOT_PAD);
+    ctx.strokeStyle = '#ff5a1f'; ctx.lineWidth = 1.4; ring(bx, by, 5.5);
+    ctx.fillStyle = '#ff5a1f'; ctx.font = '9px ui-monospace, "SF Mono", Menlo, monospace';
+    const flip = bx > curveX0 + curveW * 0.65; ctx.textAlign = flip ? 'right' : 'left';
+    ctx.fillText(getInfo(ptr.lastStep).phase.toUpperCase(), bx + (flip ? -10 : 10), by);
+  } else if (ptr.hoverCurve && ptr.hoverStep > state.playhead + 0.5) {
+    const nearBeat = Math.round(ptr.hoverStep / 4) * 4, snapS = Math.abs(ptr.hoverStep - nearBeat) <= 1.25 ? nearBeat : ptr.hoverStep, hy = yOfStep(snapS);
+    if (hy > nowY + 4 && hy < H - BOT_PAD) {
+      ctx.strokeStyle = 'rgba(255,90,31,0.34)'; ctx.lineWidth = 1; ctx.setLineDash([3, 4]); line(curveX0, hy, curveX1, hy); ctx.setLineDash([]);
+      const curM = state.markers.get(snapS);
+      ctx.fillStyle = 'rgba(255,90,31,0.74)'; ctx.font = '9px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+      ctx.fillText(curM?.type === 'silence' ? 'CLICK → DROP' : curM?.type === 'drop' ? 'CLICK → CLEAR' : 'DRAW / CLICK MARKER', curveX1 - 4, hy - 6);
+    }
+  }
+}
+
+function drawHandpanField() {
+  ctx.font = '9.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillText('PAST ↑ · L-HAND LIVE PAN', scoreX0, TOP_PAD - 6); ctx.fillText('↓ FUTURE', scoreX0, H - BOT_PAD + 12);
+
+  for (const r of state.ripples) {
+    const cx = locusX(r.locus), u = clamp(r.age / r.maxAge, 0, 1);
+    ctx.strokeStyle = mixInk(r.heat, Math.pow(1 - u, 1.4) * (0.64 + r.vel * 0.25)); ctx.lineWidth = 1.25 - u * 0.5;
+    ring(cx, nowY, 4 + (1 - Math.pow(1 - u, 2.1)) * r.maxR);
+    if (r.dur >= 4 && u > 0.14) {
+      const uk = (u - 0.14) / 0.86; ctx.strokeStyle = mixInk(r.heat, Math.pow(1 - uk, 1.5) * 0.34); ctx.lineWidth = 0.8;
+      ring(cx, nowY, 4 + (1 - Math.pow(1 - uk, 2.0)) * r.maxR * 0.7);
+    }
+  }
+
+  for (const n of state.past) {
+    const yStart = yOfStep(n.step), yEnd = yOfStep(n.step + n.dur);
+    if (yEnd < TOP_PAD - 6 || yStart > H - BOT_PAD) continue;
+    const sx = locusX(n.locus), a = clamp(1 - (state.playhead - n.step) / 34, 0.14, 0.92);
+    const wt = clamp(yStart, TOP_PAD, H - BOT_PAD), wb = clamp(yEnd, TOP_PAD, H - BOT_PAD);
+    if (wb > wt + 2) { ctx.strokeStyle = mixInk(n.flash, a * 0.45); ctx.lineWidth = n.dur >= 6 ? 1.35 : 0.95; line(sx, wt, sx, wb); }
+    if (yStart >= TOP_PAD && yStart <= nowY) {
+      const r0 = 2.0 + Math.sqrt(n.dur) * 0.85;
+      ctx.fillStyle = mixInk(n.flash, n.whisper ? a * 0.52 : a); ring(sx, yStart, r0, true, false);
+      if (n.dropNote || n.whisper) { ctx.strokeStyle = mixInk(n.dropNote ? 1 : 0, a * 0.55); ctx.lineWidth = 0.9; ring(sx, yStart, r0 + 4.2); }
+    }
+  }
+
+  for (const n of state.future) {
+    const yStart = yOfStep(n.step), yEnd = yOfStep(n.step + n.dur);
+    if (yStart > H - BOT_PAD + 6 || yEnd < nowY) continue;
+    const sx = locusX(n.locus), prox = clamp(1 - (n.step - state.playhead) / FUTURE_STEPS, 0, 1);
+    const info = getInfo(n.step), heat = n.dropNote ? 1.0 : info.phase === 'build' ? info.buildHeat * 0.85 : 0;
+    const seedR = 2.6 + Math.sqrt(n.dur) * 1.45, sa = 0.30 + prox * 0.62;
+    const st = Math.max(nowY + 2, yStart + seedR), sb = Math.min(H - BOT_PAD, yEnd);
+    if (sb > st + 1) { ctx.strokeStyle = mixInk(heat, sa * 0.44); ctx.lineWidth = 0.9; line(sx, st, sx, sb); }
+    if (yStart >= nowY + 1 && yStart <= H - BOT_PAD) {
+      ctx.fillStyle = mixInk(heat, n.dropNote ? 0.38 : n.whisper ? 0.04 : 0.06 + heat * 0.16);
+      ctx.strokeStyle = mixInk(heat, n.whisper ? sa * 0.65 : sa); ctx.lineWidth = n.dropNote ? 1.65 : 1.05;
+      ring(sx, yStart, seedR, true, true);
+      if (n.dropNote) { ctx.strokeStyle = `rgba(255,90,31,${(sa * 0.55).toFixed(3)})`; ctx.lineWidth = 0.9; ring(sx, yStart, seedR + 4.5); }
+    }
+  }
+}
+
+function drawNowHorizon(nowInfo) {
+  const kp = state.kickPulse, df = state.dropFlash;
+  const lineHeat = Math.max(df, state.liveWash, nowInfo.phase === 'build' ? nowInfo.buildHeat * 0.72 : 0);
+
+  ctx.strokeStyle = mixInk(lineHeat, nowInfo.phase === 'silence' ? 0.28 : 0.66 + kp * 0.30); ctx.lineWidth = 1 + df * 1.2;
+  ctx.beginPath();
+  if (kp > 0.03) {
+    for (let i = 0; i <= 44; i++) {
+      const u = i / 44, wave = Math.sin(u * Math.PI * 6 + state.playhead * 1.9) * Math.sin(u * Math.PI) * kp * 5.2;
+      i === 0 ? ctx.moveTo(lerp(scoreX0 - 14, scoreX0 + scoreW + 10, u), nowY + 0.5 + wave) : ctx.lineTo(lerp(scoreX0 - 14, scoreX0 + scoreW + 10, u), nowY + 0.5 + wave);
+    }
+  } else { ctx.moveTo(scoreX0 - 14, nowY + 0.5); ctx.lineTo(scoreX0 + scoreW + 10, nowY + 0.5); }
+  ctx.stroke();
+
+  ctx.strokeStyle = mixInk(lineHeat, nowInfo.phase === 'silence' ? 0.28 : 0.58); ctx.lineWidth = 1 + df * 1.1;
+  line(curveX0, nowY + 0.5, curveX1, nowY + 0.5);
+
+  const curE = lerp(getCurveRaw(Math.floor(state.playhead)), getCurveRaw(Math.ceil(state.playhead)), state.playhead - Math.floor(state.playhead));
+  ctx.fillStyle = nowInfo.phase === 'silence' ? '#000' : mixInk(lineHeat, 0.96); ctx.strokeStyle = mixInk(lineHeat, 0.96); ctx.lineWidth = 1.5;
+  ring(xOfE(curE), nowY, 3.8 + kp * 2.2 + df * 3.5, true, true);
+
+  for (const sh of state.shocks) {
+    const u = clamp(sh.age / sh.maxAge, 0, 1), a = Math.pow(1 - u, 1.5) * (sh.big ? 0.82 : 0.24), dy = u * (sh.big ? 110 : 28);
+    ctx.strokeStyle = sh.big ? `rgba(255,90,31,${a.toFixed(3)})` : `rgba(255,255,255,${a.toFixed(3)})`;
+    ctx.lineWidth = sh.big ? 1.8 * (1 - u * 0.5) : 0.9;
+    line(scoreX0 - 12, nowY - dy, curveX1, nowY - dy); line(scoreX0 - 12, nowY + dy, curveX1, nowY + dy);
+  }
+
+  const lAim = cv.hands.L.active ? clamp(Math.round(cv.hands.L.nx * 8), 0, 8) : -1;
+  for (let i = 0; i < 9; i++) {
+    const sx = locusX(i), glow = state.locusGlow[i], heat = Math.max(state.locusHeat[i], df * 0.7, lAim === i ? 0.85 : 0);
+    const hov = ptr.hoverLocus === i || lAim === i, isRoot = i === 0 || i === 4, th = (isRoot ? 6.5 : 4.5) + glow * 3.5 + kp * (isRoot ? 2.4 : 0.8);
+    ctx.strokeStyle = mixInk(heat, hov ? 0.96 : 0.44 + glow * 0.54); ctx.lineWidth = glow > 0.14 || hov ? 1.5 : 1;
+    line(sx, nowY - th, sx, nowY + th);
+    if (glow > 0.08 || hov) { ctx.fillStyle = mixInk(heat, clamp(glow + (hov ? 0.45 : 0), 0, 1)); ring(sx, nowY, 2 + glow * 2.6, true, false); }
+    ctx.font = '9px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(heat, hov || glow > 0.18 ? 0.92 : isRoot ? 0.44 : 0.26); ctx.fillText(NOTES[i], sx, nowY - th - 7);
+  }
+  ctx.font = '9.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'right';
+  ctx.fillStyle = mixInk(df, 0.64); ctx.fillText('NOW ▸', scoreX0 - 16, nowY);
+}
+
+function drawSkeleton(slot, ax, ay, scalePx, hot) {
+  const f = slot.fade, pts = slot.lms.map(p => [ax + (p.x - slot.rawCx) * scalePx, ay + (p.y - slot.rawCy) * scalePx]);
+  ctx.fillStyle = mixInk(hot, 0.045 * f); ctx.beginPath();
+  PALM_IDX.forEach((idx, i) => i === 0 ? ctx.moveTo(pts[idx][0], pts[idx][1]) : ctx.lineTo(pts[idx][0], pts[idx][1]));
+  ctx.closePath(); ctx.fill();
+
+  ctx.strokeStyle = mixInk(hot, (0.26 + hot * 0.48) * f); ctx.lineWidth = 1.1; ctx.beginPath();
+  for (const [a, b] of HAND_BONES) { ctx.moveTo(pts[a][0], pts[a][1]); ctx.lineTo(pts[b][0], pts[b][1]); }
+  ctx.stroke();
+
+  for (let i = 0; i < 21; i++) {
+    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+    ctx.fillStyle = mixInk(i === 4 || i === 8 ? Math.max(hot, slot.pinchProx) : hot, (isTip ? 0.78 : 0.34) * f);
+    ring(pts[i][0], pts[i][1], isTip ? 2.1 : 1.15, true, false);
+  }
+  return pts;
+}
+
+function drawCvHands() {
+  const L = cv.hands.L, R = cv.hands.R;
+  const skScale = clamp(Math.min(W, H) * 0.44, 150, 265);
+
+  if (L.lms && L.fade > 0.01) {
+    const f = L.fade, aim = clamp(Math.round(L.nx * 8), 0, 8), tx = locusX(aim);
+    const hot = Math.max(L.pinchProx, L.pinchFlash, L.fistAmt);
+    const handY = clamp(L.sy, TOP_PAD + 48, H - BOT_PAD - 52);
+    // Tether from Left Hand to target Handpan locus on NOW
+    ctx.strokeStyle = mixInk(hot, (0.20 + hot * 0.45) * f); ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+    line(L.sx, handY, tx, nowY); ctx.setLineDash([]);
+    ctx.strokeStyle = mixInk(hot, 0.85 * f); ctx.lineWidth = 1.3; ring(tx, nowY, 8 + L.pinchFlash * 7, false, true);
+    drawSkeleton(L, L.sx, handY, skScale, hot);
+    ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(hot, 0.82 * f);
+    ctx.fillText(L.fist ? 'L · WASH HOLD' : `L · ${NOTES[aim]}`, L.sx, handY + 42);
+  }
+
+  if (R.lms && R.fade > 0.01) {
+    const f = R.fade, hot = R.pinched ? 1.0 : Math.max(R.pinchProx * 0.85, R.pinchFlash);
+    const px = clamp(R.sx, curveX0, curveX1), py = clamp(R.sy, nowY + 8, H - BOT_PAD - 4);
+    const snapS = Math.round(stepOfY(py)), phase = getInfo(snapS).phase.toUpperCase();
+
+    // Horizontal aiming hairline across the 4-bar curve spine
+    ctx.strokeStyle = mixInk(hot, (R.pinched ? 0.56 : 0.24) * f); ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+    line(curveX0, py, curveX1, py); ctx.setLineDash([]);
+    // Air-Pen reticle right on the curve coordinate
+    ctx.strokeStyle = mixInk(hot, 0.94 * f); ctx.lineWidth = R.pinched ? 1.8 : 1.15;
+    ring(px, py, R.pinched ? 7.5 : 10.5 - R.pinchProx * 3.5, false, true);
+    if (R.pinched) { ctx.fillStyle = `rgba(255,90,31,${(0.95 * f).toFixed(3)})`; ring(px, py, 3.0, true, false); }
+
+    // Offset skeleton subtly right/below reticle so the curve stays crystal clear
+    const skX = clamp(px + 28, curveX0 + 26, W - 44), skY = clamp(py + 18, nowY + 32, H - BOT_PAD - 30);
+    const pts = drawSkeleton(R, skX, skY, skScale * 0.86, hot);
+    ctx.strokeStyle = mixInk(hot, (0.28 + hot * 0.5) * f); ctx.lineWidth = 1;
+    line(pts[8][0], pts[8][1], px, py);
+
+    ctx.font = '8.5px ui-monospace, "SF Mono", Menlo, monospace';
+    const flip = px > curveX0 + curveW * 0.58; ctx.textAlign = flip ? 'right' : 'left';
+    ctx.fillStyle = mixInk(hot, 0.90 * f);
+    ctx.fillText(R.pinched ? `AIR-PEN · ${phase}` : `R AIM · PINCH DRAW`, px + (flip ? -12 : 12), py - 9);
+  }
+}
+
+seedOpeningSet();
+requestAnimationFrame(drawFrame);
+</script>
+</body>
+</html>

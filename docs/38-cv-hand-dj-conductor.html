@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>38 — MediaPipe Hand-Controlled DJ Drop Conductor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #cv-video { display: none; }
+  header {
+    position: fixed; top: 10px; left: 16px; right: 16px; z-index: 6;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #phaseHud { color: rgba(255,255,255,0.56); font-size: 10px; letter-spacing: 0.09em; }
+  #phaseHud.hot { color: #ff5a1f; }
+  .pill {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.08em;
+    height: 22px; padding: 0 9px; border-radius: 99px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; transition: border-color 140ms, color 140ms, background 140ms;
+  }
+  .pill:hover { border-color: rgba(255,255,255,0.75); color: #fff; }
+  .pill.on { border-color: #fff; background: #fff; color: #000; }
+  .pill.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  .pill.sig.on { background: #ff5a1f; color: #000; }
+  .pill.stat { pointer-events: none; cursor: default; color: rgba(255,255,255,0.36); border-color: rgba(255,255,255,0.12); }
+  .pill .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  .pill.on .dot { background: #ff5a1f; }
+  @media (max-width: 960px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="cv-video" playsinline muted></video>
+<header>
+  <div class="row"><span class="hint"><b>38</b> · <b>L HAND ↑</b> build→VACUUM · <b>FIST</b> hold · <b>SLAM ↓</b> DROP · <b>R HAND</b> aim+<b>PINCH</b> handpan · <b>BOTH SLAM</b> super-drop · <b>W/S/D/SPACE</b></span></div>
+  <div class="row">
+    <span id="phaseHud">FLOW · 01.1 · 122 BPM</span>
+    <span class="pill stat" id="cvStatus">CAM OFF</span>
+    <button class="pill" id="camBtn" type="button">ENABLE CAM</button>
+    <button class="pill" id="simBtn" type="button">SIM HANDS</button>
+    <button class="pill on" id="quantBtn" type="button" title="Toggle Drop Beat-Sync (Q)">BEAT-SYNC</button>
+    <button class="pill" id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 38 — MEDIAPIPE BI-MANUAL HAND-CONTROLLED DJ CONDUCTOR (#30 × #31)
+// LEFT HAND:  Height = Build/Vacuum/Strip Piston · Fist/Pinch = Vacuum Hold Lock
+//             Fast Downward Slam (or Release from Vacuum) = Detonate Beat-Synced Drop!
+//             Horizontal X = Half-Time vs 4-on-Floor Drop Feel & Wash Resonance
+// RIGHT HAND: Horizontal X = Aim 9 D Kurd Handpan Loci · Pinch/Tap = Strike Live
+//             (even solo inside Vacuum Silence!) · Height = Harmonic Bloom & Riser Lift
+// BOTH HANDS: Raise high + Slam down together = SUPER-DROP!
+// ============================================================================
+const NOTES = [
+  ['D3','^1',146.83], ['A3','^5',220.00], ['Bb3','^b6',233.08], ['C4','^b7',261.63],
+  ['D4','^1',293.66], ['E4','^2',329.63], ['F4','^b3',349.23], ['G4','^4',392.00], ['A4','^5',440.00],
+].map(([name, deg, freq], idx) => ({ name, deg, freq, idx, pan: (idx - 4) * 0.13 }));
+
+const BPM = 122, BEAT_SEC = 60 / BPM, STEP16_SEC = BEAT_SEC / 4, TICK32_SEC = BEAT_SEC / 8;
+const LOOKAHEAD = 0.092, FLASH_MS = 420, VAC_THRESH = 0.86, STRIP_THRESH = -0.14, BUILD_DROP_MIN = 0.28;
+const METRIC_W = [1.0,.16,.46,.20,.78,.16,.52,.24,.90,.16,.48,.22,.74,.18,.54,.26];
+const CELLS = {
+  strip: [[8,4,-4], [6,2,8], [4,4,8], [8,8], [6,-2,6,2]],
+  flow:  [[3,3,2,4,4], [4,2,2,3,3,2], [2,2,4,3,3,2], [3,3,2,2,2,4]],
+  build: [[2,2,2,2,2,2,2,2], [2,1,1,2,2,1,1,2,2,2], [1,1,2,1,1,2,1,1,1,1,2,2]],
+  drop:  [[3,3,2,3,3,2], [2,1,1,2,2,3,3,2], [3,1,2,2,3,3,2], [4,2,2,3,1,2,2]],
+};
+const CHORD_POOLS = { i: [0,1,4,6,8], iv: [0,2,4,7], bVI: [2,4,6,8], bVII: [3,5,7,8] };
+const BASS_ROOTS  = { i: 73.42, iv: 65.41, bVI: 58.27, bVII: 65.41 };
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  if (h <= 0.005) return `rgba(255,255,255,${a.toFixed(3)})`;
+  return `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. HYBRID WEB AUDIO DJ × HANDPAN ENGINE ====================
+let actx = null, masterBus = null, washHPF = null, washGate = null, scGain = null;
+let iceRevSend = null, iceConv = null, iceRevOut = null, vacDirect = null, uiBus = null;
+let shortNoise = null, longNoise = null, riserBP = null, riserGain = null, shimOsc1 = null, shimOsc2 = null, shimGain = null;
+
+function mkEnv(t0, atk, peak, dur) {
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(Math.max(0.0002, peak), t0 + atk);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(atk + 0.006, dur)); return g;
+}
+const mkFlt = (type, freq, Q = 1) => { const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = Q; return f; };
+
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate, comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -8; comp.knee.value = 8; comp.ratio.value = 8; comp.attack.value = 0.003; comp.release.value = 0.14; comp.connect(actx.destination);
+    masterBus = actx.createGain(); masterBus.gain.value = 0.88; masterBus.connect(comp);
+    washHPF = mkFlt('highpass', 26, 0.7); washGate = actx.createGain(); washGate.gain.value = 1.0;
+    washHPF.connect(washGate); washGate.connect(masterBus);
+    scGain = actx.createGain(); scGain.gain.value = 1.0; scGain.connect(washHPF);
+    const irLen = Math.floor(sr * 2.75), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.56 + (Math.random() * 2 - 1) * 0.44; d[i] = lp * Math.pow(1 - i / irLen, 2.55) * 0.48; }
+    }
+    iceConv = actx.createConvolver(); iceConv.buffer = ir;
+    const revHP = mkFlt('highpass', 340, 0.7);
+    iceRevSend = actx.createGain(); iceRevSend.gain.value = 0.28; iceRevOut = actx.createGain(); iceRevOut.gain.value = 0.46;
+    iceRevSend.connect(iceConv); iceConv.connect(revHP); revHP.connect(iceRevOut); iceRevOut.connect(masterBus);
+    vacDirect = actx.createGain(); vacDirect.gain.value = 0.58; vacDirect.connect(masterBus);
+    uiBus = actx.createGain(); uiBus.gain.value = 0.24; uiBus.connect(comp);
+    shortNoise = actx.createBuffer(1, Math.floor(sr * 0.16), sr);
+    const sd = shortNoise.getChannelData(0); for (let i = 0; i < sd.length; i++) sd[i] = Math.random() * 2 - 1;
+    longNoise = actx.createBuffer(2, Math.floor(sr * 3.0), sr);
+    for (let ch = 0; ch < 2; ch++) { const ld = longNoise.getChannelData(ch); for (let i = 0; i < ld.length; i++) ld[i] = Math.random() * 2 - 1; }
+    const rSrc = actx.createBufferSource(); rSrc.buffer = longNoise; rSrc.loop = true;
+    riserBP = mkFlt('bandpass', 360, 1.6); riserGain = actx.createGain(); riserGain.gain.value = 0.0001;
+    rSrc.connect(riserBP); riserBP.connect(riserGain); riserGain.connect(masterBus); rSrc.start();
+    const shimHP = mkFlt('highpass', 420, 0.7), sg2 = actx.createGain(); sg2.gain.value = 0.62;
+    shimGain = actx.createGain(); shimGain.gain.value = 0.0001;
+    shimHP.connect(shimGain); shimGain.connect(masterBus); shimGain.connect(iceRevSend);
+    shimOsc1 = actx.createOscillator(); shimOsc1.type = 'triangle'; shimOsc1.frequency.value = 293.66;
+    shimOsc2 = actx.createOscillator(); shimOsc2.type = 'sine';     shimOsc2.frequency.value = 440.00;
+    shimOsc1.connect(shimHP); shimOsc2.connect(sg2); sg2.connect(shimHP); shimOsc1.start(); shimOsc2.start();
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playHandpan(noteIdx, when, vel = 0.8, durSteps = 4, liveInVacuum = false, bloomBoost = 0.5) {
+  ensureAudio(); const n = NOTES[noteIdx]; if (!n) return;
+  const t0 = Math.max(actx.currentTime + 0.001, when == null ? actx.currentTime : when);
+  const v = clamp(vel, 0.12, 1.0), isDing = noteIdx === 0;
+  const tau = clamp(0.16 + durSteps * 0.25, 0.24, 2.35) * (isDing ? 1.18 : 1.0);
+  const out = actx.createGain(), pan = actx.createStereoPanner();
+  out.gain.setValueAtTime(1, t0); pan.pan.setValueAtTime(n.pan, t0); out.connect(pan);
+  if (liveInVacuum) { pan.connect(vacDirect); const vs = actx.createGain(); vs.gain.setValueAtTime(0.72, t0); pan.connect(vs); vs.connect(iceConv); }
+  else { pan.connect(scGain); pan.connect(iceRevSend); }
+  const fg = mkEnv(t0, 0.005, 0.29 * v, tau); fg.connect(out);
+  for (const [df, w] of [[0, 0.72], [0.68, 0.28]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(n.freq + df, t0); g.gain.value = w; o.connect(g); g.connect(fg); o.start(t0); o.stop(t0 + tau + 0.04);
+  }
+  const bloom = 0.52 + 0.55 * clamp(bloomBoost, 0, 1);
+  for (const [ratio, del, lvl, mul] of [[2.001, 0.045, 0.20, 0.82], [2.998, 0.068, 0.08, 0.95]]) {
+    const o = actx.createOscillator(), g = mkEnv(t0, del, lvl * v * bloom, tau * mul);
+    o.frequency.setValueAtTime(n.freq * ratio, t0); o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + tau * mul + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = shortNoise;
+  const bp = mkFlt('bandpass', clamp(n.freq * 2.5, 440, 1250), 1.8), ng = mkEnv(t0, 0.002, 0.14 * v, 0.022);
+  ns.connect(bp); bp.connect(ng); ng.connect(out); ns.start(t0); ns.stop(t0 + 0.03);
+  if (isDing) {
+    const bo = actx.createOscillator(), bg = mkEnv(t0, 0.006, 0.24 * v, 0.24);
+    bo.frequency.setValueAtTime(98, t0); bo.frequency.exponentialRampToValueAtTime(73.42, t0 + 0.09);
+    bo.connect(bg); bg.connect(out); bo.start(t0); bo.stop(t0 + 0.26);
+  }
+}
+function playKick(when, intensity = 0.7, duckDepth = 0.74) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.001, when), p = clamp(intensity, 0.2, 1.0);
+  const o = actx.createOscillator(), g = mkEnv(t0, 0.003, 0.64 * p, lerp(0.24, 0.35, p));
+  o.frequency.setValueAtTime(lerp(116, 152, p), t0); o.frequency.exponentialRampToValueAtTime(52, t0 + 0.034); o.frequency.exponentialRampToValueAtTime(36.71, t0 + 0.25);
+  o.connect(g); g.connect(washHPF); o.start(t0); o.stop(t0 + 0.38);
+  const ck = actx.createBufferSource(); ck.buffer = shortNoise;
+  const bp = mkFlt('bandpass', lerp(1400, 2400, p), 1.4), cg = mkEnv(t0, 0.0015, 0.18 * p, 0.014);
+  ck.connect(bp); bp.connect(cg); cg.connect(washHPF); ck.start(t0); ck.stop(t0 + 0.02);
+  const duck = clamp(duckDepth, 0.22, 0.96);
+  scGain.gain.cancelScheduledValues(t0); scGain.gain.setValueAtTime(1.0, t0);
+  scGain.gain.linearRampToValueAtTime(duck, t0 + 0.014); scGain.gain.setTargetAtTime(1.0, t0 + 0.024, lerp(0.068, 0.095, 1 - duck));
+}
+function playSubBass(when, freq, durSec, level = 0.45) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.001, when), d = Math.max(0.08, durSec);
+  const lp = mkFlt('lowpass', 260, 1.1), env = mkEnv(t0, 0.012, clamp(level, 0.05, 0.85), d);
+  lp.connect(env); env.connect(scGain);
+  const o1 = actx.createOscillator(), o2 = actx.createOscillator(), g2 = actx.createGain();
+  o1.frequency.setValueAtTime(freq, t0); o2.type = 'triangle'; o2.frequency.setValueAtTime(freq * 2, t0); g2.gain.value = 0.34;
+  o1.connect(lp); o2.connect(g2); g2.connect(lp); o1.start(t0); o2.start(t0); o1.stop(t0 + d + 0.04); o2.stop(t0 + d + 0.04);
+}
+function playHat(when, open = false, vel = 0.5) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.001, when), dur = open ? 0.17 : 0.036;
+  const src = actx.createBufferSource(); src.buffer = shortNoise;
+  const hp = mkFlt('highpass', open ? 5600 : 7200, 0.8), g = mkEnv(t0, 0.002, 0.14 * clamp(vel, 0.1, 1), dur);
+  src.connect(hp); hp.connect(g); g.connect(scGain); src.start(t0); src.stop(t0 + dur + 0.01);
+}
+function playSnare(when, tension01 = 0.4, vel = 0.7) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.001, when), t = clamp(tension01, 0, 1), v = clamp(vel, 0.1, 1), dec = lerp(0.115, 0.044, t);
+  const o = actx.createOscillator(), og = mkEnv(t0, 0.002, 0.24 * v, dec);
+  o.type = 'triangle'; o.frequency.setValueAtTime(175 + t * 145, t0); o.frequency.exponentialRampToValueAtTime(108 + t * 82, t0 + 0.048);
+  o.connect(og); og.connect(washHPF); o.start(t0); o.stop(t0 + dec + 0.02);
+  const src = actx.createBufferSource(); src.buffer = shortNoise;
+  const bp = mkFlt('bandpass', 1850 + t * 1550, 1.5), ng = mkEnv(t0, 0.002, 0.26 * v, dec * 1.15);
+  src.connect(bp); bp.connect(ng); ng.connect(washHPF); ng.connect(iceRevSend); src.start(t0); src.stop(t0 + dec * 1.2 + 0.02);
+}
+function playDropImpact(when, power = 1.0, superDrop = false) {
+  ensureAudio();
+  const t0 = Math.max(actx.currentTime + 0.001, when), p = clamp(power, 0.68, 1.0) * (superDrop ? 1.12 : 1.0);
+  washHPF.frequency.cancelScheduledValues(t0); washHPF.frequency.setValueAtTime(20, t0);
+  washHPF.Q.cancelScheduledValues(t0); washHPF.Q.setValueAtTime(0.7, t0);
+  washGate.gain.cancelScheduledValues(t0); washGate.gain.setValueAtTime(1.0, t0);
+  riserGain.gain.cancelScheduledValues(t0); riserGain.gain.setValueAtTime(0.0001, t0);
+  shimGain.gain.cancelScheduledValues(t0); shimGain.gain.setValueAtTime(0.0001, t0);
+  const sub = actx.createOscillator(), sg = mkEnv(t0, 0.004, Math.min(0.95, 0.82 * p), superDrop ? 1.75 : 1.48);
+  sub.frequency.setValueAtTime(superDrop ? 146 : 132, t0); sub.frequency.exponentialRampToValueAtTime(36.71, t0 + 0.095);
+  sub.connect(sg); sg.connect(masterBus); sub.start(t0); sub.stop(t0 + 1.82);
+  const sub2 = actx.createOscillator(), slp = mkFlt('lowpass', 240, 0.8), sg2 = mkEnv(t0, 0.005, 0.34 * p, 0.90);
+  sub2.type = 'triangle'; sub2.frequency.setValueAtTime(146.83, t0); sub2.frequency.exponentialRampToValueAtTime(73.42, t0 + 0.08);
+  sub2.connect(slp); slp.connect(sg2); sg2.connect(masterBus); sub2.start(t0); sub2.stop(t0 + 0.95);
+  const dn = actx.createBufferSource(); dn.buffer = longNoise;
+  const dlp = mkFlt('bandpass', 6800, 0.85), dg = mkEnv(t0, 0.012, 0.32 * p, 2.15);
+  dlp.frequency.setValueAtTime(6800, t0); dlp.frequency.exponentialRampToValueAtTime(175, t0 + 2.05);
+  dn.connect(dlp); dlp.connect(dg); dg.connect(masterBus); dn.start(t0); dn.stop(t0 + 2.2);
+  playHandpan(0, t0, 1.0, 8, false, 1.0); playHandpan(4, t0 + 0.004, 0.86, 8, false, 0.9); playHandpan(8, t0 + 0.010, 0.72, 6, false, 0.9);
+}
+function playDetent(panVal = 0, strong = false, pitchMul = 1.0) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, src = actx.createBufferSource(); src.buffer = shortNoise;
+  const bp = mkFlt('bandpass', (strong ? 1650 : 2500) * pitchMul, strong ? 3.8 : 5.2);
+  const g = mkEnv(t0, 0.0012, strong ? 0.20 : 0.10, strong ? 0.022 : 0.013);
+  const p = actx.createStereoPanner(); p.pan.value = clamp(panVal, -0.8, 0.8);
+  src.connect(bp); bp.connect(g); g.connect(p); p.connect(uiBus); src.start(t0); src.stop(t0 + 0.028);
+}
+
+// ==================== 2. DJ CONDUCTOR STATE MACHINE ====================
+const state = {
+  playing: false, quantize: true, phase: 'FLOW',
+  piston: 0.0, pistonTarget: 0.0, peakTension: 0.0, dropEnergy: 0.0, halfTimeDrop: false,
+  washResX: 0.5, rightBloomY: 0.5, vacuumLockedByFist: false, lastGestureBanner: '', lastGesturePerf: -9999,
+  dropStartTick: -999, lastDropKickTick: -999, dropAudioTime: 0, dropFlashPerf: -9999,
+  vacuumStartTick: 0, vacuumBeat: 0, vacuumBeatPerf: -9999,
+  armedDropTick: -1, armedPower: 1.0, armedSuper: false, lastDetentZone: 'FLOW',
+  playheadTick: 0, anchorTick: 0, anchorAudioTime: 0, nextSchedTick: 0, nextId: 1, lastScoreSig: '',
+  pastNotes: [], futureNotes: [], keysHeld: { up: false, down: false }, vacGateHold: 0,
+};
+const loci = NOTES.map(() => ({ glow: 0, heat: 0, damp: 2.0 }));
+const blooms = [], beatRipples = [], shockwaves = [];
+let kickPulse = 0, snarePulse = 0, vacuumDim = 0;
+
+const getCurrentTick = () => (!state.playing || !actx) ? state.playheadTick : state.anchorTick + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TICK32_SEC);
+const getCurrentStep = () => getCurrentTick() * 0.5;
+const getRollDiv = (t) => t >= 0.78 ? 1 : t >= 0.58 ? 2 : t >= 0.34 ? 4 : t >= 0.14 ? 8 : 0;
+const detentZoneFor = (p) => p >= VAC_THRESH ? 'VACUUM' : p >= 0.78 ? 'B32' : p >= 0.58 ? 'B16' : p >= 0.34 ? 'B8' : p >= 0.14 ? 'B4' : p <= STRIP_THRESH ? 'STRIP' : 'FLOW';
+const setBanner = (txt) => { state.lastGestureBanner = txt; state.lastGesturePerf = performance.now(); };
+
+function triggerResonator(idx, vel, durSteps, hot = false) {
+  const loc = loci[idx];
+  loc.glow = clamp(Math.max(loc.glow * 0.4, 0.48 + vel * 0.52), 0, 1);
+  loc.damp = clamp(3.8 / (0.65 + durSteps * 0.42), 0.7, 3.8);
+  if (hot) loc.heat = 1.0;
+  blooms.push({ idx, vel, dur: durSteps, bornPerf: performance.now(), lifeMs: clamp(340 + durSteps * 250, 380, 2250) * (idx === 0 ? 1.18 : 1.0), hot });
+  if (blooms.length > 28) blooms.shift();
+}
+
+function setPistonDirect(val, allowSlam = false, velDown = 0, superDrop = false) {
+  const prevP = state.piston, nextP = clamp(val, -0.50, 1.0);
+  if (allowSlam && (state.phase === 'BUILD' || state.phase === 'VACUUM') && state.peakTension >= 0.34 && prevP > 0.18 && nextP <= 0.25 && velDown > 1.35) {
+    setBanner(superDrop ? 'BOTH-HAND SLAM → SUPER DROP' : 'HAND SLAM → BASS DROP');
+    requestDrop(clamp(0.72 + state.peakTension * 0.28, 0.72, 1.0), superDrop);
+    return;
+  }
+  state.piston = nextP; state.pistonTarget = nextP;
+
+  const zone = detentZoneFor(nextP);
+  if (zone !== state.lastDetentZone) {
+    const strong = zone === 'VACUUM' || state.lastDetentZone === 'VACUUM' || zone === 'FLOW' || zone === 'STRIP';
+    playDetent(zone === 'VACUUM' ? 0 : (nextP > prevP ? 0.25 : -0.25), strong, zone === 'VACUUM' ? 0.72 : zone === 'B32' ? 1.35 : zone === 'B16' ? 1.18 : 1.0);
+    state.lastDetentZone = zone;
+  }
+  if (nextP >= VAC_THRESH) {
+    if (state.phase !== 'VACUUM') {
+      state.phase = 'VACUUM'; state.armedDropTick = -1; state.peakTension = 1.0;
+      state.vacuumStartTick = getCurrentTick(); state.vacuumBeat = 1; state.vacuumBeatPerf = performance.now();
+      recomputeFuture(true);
+    }
+  } else if (nextP > 0.06) {
+    if (state.phase !== 'BUILD') { state.phase = 'BUILD'; state.armedDropTick = -1; state.dropEnergy = 0; }
+    state.peakTension = Math.max(state.peakTension, nextP); recomputeFuture(false);
+  } else if (nextP <= STRIP_THRESH) {
+    if (state.phase !== 'STRIP') { state.phase = 'STRIP'; state.armedDropTick = -1; state.peakTension = 0; state.dropEnergy = 0; recomputeFuture(true); }
+  } else if (state.phase !== 'DROP') {
+    const wasDramatic = state.phase === 'STRIP' || state.phase === 'VACUUM';
+    if (state.phase !== 'FLOW') { state.phase = 'FLOW'; state.peakTension = 0; recomputeFuture(wasDramatic); }
+  }
+}
+
+function detonateDrop(whenAudio, tickAtDrop, power = 1.0, superDrop = false) {
+  state.phase = 'DROP'; state.piston = 0; state.pistonTarget = 0; state.peakTension = 0;
+  state.vacuumLockedByFist = false; state.halfTimeDrop = state.washResX < 0.28;
+  state.armedDropTick = -1; state.dropEnergy = 1.0; state.dropStartTick = tickAtDrop;
+  state.lastDropKickTick = tickAtDrop; state.dropAudioTime = whenAudio; state.lastDetentZone = 'FLOW';
+  playDropImpact(whenAudio, power, superDrop); playKick(whenAudio, 1.0, 0.24);
+
+  const delayMs = Math.max(0, (whenAudio - (actx ? actx.currentTime : 0)) * 1000);
+  setTimeout(() => {
+    const nowP = performance.now();
+    state.dropFlashPerf = nowP; kickPulse = 1.0;
+    for (let k = 0; k < (superDrop ? 4 : 3); k++) shockwaves.push({ bornPerf: nowP + k * 70, lifeMs: 1180 + k * 240, hot: k < 3 });
+    triggerResonator(0, 1.0, 8, true); triggerResonator(4, 0.88, 8, true); triggerResonator(8, 0.72, 6, true);
+    beatRipples.push({ bornPerf: nowP, lifeMs: 780, hot: true, strength: 1.0 });
+  }, delayMs);
+
+  const dropStep = tickAtDrop * 0.5;
+  for (const [idx, vel, dur] of [[0,1.0,8], [4,0.86,8], [8,0.68,6]]) state.pastNotes.push({ id: state.nextId++, step: dropStep, dur, noteIdx: idx, vel, source: 'drop', hot: true, firedVisual: true, flashPerf: performance.now() });
+  recomputeFuture(true);
+}
+function requestDrop(power = 1.0, superDrop = false) {
+  ensureAudio(); if (!state.playing) startPlayback();
+  const curTick = getCurrentTick(), intoBeat = ((curTick % 8) + 8) % 8, sincePrevSec = intoBeat * TICK32_SEC, untilNextSec = (8 - intoBeat) * TICK32_SEC;
+  if (!state.quantize || sincePrevSec <= 0.060 || untilNextSec <= 0.055) {
+    const imm = !state.quantize || sincePrevSec <= 0.060;
+    detonateDrop(actx.currentTime + (imm ? 0.005 : untilNextSec), imm ? Math.round(curTick) : Math.ceil(curTick / 8) * 8, power, superDrop);
+  } else {
+    state.phase = 'ARMED'; state.armedDropTick = Math.ceil(curTick / 8) * 8; state.armedPower = power; state.armedSuper = superDrop; state.pistonTarget = 0.0;
+    playDetent(0, true, 0.85); recomputeFuture(false);
+  }
+}
+function releaseCharge() {
+  if (state.phase === 'VACUUM') requestDrop(1.0, false);
+  else if (state.phase === 'BUILD') {
+    if (state.peakTension >= BUILD_DROP_MIN) requestDrop(clamp(0.68 + state.peakTension * 0.32, 0.68, 0.96), false);
+    else { state.phase = 'FLOW'; state.pistonTarget = 0.0; state.peakTension = 0.0; recomputeFuture(false); }
+  }
+}
+
+// ==================== 3. HANDPAN SCORE & 32ND-NOTE SCHEDULER ====================
+const chordForBar = (b, mode) => (mode === 'STRIP' ? ['i','i','iv','i'] : mode === 'BUILD' ? ['bVI','bVII','bVI','bVII'] : ['i','bVI','bVII','i'])[((b % 4) + 4) % 4];
+const scoreSignature = () => (state.phase === 'VACUUM' || state.phase === 'ARMED') ? 'VAC' : state.phase === 'BUILD' ? `BUILD:${Math.floor(clamp(state.piston, 0, 0.9) * 3)}` : state.phase;
+
+function generateFutureBars(fromStep, numBars = 3) {
+  if (scoreSignature() === 'VAC') return [];
+  const notes = [], startBar = Math.floor(fromStep / 16);
+  const mode = state.phase === 'STRIP' ? 'STRIP' : state.phase === 'BUILD' ? 'BUILD' : state.phase === 'DROP' ? 'DROP' : 'FLOW';
+  const buildLvl = mode === 'BUILD' ? clamp(state.piston / VAC_THRESH, 0, 1) : 0;
+  let prevPitch = mode === 'BUILD' ? 6 : 0;
+  for (let b = startBar; b < startBar + numBars; b++) {
+    const chord = chordForBar(b, mode), pool = CHORD_POOLS[chord], bank = CELLS[mode.toLowerCase()];
+    const pat = bank[mode === 'BUILD' ? clamp(Math.floor(buildLvl * bank.length), 0, bank.length - 1) : Math.floor(hash01(b, 19, mode.charCodeAt(0)) * bank.length)];
+    for (let k = 0, pos = 0; k < pat.length && pos < 16; k++) {
+      const raw = pat[k], dur = Math.abs(raw);
+      if (raw > 0 && b * 16 + pos >= fromStep) {
+        const step = b * 16 + pos; let noteIdx;
+        if (mode === 'BUILD') {
+          const hi = chord === 'bVI' ? [2,4,6,8] : [3,5,7,8];
+          noteIdx = hi[clamp(hi.length - 1 - Math.floor(hash01(step, b * 7, 91) * (buildLvl > 0.62 ? 2 : hi.length)), 0, hi.length - 1)];
+        } else if (pos === 0 && (mode === 'DROP' || mode === 'FLOW')) noteIdx = chord === 'i' ? 0 : pool[0];
+        else {
+          const target = lerp(2.6, 6.2, state.rightBloomY); let best = pool[0], bestS = -1e9;
+          for (let i = 0; i < 9; i++) {
+            const d = Math.abs(i - prevPitch);
+            const sc = (pool.includes(i) ? 2.4 : -0.4) - Math.abs(i - target) * 0.42 + (d === 0 ? -1.4 : d <= 2 ? 1.4 : d <= 4 ? 0.5 : -0.7)
+              - (i === 0 && pos !== 0 && pos !== 8 ? 1.8 : 0) + (hash01(step * 13 + i, b, 307) - 0.5) * 1.9;
+            if (sc > bestS) { bestS = sc; best = i; }
+          }
+          noteIdx = best;
+        }
+        const vel = clamp(0.46 + METRIC_W[pos] * 0.34 + (mode === 'DROP' ? 0.14 : mode === 'BUILD' ? buildLvl * 0.12 : 0), 0.30, 0.96);
+        notes.push({ id: 0, step, dur, noteIdx, vel, source: 'gen', hot: mode === 'DROP' && pos === 0, flashPerf: -9999 });
+        prevPitch = noteIdx;
+      }
+      pos += dur;
+    }
+  }
+  return notes;
+}
+function recomputeFuture(flash = false) {
+  const sig = scoreSignature();
+  if (!flash && sig === state.lastScoreSig && state.futureNotes.length > 0) return;
+  state.lastScoreSig = sig; const nowP = performance.now();
+  state.futureNotes = generateFutureBars(Math.ceil(getCurrentStep() + 0.5), 3);
+  if (flash) for (const n of state.futureNotes) n.flashPerf = nowP;
+}
+
+function scheduleTick(tick, when) {
+  if (state.phase === 'ARMED' && tick === state.armedDropTick) { detonateDrop(when, tick, state.armedPower, state.armedSuper); return; }
+  if (state.phase === 'DROP') {
+    const el = tick - state.dropStartTick;
+    if (el >= 256) { state.dropEnergy = 0; state.phase = 'FLOW'; recomputeFuture(false); }
+    else state.dropEnergy = el > 128 ? clamp(1 - (el - 128) / 128, 0, 1) : 1.0;
+  }
+  const phase = state.phase, inBar32 = ((tick % 32) + 32) % 32;
+  const isBeat = (inBar32 % 8) === 0, isOff8 = (inBar32 % 8) === 4, is16 = (inBar32 % 2) === 0;
+  const step16 = tick / 2, barIdx = Math.floor(tick / 32), delayMs = Math.max(0, (when - actx.currentTime) * 1000);
+
+  if (phase === 'VACUUM' || phase === 'ARMED') {
+    if (isBeat && tick >= state.vacuumStartTick + 4) {
+      setTimeout(() => { if (state.phase === 'VACUUM') { state.vacuumBeat = Math.min(16, state.vacuumBeat + 1); state.vacuumBeatPerf = performance.now(); } }, delayMs);
+    }
+    return;
+  }
+  const isDropTick = tick === state.lastDropKickTick;
+  if (is16 && !isDropTick) {
+    const lastFut = state.futureNotes.length ? state.futureNotes[state.futureNotes.length - 1].step : step16;
+    if (lastFut < step16 + 24) state.futureNotes.push(...generateFutureBars(Math.max(step16 + 1, Math.floor(lastFut / 16 + 1) * 16), 2));
+    while (state.futureNotes.length && state.futureNotes[0].step <= step16 + 0.01) {
+      const fn = state.futureNotes.shift(); if (fn.step < step16 - 0.5) continue;
+      fn.id = state.nextId++; playHandpan(fn.noteIdx, when, fn.vel, fn.dur, false, state.rightBloomY);
+      state.pastNotes.push(fn); if (state.pastNotes.length > 96) state.pastNotes.shift();
+    }
+  }
+  if (phase === 'STRIP') { if (isBeat) setTimeout(() => beatRipples.push({ bornPerf: performance.now(), lifeMs: 520, hot: false, strength: 0.24 }), delayMs); return; }
+
+  const tBuild = phase === 'BUILD' ? clamp(state.piston / VAC_THRESH, 0, 1) : 0;
+  const dropKickHit = phase === 'DROP' && (state.halfTimeDrop ? (inBar32 === 0 || inBar32 === 20) : isBeat);
+  if (!isDropTick && (dropKickHit || (phase !== 'DROP' && isBeat) || (phase === 'BUILD' && tBuild >= 0.72 && isOff8))) {
+    playKick(when, phase === 'DROP' ? lerp(0.76, 1.0, state.dropEnergy) : phase === 'BUILD' ? lerp(0.65, 0.42, tBuild) : 0.62,
+             phase === 'DROP' ? lerp(0.62, 0.24, state.dropEnergy) : phase === 'BUILD' ? 0.78 : 0.76);
+    if (isBeat || dropKickHit) setTimeout(() => {
+      kickPulse = Math.max(kickPulse, phase === 'DROP' ? 0.95 : 0.48);
+      beatRipples.push({ bornPerf: performance.now(), lifeMs: phase === 'DROP' ? 680 : 540, hot: phase === 'DROP' && state.dropEnergy > 0.35, strength: phase === 'DROP' ? lerp(0.55, 1.0, state.dropEnergy) : 0.42 });
+    }, delayMs);
+  }
+  const rootHz = BASS_ROOTS[chordForBar(barIdx, phase === 'DROP' ? 'DROP' : 'FLOW')] || 73.42;
+  if (phase === 'DROP') {
+    if (inBar32 % 8 === 4) playSubBass(when, rootHz, STEP16_SEC * 2.2, lerp(0.38, 0.64, state.dropEnergy));
+    else if (inBar32 === 0 || inBar32 === 16) playSubBass(when, rootHz * 0.5, STEP16_SEC * 2.4, lerp(0.32, 0.56, state.dropEnergy));
+    else if (inBar32 === 14 || inBar32 === 30) playSubBass(when, rootHz * 1.5, STEP16_SEC * 1.1, lerp(0.22, 0.40, state.dropEnergy));
+  } else if (phase === 'FLOW' && (inBar32 === 0 || inBar32 === 16)) playSubBass(when, rootHz, STEP16_SEC * 5.2, 0.30);
+
+  if (isOff8) { const open = phase === 'DROP' && state.dropEnergy > 0.25; playHat(when, open, open ? lerp(0.55, 0.85, state.dropEnergy) : 0.45); }
+  else if (phase === 'DROP' && is16 && (inBar32 % 4 === 2)) playHat(when, false, 0.24 * state.dropEnergy);
+
+  if (phase === 'BUILD') {
+    const div = getRollDiv(state.piston);
+    if (div > 0 && (inBar32 % div) === 0) {
+      playSnare(when, tBuild, clamp(0.34 + tBuild * 0.62 + (isBeat ? 0.12 : 0), 0.28, 1.0));
+      setTimeout(() => { snarePulse = Math.max(snarePulse, 0.4 + tBuild * 0.6); }, delayMs);
+    }
+  } else if (phase === 'DROP' && state.dropEnergy > 0.22 && (inBar32 === 8 || inBar32 === 24)) playSnare(when, 0.28, 0.58 * state.dropEnergy);
+}
+
+let schedTimer = null;
+function runScheduler() {
+  if (!state.playing || !actx) return;
+  const horizon = actx.currentTime + LOOKAHEAD;
+  while (state.anchorAudioTime + (state.nextSchedTick - state.anchorTick) * TICK32_SEC < horizon) {
+    scheduleTick(state.nextSchedTick, state.anchorAudioTime + (state.nextSchedTick - state.anchorTick) * TICK32_SEC);
+    state.nextSchedTick++;
+  }
+}
+function updateContinuousAudio() {
+  if (!actx || !washHPF || actx.currentTime < state.dropAudioTime) return;
+  const now = actx.currentTime, isVac = state.phase === 'VACUUM' || state.phase === 'ARMED', isBuild = state.phase === 'BUILD';
+  const t = isBuild ? clamp(state.piston / VAC_THRESH, 0, 1) : 0;
+  if (isVac) {
+    washGate.gain.setTargetAtTime(0.0001, now, 0.008); riserGain.gain.setTargetAtTime(0.0001, now, 0.008);
+    shimGain.gain.setTargetAtTime(0.0001, now, 0.008); iceRevSend.gain.setTargetAtTime(0.0001, now, 0.010);
+    iceRevOut.gain.setTargetAtTime(0.58, now, 0.04);
+  } else {
+    const qBoost = lerp(0.7, 2.2, state.washResX);
+    washGate.gain.setTargetAtTime(1.0, now, 0.012);
+    washHPF.frequency.setTargetAtTime(clamp(isBuild ? 36 * Math.pow(46, Math.pow(t, 1.22)) : (state.phase === 'DROP' ? 20 : 28), 20, 1750), now, 0.025);
+    washHPF.Q.setTargetAtTime(isBuild ? lerp(0.8, 3.8, t) * qBoost * 0.72 : 0.7, now, 0.03);
+    riserBP.frequency.setTargetAtTime(lerp(320, 4600, Math.pow(t, 1.15)), now, 0.03);
+    riserBP.Q.setTargetAtTime(lerp(1.4, 6.4, t), now, 0.04);
+    riserGain.gain.setTargetAtTime(isBuild ? Math.max(0.0001, Math.pow(t, 1.50) * lerp(0.18, 0.30, state.rightBloomY)) : 0.0001, now, 0.028);
+    const pm = Math.pow(2, t * 1.02);
+    shimOsc1.frequency.setTargetAtTime(293.66 * pm, now, 0.035); shimOsc2.frequency.setTargetAtTime(440.00 * pm, now, 0.035);
+    shimGain.gain.setTargetAtTime(isBuild ? Math.max(0.0001, Math.pow(t, 1.6) * lerp(0.06, 0.14, state.rightBloomY)) : 0.0001, now, 0.03);
+    iceRevSend.gain.setTargetAtTime(state.phase === 'STRIP' ? 0.46 : isBuild ? lerp(0.28, 0.64, t) : 0.26, now, 0.04);
+    iceRevOut.gain.setTargetAtTime(0.44, now, 0.05);
+  }
+}
+
+function startPlayback() {
+  ensureAudio(); if (state.playing) return;
+  state.playing = true; state.anchorTick = state.playheadTick;
+  state.anchorAudioTime = actx.currentTime + 0.02; state.nextSchedTick = Math.ceil(state.anchorTick);
+  recomputeFuture(false); if (!schedTimer) schedTimer = setInterval(runScheduler, 20);
+  playBtn.classList.add('on'); playLbl.textContent = 'PAUSE';
+}
+function pausePlayback() {
+  if (!state.playing) return;
+  state.playheadTick = getCurrentTick(); state.playing = false;
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
+  if (actx && riserGain) { riserGain.gain.setTargetAtTime(0.0001, actx.currentTime, 0.02); shimGain.gain.setTargetAtTime(0.0001, actx.currentTime, 0.02); }
+  playBtn.classList.remove('on'); playLbl.textContent = 'PLAY';
+}
+const togglePlay = () => (state.playing ? pausePlayback() : startPlayback());
+function strikeLiveHandpan(idx, vel = 0.90) {
+  ensureAudio();
+  const inVac = state.phase === 'VACUUM' || state.phase === 'ARMED';
+  playHandpan(idx, actx.currentTime + 0.001, vel, inVac ? 8 : 4, inVac, state.rightBloomY);
+  triggerResonator(idx, Math.max(0.82, vel), inVac ? 8 : 4, true);
+  state.pastNotes.push({ id: state.nextId++, step: getCurrentStep(), dur: inVac ? 6 : 3, noteIdx: idx, vel, source: 'user', hot: true, firedVisual: true, flashPerf: performance.now() });
+  if (state.pastNotes.length > 96) state.pastNotes.shift();
+}
+
+// ==================== 4. MEDIAPIPE BI-MANUAL CV ENGINE + 1€ FILTER + SIM HANDS ====================
+class OneEuro {
+  constructor(minCutoff = 1.6, beta = 0.14, dCutoff = 1.0) { this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff; this.reset(); }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  _alpha(cut, dt) { const tau = 1 / (2 * Math.PI * Math.max(1e-4, cut)); return 1 / (1 + tau / dt); }
+  filter(v, tSec) {
+    if (!Number.isFinite(v) || !Number.isFinite(tSec)) return this.x ?? 0;
+    if (this.x === null || this.t === null) { this.x = v; this.dx = 0; this.t = tSec; return v; }
+    const rawDt = tSec - this.t; if (rawDt <= 1e-6) return this.x;
+    const dt = Math.min(rawDt, 0.25); this.t = tSec;
+    const edx = (v - this.x) / dt, ad = this._alpha(this.dCutoff, dt);
+    this.dx = ad * edx + (1 - ad) * this.dx;
+    const ax = this._alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt);
+    return (this.x = ax * v + (1 - ax) * this.x);
+  }
+}
+
+const PALM_IDX = [0, 5, 9, 13, 17], TIP_IDX = [8, 12, 16, 20];
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PINCH_ON = 0.056, PINCH_OFF = 0.078, PINCH_COOLDOWN_MS = 220;
+
+const makeCvHand = () => ({
+  active: false, seenAt: 0, lms: null, rawCx: 0.5, rawCy: 0.5,
+  fx: new OneEuro(1.6, 0.14, 1.0), fy: new OneEuro(1.8, 0.22, 1.0),
+  nx: 0.5, ny: 0.5, prevNy: 0.5, prevT: 0, vyDown: 0,
+  pinchDist: 1, pinchProx: 0, pinched: false, lastPinchAt: 0, pinchFlash: 0,
+  fist: false, fistAmt: 0, fade: 0, slamFlash: 0, lastSlamAt: 0
+});
+
+const videoEl = document.getElementById('cv-video'), cvStatusEl = document.getElementById('cvStatus');
+const camBtn = document.getElementById('camBtn'), simBtn = document.getElementById('simBtn');
+const cv = { mode: 'off', loading: false, sessionId: 0, stream: null, landmarker: null, lastVideoTime: -1, lastDetectMs: 0, handCount: 0, leftLabel: 'Right', simStartMs: 0, hands: { L: makeCvHand(), R: makeCvHand() } };
+
+function setCvStatus(text, sig = false) {
+  cvStatusEl.textContent = text; cvStatusEl.classList.toggle('sig', sig);
+  camBtn.textContent = cv.mode === 'cam' ? 'DISABLE CAM' : (cv.loading ? 'LOADING...' : 'ENABLE CAM');
+  camBtn.classList.toggle('on', cv.mode === 'cam'); camBtn.classList.toggle('sig', cv.mode === 'cam' || cv.loading);
+  simBtn.classList.toggle('on', cv.mode === 'sim'); simBtn.classList.toggle('sig', cv.mode === 'sim');
+}
+function stopCv(statusText = 'CAM OFF', sig = false) {
+  cv.sessionId++; cv.loading = false; cv.mode = 'off'; cv.handCount = 0; cv.lastVideoTime = -1;
+  if (cv.stream) { cv.stream.getTracks().forEach(t => t.stop()); cv.stream = null; }
+  videoEl.srcObject = null; state.vacuumLockedByFist = false;
+  for (const h of [cv.hands.L, cv.hands.R]) { h.active = false; h.lms = null; h.pinched = false; h.fist = false; h.fade = 0; h.fx.reset(); h.fy.reset(); }
+  setCvStatus(statusText, sig);
+}
+async function enableCamera() {
+  if (cv.mode === 'cam' || cv.loading) { stopCv('CAM OFF', false); return; }
+  ensureAudio(); stopCv('LOADING CV...', true);
+  const sid = ++cv.sessionId; cv.loading = true; setCvStatus('LOADING CV...', true);
+  if (!navigator.mediaDevices?.getUserMedia) { cv.loading = false; setCvStatus('NO CAM API', true); return; }
+  let stream = null;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false }); }
+  catch (err) {
+    if (sid !== cv.sessionId) return; cv.loading = false; const nm = err?.name || '';
+    setCvStatus((nm === 'NotAllowedError' || nm === 'PermissionDeniedError') ? 'CAM DENIED' : (nm === 'NotFoundError' || nm === 'DevicesNotFoundError') ? 'NO WEBCAM' : 'CAM ERROR', true); return;
+  }
+  if (sid !== cv.sessionId) { stream.getTracks().forEach(t => t.stop()); return; }
+  cv.stream = stream; videoEl.srcObject = stream; try { await videoEl.play(); } catch {}
+  try {
+    if (!cv.landmarker) {
+      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+      const mk = (delegate) => HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+        runningMode: 'VIDEO', numHands: 2
+      });
+      try { cv.landmarker = await mk('GPU'); } catch { cv.landmarker = await mk('CPU'); }
+    }
+  } catch { if (sid === cv.sessionId) stopCv('CV OFFLINE', true); return; }
+  if (sid !== cv.sessionId) return;
+  cv.loading = false; cv.mode = 'cam'; cv.lastVideoTime = -1;
+  setCvStatus('CV LIVE · 0 HANDS', true); if (!state.playing) startPlayback();
+}
+function toggleSimHands() {
+  ensureAudio();
+  if (cv.mode === 'sim') { stopCv('CAM OFF', false); return; }
+  stopCv('SIM DJ · 2 HANDS', true); cv.mode = 'sim'; cv.simStartMs = performance.now();
+  setCvStatus('SIM DJ · 2 HANDS', true); if (!state.playing) startPlayback();
+}
+
+function assignHands(rawList, handedList) {
+  const items = [];
+  for (let i = 0; i < Math.min(2, rawList.length); i++) {
+    const raw = rawList[i]; if (!raw || raw.length < 21) continue;
+    const lms = raw.map(p => ({ x: 1 - p.x, y: p.y, z: p.z || 0 }));
+    let cx = 0, cy = 0; for (const k of PALM_IDX) { cx += lms[k].x; cy += lms[k].y; }
+    items.push({ lms, cx: cx / 5, cy: cy / 5, label: handedList?.[i]?.[0]?.categoryName || '' });
+  }
+  if (!items.length) return { L: null, R: null };
+  if (items.length === 1) {
+    const h = items[0];
+    if (Math.abs(h.cx - 0.5) < 0.04 && h.label) return h.label === cv.leftLabel ? { L: h, R: null } : { L: null, R: h };
+    return h.cx < 0.5 ? { L: h, R: null } : { L: null, R: h };
+  }
+  const [a, b] = items, [lo, hi] = a.cx <= b.cx ? [a, b] : [b, a];
+  if (lo.cx < 0.44 && hi.cx > 0.56 && lo.label && hi.label && lo.label !== hi.label) cv.leftLabel = lo.label;
+  if ((Math.abs(a.cx - b.cx) < 0.13 || lo.cx > 0.50 || hi.cx < 0.50) && a.label && b.label && a.label !== b.label) return a.label === cv.leftLabel ? { L: a, R: b } : { L: b, R: a };
+  return { L: lo, R: hi };
+}
+
+function computeFistness(lms) {
+  // Average tip-to-wrist distance divided by palm size (wrist 0 -> middle MCP 9)
+  const palmLen = Math.hypot(lms[9].x - lms[0].x, lms[9].y - lms[0].y) || 0.08;
+  let sum = 0; for (const ti of TIP_IDX) sum += Math.hypot(lms[ti].x - lms[0].x, lms[ti].y - lms[0].y);
+  const ratio = (sum / 4) / palmLen; // open palm ~1.85, closed fist ~0.95
+  return clamp(1 - (ratio - 1.05) / 0.62, 0, 1);
+}
+
+function processHandFrame(rawList, handedList, nowMs) {
+  const assigned = assignHands(rawList, handedList), tSec = nowMs / 1000;
+  for (const id of ['L', 'R']) {
+    const h = assigned[id], slot = cv.hands[id];
+    if (h) {
+      if (!slot.active && nowMs - slot.seenAt > 320) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.prevT = tSec; }
+      slot.active = true; slot.seenAt = nowMs; slot.lms = h.lms; slot.rawCx = h.cx; slot.rawCy = h.cy;
+      const rx = id === 'L' ? clamp((h.cx - 0.05) / 0.44, 0, 1) : clamp((h.cx - 0.51) / 0.44, 0, 1);
+      const ry = clamp(1 - (h.cy - 0.12) / 0.74, 0, 1); // 0 = bottom, 1 = top
+      const nx = clamp(slot.fx.filter(rx, tSec), 0, 1), ny = clamp(slot.fy.filter(ry, tSec), 0, 1);
+      const dt = Math.max(0.012, tSec - (slot.prevT || tSec - 0.016));
+      slot.vyDown = (slot.ny - ny) / dt; // positive when slamming DOWNWARD!
+      slot.prevNy = slot.ny; slot.nx = nx; slot.ny = ny; slot.prevT = tSec;
+
+      const d = Math.hypot(h.lms[4].x - h.lms[8].x, h.lms[4].y - h.lms[8].y);
+      slot.pinchDist = d; slot.pinchProx = clamp(1 - (d - 0.048) / 0.095, 0, 1);
+      slot.fistAmt = computeFistness(h.lms);
+      slot.fist = slot.fistAmt > 0.68;
+
+      if (!slot.pinched && d < PINCH_ON && (nowMs - slot.lastPinchAt) > PINCH_COOLDOWN_MS) {
+        slot.pinched = true; slot.lastPinchAt = nowMs; slot.pinchFlash = 1.0;
+        if (id === 'R') {
+          const aim = clamp(Math.round(nx * 8), 0, 8);
+          strikeLiveHandpan(aim, clamp(lerp(0.62, 1.0, ny), 0.55, 1.0));
+          setBanner(state.phase === 'VACUUM' ? `VACUUM SOLO · ${NOTES[aim].name}` : `R PINCH · ${NOTES[aim].name}`);
+        }
+      } else if (slot.pinched && d > PINCH_OFF) slot.pinched = false;
+    } else {
+      slot.active = false;
+      if (nowMs - slot.seenAt > 360) { slot.fx.reset(); slot.fy.reset(); slot.pinched = false; slot.fist = false; slot.lms = null; }
+    }
+  }
+
+  // ---- APPLY BI-MANUAL DJ CONDUCTOR CONTROLS (only when mouse/keys aren't overriding) ----
+  const L = cv.hands.L, R = cv.hands.R;
+  if (R.active) state.rightBloomY = lerp(state.rightBloomY, R.ny, 0.22);
+
+  if (L.active && drag.mode !== 'piston' && !state.keysHeld.up && !state.keysHeld.down) {
+    state.washResX = lerp(state.washResX, L.nx, 0.20);
+    // Map Left Hand height (0..1) -> Piston (-0.42 STRIP .. 0.00 FLOW .. +1.00 VACUUM)
+    const rawPiston = L.ny < 0.24 ? lerp(-0.46, 0, L.ny / 0.24) : lerp(0, 1.04, (L.ny - 0.24) / 0.72);
+    const bothSlam = R.active && R.vyDown > 1.35 && L.vyDown > 1.35;
+
+    // Closed FIST (or pinch) near top locks VACUUM silence cleanly!
+    if ((L.fist || L.pinched) && (state.phase === 'VACUUM' || rawPiston > 0.76)) {
+      if (!state.vacuumLockedByFist) { state.vacuumLockedByFist = true; setBanner('L FIST → VACUUM HOLD LOCK'); }
+      setPistonDirect(1.0, false, 0, false);
+    } else if (state.vacuumLockedByFist && !L.fist && !L.pinched) {
+      // Opening fist / releasing from Vacuum Hold triggers DROP!
+      state.vacuumLockedByFist = false;
+      L.slamFlash = 1.0; L.lastSlamAt = nowMs;
+      setBanner(bothSlam ? 'BOTH-HAND RELEASE → SUPER DROP' : 'L OPEN PALM → BEAT-SYNC DROP');
+      requestDrop(1.0, bothSlam);
+    } else if ((state.phase === 'BUILD' || state.phase === 'VACUUM') && state.peakTension >= 0.34 && L.vyDown > 1.45 && (nowMs - L.lastSlamAt) > 650) {
+      // Fast downward hand slam detonates the drop immediately!
+      L.slamFlash = 1.0; L.lastSlamAt = nowMs; if (bothSlam) R.slamFlash = 1.0;
+      setBanner(bothSlam ? 'BOTH HANDS SLAM → SUPER DROP!' : 'L HAND SLAM → BASS DROP!');
+      requestDrop(clamp(0.76 + state.peakTension * 0.24, 0.76, 1.0), bothSlam);
+    } else if (state.phase !== 'DROP' || rawPiston > 0.32 || rawPiston < -0.18) {
+      // Smooth direct tracking of hand height along the conductor rail
+      if (state.phase === 'DROP' && rawPiston < 0.28 && rawPiston > -0.16) {
+        // Stay in DROP euphoria while hand rests comfortably in neutral FLOW zone!
+      } else {
+        setPistonDirect(rawPiston, false, 0, false);
+      }
+    }
+  } else if (!L.active && state.vacuumLockedByFist) {
+    state.vacuumLockedByFist = false;
+    releaseCharge();
+  }
+
+  const n = (assigned.L ? 1 : 0) + (assigned.R ? 1 : 0);
+  if (n !== cv.handCount) { cv.handCount = n; setCvStatus(`${cv.mode === 'sim' ? 'SIM DJ' : 'CV LIVE'} · ${n} HAND${n === 1 ? '' : 'S'}`, true); }
+}
+
+// Synthetic 21-point hand generator (supports pinch + fist curl for SIM HANDS DJ choreography!)
+function synthHand21(cxM, cyM, side, pinch, fist, tilt, t) {
+  const s = side, c = Math.cos(tilt), sn = Math.sin(tilt), p = clamp(pinch, 0, 1), f = clamp(fist, 0, 1);
+  const j = (ox, oy) => ({ x: clamp(1 - (cxM + ox * c - oy * sn + Math.sin(t * 67 + ox * 160) * 0.0012), 0, 1), y: clamp(cyM + ox * sn + oy * c + Math.cos(t * 59 + oy * 160) * 0.0012, 0, 1), z: 0 });
+  const curl = (yOpen, yClosed) => lerp(yOpen, yClosed, f);
+  return [
+    j(-s * 0.012, 0.078), j(-s * 0.036, 0.052), j(lerp(-s * 0.062, -s * 0.050, Math.max(p, f)), lerp(0.024, 0.018, Math.max(p, f))),
+    j(lerp(-s * 0.078, -s * 0.052, Math.max(p, f)), lerp(-0.004, -0.014, Math.max(p, f))), j(lerp(-s * 0.090, -s * 0.048, Math.max(p, f)), lerp(-0.028, -0.044, Math.max(p, f))),
+    j(-s * 0.034, -0.020), j(lerp(-s * 0.044, -s * 0.048, p), curl(-0.062, -0.028)),
+    j(lerp(-s * 0.049, -s * 0.052, p), curl(-0.094, -0.006)), j(lerp(-s * 0.052, -s * 0.048, Math.max(p, f)), lerp(curl(-0.122, 0.018), -0.052, p)),
+    j(-s * 0.008, -0.026), j(-s * 0.010, curl(-0.072, -0.030)), j(-s * 0.012, curl(-0.106, -0.004)), j(-s * 0.014, curl(-0.136, 0.022)),
+    j(s * 0.016, -0.022), j(s * 0.020, curl(-0.066, -0.026)), j(s * 0.023, curl(-0.098, -0.002)), j(s * 0.026, curl(-0.124, 0.024)),
+    j(s * 0.038, -0.010), j(s * 0.046, curl(-0.046, -0.016)), j(s * 0.052, curl(-0.072, 0.006)), j(s * 0.057, curl(-0.094, 0.028))
+  ];
+}
+
+function tickCv(nowMs) {
+  if (cv.mode === 'cam' && cv.landmarker && videoEl.readyState >= 2 && videoEl.currentTime !== cv.lastVideoTime) {
+    cv.lastVideoTime = videoEl.currentTime;
+    const ts = Math.max(cv.lastDetectMs + 1, Math.round(nowMs)); cv.lastDetectMs = ts;
+    try { const res = cv.landmarker.detectForVideo(videoEl, ts); processHandFrame(res?.landmarks || [], res?.handedness || [], nowMs); } catch {}
+  } else if (cv.mode === 'sim') {
+    // 14-second choreographed DJ stage cycle:
+    // 0-3s FLOW groove -> 3-7.5s LIFT BUILD -> 7.5-9.5s FIST VACUUM HOLD (+ R solo note!) -> 9.5-10.0s BOTH HANDS SLAM DROP -> 10-14s DROP groove!
+    const t = (nowMs - cv.simStartMs) / 1000, cyc = t % 14.0;
+    let lY = 0.66, lFist = 0, rY = 0.56, rPinch = 0, rX = 0.72 + 0.14 * Math.sin(t * 0.7);
+    if (cyc < 3.0) { lY = 0.66 + Math.sin(cyc * 2.1) * 0.03; }
+    else if (cyc < 7.5) { const u = (cyc - 3.0) / 4.5; lY = lerp(0.64, 0.15, Math.pow(u, 1.15)); rY = lerp(0.56, 0.18, u); }
+    else if (cyc < 9.5) {
+      lY = 0.14; lFist = 1.0; rY = 0.24; rX = 0.76;
+      // Strike one haunting solo handpan note mid-vacuum!
+      if (cyc > 8.15 && cyc < 8.55) rPinch = Math.sin(((cyc - 8.15) / 0.40) * Math.PI);
+    } else if (cyc < 10.05) {
+      const u = (cyc - 9.5) / 0.55; lY = lerp(0.14, 0.68, Math.pow(u, 0.6)); rY = lerp(0.24, 0.68, Math.pow(u, 0.6)); lFist = 0;
+    } else {
+      lY = 0.66 + Math.sin(cyc * 4.0) * 0.04; rY = 0.50 + Math.cos(cyc * 2.4) * 0.12;
+      const ph = (cyc - 10.2) % 1.4; if (ph < 0.30) rPinch = Math.sin((ph / 0.30) * Math.PI);
+    }
+    const hL = synthHand21(0.26 + 0.08 * Math.sin(t * 0.55), lY, -1, 0, lFist, 0.10 * Math.sin(t), t);
+    const hR = synthHand21(rX, rY, 1, rPinch, 0, -0.10 * Math.cos(t), t + 1.3);
+    processHandFrame([hL, hR], [[{ categoryName: 'Right' }], [{ categoryName: 'Left' }]], nowMs);
+  }
+}
+
+// ==================== 5. GEOMETRY & DIRECT POINTER/KEY FALLBACK ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const phaseHud = document.getElementById('phaseHud'), quantBtn = document.getElementById('quantBtn'), playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+let W = 1, H = 1, DPR = 1;
+const geo = { cx: 0, nowY: 0, padTop: 52, padBot: 34, pxPerStep: 15, corridorW: 170, railUp: 190, railDown: 96, locusX: new Float32Array(9), fieldL: 0, fieldR: 0, leftZone: {}, rightZone: {} };
+
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1); W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  geo.cx = W * 0.5; geo.nowY = Math.round(H * 0.54);
+  geo.railUp = clamp(H * 0.34, 130, 245); geo.railDown = clamp(H * 0.17, 68, 126);
+  geo.pxPerStep = clamp((H - 120) / 40, 11.5, 17.5); geo.corridorW = clamp(W * 0.18, 146, 198);
+  const hc = geo.corridorW * 0.5, flankW = clamp((W - geo.corridorW - 108) * 0.5, 110, 285);
+  for (let i = 0; i < 4; i++) geo.locusX[i] = lerp(geo.cx - hc - flankW, geo.cx - hc - 22, i / 3);
+  for (let i = 4; i < 9; i++) geo.locusX[i] = lerp(geo.cx + hc + 22, geo.cx + hc + flankW, (i - 4) / 4);
+  geo.fieldL = geo.locusX[0]; geo.fieldR = geo.locusX[8];
+  geo.leftZone = { x: geo.fieldL - 12, y: geo.nowY - geo.railUp, w: (geo.cx - hc) - (geo.fieldL - 12), h: geo.railUp + geo.railDown };
+  geo.rightZone = { x: geo.cx + hc, y: geo.nowY - geo.railUp, w: (geo.fieldR + 12) - (geo.cx + hc), h: geo.railUp + geo.railDown };
+}
+window.addEventListener('resize', resize); resize();
+
+const pistonToY = (p) => p >= 0 ? geo.nowY - p * geo.railUp : geo.nowY + (-p / 0.5) * geo.railDown;
+const yToPiston = (y) => y <= geo.nowY ? clamp((geo.nowY - y) / geo.railUp, 0, 1.0) : -clamp((y - geo.nowY) / geo.railDown, 0, 1.0) * 0.5;
+function nearestLocus(mx) {
+  if (Math.abs(mx - geo.cx) < geo.corridorW * 0.5 - 6) return -1;
+  let best = -1, bestD = 32;
+  for (let i = 0; i < 9; i++) { const d = Math.abs(mx - geo.locusX[i]); if (d < bestD) { bestD = d; best = i; } }
+  return best;
+}
+
+const drag = { mode: null, locus: -1, lastY: 0, lastT: 0 }, hover = { piston: false, locus: -1 };
+const hitPiston = (mx, my) => Math.hypot(mx - geo.cx, my - pistonToY(state.piston)) <= 32 || (Math.abs(mx - geo.cx) <= 36 && my >= geo.nowY - geo.railUp - 28 && my <= geo.nowY + geo.railDown + 24);
+
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  canvas.setPointerCapture(e.pointerId);
+  if (hitPiston(mx, my)) { ensureAudio(); if (!state.playing) startPlayback(); drag.mode = 'piston'; drag.lastY = my; drag.lastT = performance.now(); setPistonDirect(yToPiston(my), false, 0); return; }
+  const l = nearestLocus(mx);
+  if (l >= 0 && Math.abs(my - geo.nowY) <= Math.max(70, H * 0.19)) { drag.mode = 'strike'; drag.locus = l; strikeLiveHandpan(l); }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.mode === 'piston') {
+    const nowP = performance.now(), vy = (my - drag.lastY) / Math.max(0.008, (nowP - drag.lastT) / 1000);
+    drag.lastY = my; drag.lastT = nowP; setPistonDirect(yToPiston(my), true, vy / 220); return;
+  }
+  if (drag.mode === 'strike') { const l = nearestLocus(mx); if (l >= 0 && l !== drag.locus) { drag.locus = l; strikeLiveHandpan(l); } return; }
+  hover.piston = hitPiston(mx, my);
+  hover.locus = (!hover.piston && Math.abs(my - geo.nowY) <= Math.max(70, H * 0.19)) ? nearestLocus(mx) : -1;
+  canvas.style.cursor = hover.piston ? 'ns-resize' : hover.locus >= 0 ? 'pointer' : 'default';
+});
+const endPointer = () => { if (drag.mode === 'piston') releaseCharge(); drag.mode = null; drag.locus = -1; };
+canvas.addEventListener('pointerup', endPointer); canvas.addEventListener('pointercancel', endPointer);
+
+function toggleQuantize() {
+  state.quantize = !state.quantize;
+  quantBtn.classList.toggle('on', state.quantize); quantBtn.textContent = state.quantize ? 'BEAT-SYNC' : 'INSTANT';
+  ensureAudio(); playDetent(0.3, false, state.quantize ? 1.2 : 0.85);
+}
+playBtn.addEventListener('click', togglePlay); quantBtn.addEventListener('click', toggleQuantize);
+camBtn.addEventListener('click', enableCamera); simBtn.addEventListener('click', toggleSimHands);
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'q') return toggleQuantize();
+  if (k === 'w' || e.key === 'ArrowUp' || e.key === 'Shift') { ensureAudio(); if (!state.playing) startPlayback(); state.keysHeld.up = true; state.vacGateHold = 0; if (state.phase === 'STRIP') setPistonDirect(0.0); return; }
+  if (k === 's' || e.key === 'ArrowDown') { ensureAudio(); if (!state.playing) startPlayback(); state.keysHeld.down = true; return; }
+  if (k === 'd' || e.key === 'Enter') { e.preventDefault(); requestDrop(state.phase === 'VACUUM' ? 1.0 : clamp(0.75 + state.peakTension * 0.25, 0.75, 1.0)); return; }
+  if (e.key >= '1' && e.key <= '9') strikeLiveHandpan(Number(e.key) - 1);
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if ((k === 'w' || e.key === 'ArrowUp' || e.key === 'Shift') && state.keysHeld.up) { state.keysHeld.up = false; state.vacGateHold = 0; releaseCharge(); }
+  else if (k === 's' || e.key === 'ArrowDown') state.keysHeld.down = false;
+});
+
+// ==================== 6. MINIMALIST RENDERER + 21-POINT HAND WIREFRAMES ====================
+const edgeFade = y => Math.min(clamp((y - geo.padTop) / 34, 0, 1), clamp((H - geo.padBot - y) / 34, 0, 1));
+const strokeLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const strokeCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fillCirc   = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+
+function drawHandOverlay(slot, anchorX, anchorY, scalePx, isLeft) {
+  if (!slot.lms || slot.fade <= 0.01) return;
+  const f = slot.fade, pts = slot.lms.map(p => [anchorX + (p.x - slot.rawCx) * scalePx, anchorY + (p.y - slot.rawCy) * scalePx]);
+  const hot = isLeft ? Math.max(slot.fistAmt, slot.slamFlash, state.phase === 'BUILD' || state.phase === 'VACUUM' ? 0.75 : 0) : Math.max(slot.pinchProx, slot.pinchFlash);
+
+  // Translucent palm polygon & 21-bone architectural skeleton
+  ctx.fillStyle = mixInk(hot, 0.045 * f); ctx.beginPath();
+  PALM_IDX.forEach((idx, i) => i === 0 ? ctx.moveTo(pts[idx][0], pts[idx][1]) : ctx.lineTo(pts[idx][0], pts[idx][1]));
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = mixInk(hot, (0.26 + hot * 0.44) * f); ctx.lineWidth = 1.1; ctx.beginPath();
+  for (const [a, b] of HAND_BONES) { ctx.moveTo(pts[a][0], pts[a][1]); ctx.lineTo(pts[b][0], pts[b][1]); }
+  ctx.stroke();
+
+  for (let i = 0; i < 21; i++) {
+    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+    ctx.fillStyle = (i === 4 || i === 8) ? mixInk(hot, (0.50 + hot * 0.50) * f) : `rgba(255,255,255,${((isTip ? 0.48 : 0.28) * f).toFixed(3)})`;
+    fillCirc(pts[i][0], pts[i][1], (i === 4 || i === 8) ? 2.4 + hot * 1.1 : isTip ? 2.0 : 1.4, ctx.fillStyle);
+  }
+
+  // Gesture telemetry rings (Fist Lock on Left, Pinch Arc on Right, Slam Burst)
+  if (isLeft) {
+    if (slot.fistAmt > 0.35) {
+      strokeCirc(anchorX, anchorY, 22 + (1 - slot.fistAmt) * 14, mixInk(1, slot.fistAmt * 0.85 * f), 1.5);
+    }
+    if (slot.vyDown > 0.65) {
+      const len = clamp(slot.vyDown * 18, 10, 56);
+      strokeLine(anchorX, anchorY + 12, anchorX, anchorY + 12 + len, `rgba(255,90,31,${clamp(slot.vyDown * 0.45, 0, 0.92).toFixed(3)})`, 2.0);
+    }
+    ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = mixInk(hot, 0.72 * f);
+    ctx.fillText(slot.fist ? 'L · FIST LOCK' : state.washResX < 0.28 ? 'L · HALF-TIME' : 'L · CONDUCTOR', anchorX, anchorY + 42);
+  } else {
+    const [x4, y4] = pts[4], [x8, y8] = pts[8], pp = Math.max(slot.pinchProx, slot.pinchFlash);
+    if (pp > 0.05) {
+      strokeLine(x4, y4, x8, y8, mixInk(pp, (0.28 + pp * 0.72) * f), 1.2 + pp * 1.4);
+    }
+    if (slot.pinchFlash > 0.02) strokeCirc((x4 + x8) * 0.5, (y4 + y8) * 0.5, 6 + (1 - slot.pinchFlash) * 28, mixInk(1, slot.pinchFlash * 0.92), 1.7);
+    const aim = clamp(Math.round(slot.nx * 8), 0, 8);
+    ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = mixInk(pp, 0.72 * f);
+    ctx.fillText(`R · PINCH ${NOTES[aim].name} · BLOOM ${Math.round(slot.ny * 100)}%`, anchorX, anchorY + 42);
+  }
+  if (slot.slamFlash > 0.02) strokeCirc(anchorX, anchorY, 16 + (1 - slot.slamFlash) * 64, `rgba(255,90,31,${(slot.slamFlash * 0.9).toFixed(3)})`, 2.0);
+}
+
+function drawFlankingMetricField(curStep, dimMul) {
+  const xL = geo.fieldL - 20, xR = geo.fieldR + 20, corrL = geo.cx - geo.corridorW * 0.5 + 4, corrR = geo.cx + geo.corridorW * 0.5 - 4;
+  ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'middle';
+  for (let g = Math.floor(curStep) - 28; g <= Math.ceil(curStep) + 28; g++) {
+    if ((g & 3) !== 0) continue;
+    const y = Math.round(geo.nowY + (g - curStep) * geo.pxPerStep) + 0.5;
+    if (y < geo.padTop || y > H - geo.padBot) continue;
+    const f = edgeFade(y) * dimMul;
+    if (((g % 16) + 16) % 16 === 0) {
+      const col = `rgba(255,255,255,${(0.11 * f).toFixed(3)})`;
+      strokeLine(xL, y, corrL, y, col); strokeLine(corrR, y, xR, y, col);
+      ctx.fillStyle = `rgba(255,255,255,${(0.26 * f).toFixed(3)})`; ctx.textAlign = 'right';
+      ctx.fillText(`| ${String(Math.max(1, Math.floor(g / 16) + 1)).padStart(2, '0')}`, xL - 6, y);
+    } else {
+      const c = `rgba(255,255,255,${(0.13 * f).toFixed(3)})`;
+      strokeLine(xL, y, xL + 4, y, c); strokeLine(xR - 4, y, xR, y, c);
+    }
+  }
+  const rAim = cv.hands.R.fade > 0.1 ? clamp(Math.round(cv.hands.R.nx * 8), 0, 8) : -1;
+  ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locus === i || rAim === i;
+    ctx.font = '10px ui-monospace, monospace'; ctx.textBaseline = 'bottom';
+    ctx.fillStyle = mixInk(rAim === i ? Math.max(loc.heat, cv.hands.R.pinchProx) : loc.heat, (0.26 + loc.glow * 0.72 + (hov ? 0.34 : 0)) * dimMul);
+    ctx.fillText(NOTES[i].name, x, geo.padTop - 8);
+    ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'top';
+    ctx.fillStyle = `rgba(255,255,255,${clamp((0.18 + loc.glow * 0.45) * dimMul, 0, 0.85).toFixed(3)})`; ctx.fillText(NOTES[i].deg, x, H - geo.padBot + 8);
+  }
+}
+
+function drawWavePackets(curStep, nowPerf, dimMul) {
+  const tSec = nowPerf * 0.001;
+  const drawOne = (n, isFuture) => {
+    const y0 = geo.nowY + (n.step - curStep) * geo.pxPerStep, y1 = geo.nowY + (n.step + n.dur - curStep) * geo.pxPerStep;
+    if (y1 < geo.padTop || y0 > H - geo.padBot) return;
+    const x = geo.locusX[n.noteIdx], L = Math.max(7, (y1 - y0) - 2), f = edgeFade((y0 + y1) * 0.5) * dimMul;
+    if (f <= 0.01) return;
+    const flashH = clamp(1 - (nowPerf - n.flashPerf) / FLASH_MS, 0, 1);
+    const heat = n.hot ? Math.max(flashH, isFuture ? 0.45 : 0.75 * clamp(1 - (curStep - n.step) / 10, 0, 1)) : flashH * 0.8;
+    const maxW = (3.2 + n.vel * 4.0) * (n.noteIdx === 0 ? 1.24 : 1) * (0.72 + 0.28 * clamp(n.dur / 6, 0, 1));
+    const segs = clamp(Math.round(L / 2.4), 9, 32), cycles = (0.95 + n.noteIdx * 0.24) * Math.max(0.75, n.dur * 0.44);
+    const phase = isFuture ? -tSec * 3.8 + n.step * 0.7 : tSec * (10 + n.noteIdx * 1.4) + n.step * 0.9;
+    ctx.beginPath();
+    for (let k = 0; k <= segs; k++) { const u = k / segs, e = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38); k ? ctx.lineTo(x + e * maxW, y0 + u * L) : ctx.moveTo(x + e * maxW, y0); }
+    for (let k = segs; k >= 0; k--) { const u = k / segs, e = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38); ctx.lineTo(x - e * maxW, y0 + u * L); }
+    ctx.closePath();
+    ctx.fillStyle = mixInk(heat, (!isFuture ? 0.14 : 0.03 + heat * 0.10) * f); ctx.fill();
+    ctx.strokeStyle = mixInk(heat, (!isFuture ? 0.34 + n.vel * 0.28 : 0.20 + n.vel * 0.20) * f); ctx.lineWidth = !isFuture ? 0.85 : 0.75; ctx.stroke();
+    ctx.beginPath();
+    for (let k = 0; k <= segs; k++) { const u = k / segs, px = x + Math.min(1, u / 0.08) * Math.pow(1 - u, 1.42) * maxW * 0.84 * Math.sin(u * cycles * Math.PI * 2 + phase); k ? ctx.lineTo(px, y0 + u * L) : ctx.moveTo(px, y0); }
+    ctx.strokeStyle = mixInk(heat, (!isFuture ? 0.68 + n.vel * 0.30 : 0.28 + n.vel * 0.26) * f); ctx.lineWidth = !isFuture ? 1.15 : 0.85; ctx.stroke();
+    const rHead = (n.noteIdx === 0 ? 3.1 : 2.2) + n.vel * 1.0;
+    if (!isFuture) fillCirc(x, y0, rHead, mixInk(heat, 0.94 * f));
+    else { fillCirc(x, y0, rHead, '#000'); strokeCirc(x, y0, rHead, mixInk(heat, (0.48 + n.vel * 0.34) * f), 1.0); }
+  };
+  for (const n of state.pastNotes) drawOne(n, n.step > curStep);
+  for (const n of state.futureNotes) drawOne(n, true);
+}
+
+function drawNowHorizon(dt, nowPerf, dimMul) {
+  const y = geo.nowY, xL = geo.fieldL - 20, xR = geo.fieldR + 20, corrL = geo.cx - geo.corridorW * 0.5 + 8, corrR = geo.cx + geo.corridorW * 0.5 - 8;
+  for (const loc of loci) { loc.glow = Math.max(0, loc.glow * Math.exp(-dt * loc.damp)); loc.heat = Math.max(0, loc.heat - dt * 2.5); }
+  for (let i = blooms.length - 1; i >= 0; i--) if (nowPerf - blooms[i].bornPerf >= blooms[i].lifeMs) blooms.splice(i, 1);
+  for (let i = beatRipples.length - 1; i >= 0; i--) if (nowPerf - beatRipples[i].bornPerf >= beatRipples[i].lifeMs) beatRipples.splice(i, 1);
+
+  for (const br of beatRipples) {
+    const p = clamp((nowPerf - br.bornPerf) / br.lifeMs, 0, 1), e = Math.pow(1 - p, 1.9) * br.strength * dimMul;
+    const dy = (3 + p * 26) * (0.6 + br.strength * 0.6), col = mixInk(br.hot ? 0.95 : 0, e * 0.42);
+    strokeLine(xL, y - dy, corrL, y - dy, col, 0.85); strokeLine(corrR, y - dy, xR, y - dy, col, 0.85);
+    strokeLine(xL, y + dy, corrL, y + dy, col, 0.85); strokeLine(corrR, y + dy, xR, y + dy, col, 0.85);
+  }
+  for (const b of blooms) {
+    const age = nowPerf - b.bornPerf, p = clamp(age / b.lifeMs, 0, 1), e = Math.pow(1 - p, 1.85) * dimMul;
+    const bx = geo.locusX[b.idx], h = b.hot ? clamp(1 - age / FLASH_MS, 0, 1) : 0;
+    const rx = 5 + Math.pow(p, 0.72) * (24 + b.dur * 10) * (0.7 + b.vel * 0.4) * (b.idx === 0 ? 1.24 : 1), ry = rx * (0.62 + 0.30 * Math.pow(p, 0.6));
+    ctx.strokeStyle = mixInk(h, e * 0.66); ctx.lineWidth = 0.8 + e * 0.9;
+    ctx.beginPath(); ctx.ellipse(bx, y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  const dropHeat = state.phase === 'DROP' ? state.dropEnergy * 0.75 : 0;
+  const traceWing = (ax, bx) => {
+    ctx.strokeStyle = mixInk(dropHeat, (0.44 + kickPulse * 0.38) * dimMul); ctx.lineWidth = 1.05 + kickPulse * 0.55; ctx.beginPath();
+    for (let s = 0; s <= 56; s++) {
+      const u = s / 56, px = ax + u * (bx - ax), win = Math.pow(Math.sin(u * Math.PI), 0.45);
+      let dy = Math.sin(u * Math.PI * 3 - nowPerf * 0.014) * kickPulse * 3.8 * (state.phase === 'DROP' ? 1.8 : 0.7);
+      for (const b of blooms) { const age = (nowPerf - b.bornPerf) * 0.001, e = Math.pow(1 - (nowPerf - b.bornPerf) / b.lifeMs, 1.8), dist = Math.abs(px - geo.locusX[b.idx]); dy += e * (4 + b.vel * 5.8) * Math.cos(dist * 0.08 - age * 17) * Math.exp(-dist / (40 + b.dur * 10)); }
+      s ? ctx.lineTo(px, y + clamp(dy * win, -18, 18)) : ctx.moveTo(px, y + clamp(dy * win, -18, 18));
+    }
+    ctx.stroke();
+  };
+  traceWing(xL, corrL); traceWing(corrR, xR);
+  const rAim = cv.hands.R.fade > 0.1 ? clamp(Math.round(cv.hands.R.nx * 8), 0, 8) : -1;
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locus === i || rAim === i;
+    strokeLine(x + 0.5, y - 5, x + 0.5, y + 5, mixInk(loc.heat, (0.24 + loc.glow * 0.65 + (hov ? 0.35 : 0)) * dimMul));
+    if (i === rAim) { const pp = Math.max(cv.hands.R.pinchProx, cv.hands.R.pinchFlash); strokeCirc(x, y, 10 + (1 - pp) * 5, mixInk(Math.max(0.5, pp), (0.52 + pp * 0.45) * cv.hands.R.fade), 1.3); }
+    if (i === 0 || loc.glow > 0.08 || hov) strokeCirc(x, y, (i === 0 ? 6.5 : 5) + loc.glow * 3.5, mixInk(loc.heat, ((i === 0 ? 0.28 : 0) + loc.glow * 0.72 + (hov ? 0.35 : 0)) * dimMul), 0.9);
+    fillCirc(x, y, (i === 0 ? 2.5 : 2.0) + loc.glow * 2.0 + (hov ? 0.8 : 0), mixInk(loc.heat, (0.56 + loc.glow * 0.44) * dimMul));
+  }
+}
+
+function drawDropShockwaves(nowPerf) {
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i], age = nowPerf - sw.bornPerf;
+    if (age < 0) continue;
+    if (age >= sw.lifeMs) { shockwaves.splice(i, 1); continue; }
+    const p = age / sw.lifeMs, e = Math.pow(1 - p, 1.85), r = 18 + Math.pow(p, 0.58) * Math.hypot(W * 0.52, H * 0.52);
+    strokeCirc(geo.cx, geo.nowY, r, sw.hot ? `rgba(255,90,31,${(e * 0.82).toFixed(3)})` : `rgba(255,255,255,${(e * 0.55).toFixed(3)})`, 1.0 + e * 2.6);
+  }
+  const flashAge = nowPerf - state.dropFlashPerf;
+  if (flashAge >= 0 && flashAge < 520) {
+    const f = Math.pow(1 - flashAge / 520, 2.2), grad = ctx.createRadialGradient(geo.cx, geo.nowY, 8, geo.cx, geo.nowY, Math.min(W, H) * 0.46);
+    grad.addColorStop(0, `rgba(255,90,31,${(f * 0.34).toFixed(3)})`); grad.addColorStop(0.55, `rgba(255,90,31,${(f * 0.08).toFixed(3)})`); grad.addColorStop(1, 'rgba(255,90,31,0)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function drawTensionPiston(nowPerf) {
+  const cx = geo.cx, yNow = geo.nowY, yTop = pistonToY(1.0), yStrip = pistonToY(-0.50);
+  const isVac = state.phase === 'VACUUM', isArmed = state.phase === 'ARMED', isSilent = isVac || isArmed;
+  const isBuild = state.phase === 'BUILD', isDrop = state.phase === 'DROP', isStrip = state.phase === 'STRIP';
+  const charge01 = isSilent ? 1.0 : clamp(state.piston / VAC_THRESH, 0, 1);
+  const heat = isSilent ? 1.0 : isBuild ? clamp(0.25 + charge01 * 0.75, 0, 1) : isDrop ? state.dropEnergy : 0;
+
+  strokeLine(cx + 0.5, yTop, cx + 0.5, yStrip, `rgba(255,255,255,${isSilent ? 0.10 : 0.18})`, 1);
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  for (const [tp, lbl, major] of [[VAC_THRESH,'VACUUM',true], [0.78,'1/32',false], [0.58,'1/16',false], [0.34,'1/8',false], [0.00,'FLOW',true], [STRIP_THRESH,'STRIP',false]]) {
+    const ty = Math.round(pistonToY(tp)) + 0.5, w = major ? 16 : 9, dim = isSilent && tp < VAC_THRESH ? 0.32 : 1;
+    const crossed = tp > 0 ? state.piston >= tp - 0.005 : (tp < 0 ? state.piston <= tp + 0.005 : Math.abs(state.piston) < 0.06);
+    strokeLine(cx - w, ty, cx + w, ty, (crossed && (tp > 0 || isDrop)) ? `rgba(255,90,31,${major ? 0.92 : 0.78})` : `rgba(255,255,255,${(major ? 0.34 : 0.16) * dim})`, major && crossed ? 1.5 : 1);
+    ctx.fillStyle = (crossed && tp > 0) ? 'rgba(255,90,31,0.92)' : `rgba(255,255,255,${(crossed ? 0.68 : 0.24) * dim})`;
+    ctx.fillText(lbl, cx + w + 7, ty);
+  }
+
+  const handleY = pistonToY(state.piston);
+  if (state.piston > 0.01 && !isSilent) {
+    strokeLine(cx + 0.5, yNow, cx + 0.5, handleY, mixInk(heat, 0.95), 2.2 + charge01 * 1.4);
+  } else if (state.piston < -0.01) strokeLine(cx + 0.5, yNow, cx + 0.5, handleY, 'rgba(255,255,255,0.46)', 1.5);
+
+  const fulcrumR = 20 + kickPulse * (isDrop ? 12 : 4);
+  if (isDrop) strokeCirc(cx, yNow, fulcrumR + 10 + state.dropEnergy * 12, `rgba(255,90,31,${(0.28 + state.dropEnergy * 0.56).toFixed(3)})`, 1.4);
+  else if (!isSilent) strokeCirc(cx, yNow, fulcrumR, `rgba(255,255,255,${(isStrip ? 0.10 : 0.16 + kickPulse * 0.24).toFixed(3)})`, 0.9);
+
+  if (isVac) {
+    const beatAge = clamp((nowPerf - state.vacuumBeatPerf) / (BEAT_SEC * 1000), 0, 1), breathR = 44 + Math.sin(nowPerf * 0.004) * 2.5;
+    strokeCirc(cx, handleY, breathR, 'rgba(255,90,31,0.92)', 1.6);
+    strokeCirc(cx, handleY, breathR + beatAge * 42, `rgba(255,90,31,${(Math.pow(1 - beatAge, 1.8) * 0.72).toFixed(3)})`, 1.2);
+    const shown = Math.min(8, Math.max(1, state.vacuumBeat)), pips = [];
+    for (let b = 1; b <= Math.max(4, shown); b++) pips.push(b <= shown ? String(b) : '·');
+    ctx.font = '11px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillStyle = '#ff5a1f';
+    ctx.fillText(`· ${pips.join(' · ')} ·`, cx, handleY - breathR - 12);
+    ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'top'; ctx.fillStyle = 'rgba(255,255,255,0.68)';
+    ctx.fillText(state.vacuumLockedByFist ? 'OPEN PALM / SLAM ↓ TO DROP' : 'SLAM ↓ / RELEASE TO DROP', cx, handleY + breathR + 12);
+  }
+  if (isArmed && state.armedDropTick > 0) strokeCirc(cx, yNow, 16 + (clamp(state.armedDropTick - getCurrentTick(), 0, 8) / 8) * 58, 'rgba(255,90,31,0.95)', 1.8);
+
+  const hx = cx + ((isBuild && charge01 > 0.55) ? Math.sin(nowPerf * 0.14) * snarePulse * 2.6 : 0), hy = handleY, hR = (drag.mode === 'piston' || cv.hands.L.active) ? 15 : 13.5;
+  if (heat > 0.05) { const glow = ctx.createRadialGradient(hx, hy, 4, hx, hy, hR + 24); glow.addColorStop(0, `rgba(255,90,31,${(heat * 0.42).toFixed(3)})`); glow.addColorStop(1, 'rgba(255,90,31,0)'); fillCirc(hx, hy, hR + 24, glow); }
+  fillCirc(hx, hy, hR, isVac ? '#ff5a1f' : '#000');
+  strokeCirc(hx, hy, hR, mixInk(heat, hover.piston || drag.mode === 'piston' || isBuild || isSilent ? 1.0 : 0.78), isBuild || isSilent || isDrop ? 2.0 : 1.35);
+  fillCirc(hx, hy, isVac ? 3.5 : (2.6 + charge01 * 2.4), isVac ? '#000' : mixInk(heat, 0.95));
+
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const rd = isBuild ? getRollDiv(state.piston) : 0, rollTag = rd === 1 ? ' · 1/32' : rd === 2 ? ' · 1/16' : rd === 4 ? ' · 1/8' : rd === 8 ? ' · 1/4' : '';
+  const statusTxt = isArmed ? 'LOCKED → DROP' : isVac ? `VACUUM · BEAT ${state.vacuumBeat}` : isBuild ? `BUILD ${Math.round(charge01 * 100)}%${rollTag}` : isDrop ? `DROP${state.halfTimeDrop ? ' HALF' : ''} · BAR ${Math.min(8, Math.floor((getCurrentTick() - state.dropStartTick) / 32) + 1)}/8` : isStrip ? 'STRIP · SOLO PAN' : 'FLOW · GROOVE';
+  ctx.fillStyle = mixInk(heat, 0.78); ctx.fillText(statusTxt, cx, yStrip + 16);
+
+  const gAge = nowPerf - state.lastGesturePerf;
+  if (state.lastGestureBanner && gAge < 1600) {
+    ctx.fillStyle = `rgba(255,90,31,${clamp(1 - gAge / 1600, 0, 1).toFixed(3)})`;
+    ctx.fillText(state.lastGestureBanner, cx, yStrip + 32);
+  }
+}
+
+let lastFramePerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastFramePerf) / 1000)); lastFramePerf = nowPerf;
+  if (state.keysHeld.up) {
+    if (state.piston < VAC_THRESH) setPistonDirect(Math.min(VAC_THRESH - 0.002, state.piston + dt * 0.25));
+    else { state.vacGateHold += dt; if (state.vacGateHold > 0.22) setPistonDirect(1.0); }
+  } else if (state.keysHeld.down) setPistonDirect(state.piston - dt * 0.55);
+  else if (drag.mode !== 'piston' && !cv.hands.L.active && Math.abs(state.piston - state.pistonTarget) > 0.001) state.piston = lerp(state.piston, state.pistonTarget, 1 - Math.exp(-dt * 12));
+
+  tickCv(nowPerf);
+  for (const h of [cv.hands.L, cv.hands.R]) { h.fade = clamp(h.fade + (h.active ? 7.5 : -5.0) * dt, 0, 1); h.pinchFlash *= Math.exp(-6.5 * dt); h.slamFlash *= Math.exp(-5.0 * dt); }
+
+  updateContinuousAudio();
+  kickPulse *= Math.exp(-dt * 8.5); snarePulse *= Math.exp(-dt * 16.0);
+  vacuumDim = lerp(vacuumDim, (state.phase === 'VACUUM' || state.phase === 'ARMED') ? 1 : 0, 1 - Math.exp(-dt * 12));
+
+  const curStep = getCurrentStep();
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; triggerResonator(n.noteIdx, n.vel, n.dur, Boolean(n.hot)); }
+
+  const bar = Math.floor(curStep / 16) + 1, beat = Math.floor((curStep % 16) / 4) + 1;
+  phaseHud.textContent = `${state.phase} · ${String(bar).padStart(2, '0')}.${beat} · ${BPM} BPM`;
+  phaseHud.classList.toggle('hot', state.phase === 'BUILD' || state.phase === 'VACUUM' || state.phase === 'ARMED' || state.phase === 'DROP');
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const dimMul = lerp(1.0, 0.20, vacuumDim);
+  drawFlankingMetricField(curStep, dimMul);
+  drawWavePackets(curStep, nowPerf, dimMul);
+  drawNowHorizon(dt, nowPerf, dimMul);
+
+  // Render live 21-point MediaPipe hands anchored cleanly in Left (Conductor) & Right (Performer) wings!
+  const scalePx = clamp(Math.min(W * 0.26, H * 0.34), 160, 260);
+  if (cv.hands.L.fade > 0.01) {
+    const lx = lerp(geo.fieldL + 16, geo.cx - geo.corridorW * 0.5 - 24, cv.hands.L.nx);
+    const ly = pistonToY(state.piston);
+    drawHandOverlay(cv.hands.L, lx, ly, scalePx, true);
+    // Dashed tether connecting Left Hand palm directly to the central DJ Tension Piston handle!
+    ctx.save(); ctx.setLineDash([3, 4]);
+    strokeLine(lx + 18, ly, geo.cx - 18, ly, mixInk(state.phase === 'BUILD' || state.phase === 'VACUUM' ? 0.9 : 0.2, 0.42 * cv.hands.L.fade), 1.0);
+    ctx.restore();
+  }
+  if (cv.hands.R.fade > 0.01) {
+    const rx = lerp(geo.locusX[0], geo.locusX[8], cv.hands.R.nx);
+    const ry = lerp(geo.nowY + geo.railDown * 0.7, geo.nowY - geo.railUp * 0.85, cv.hands.R.ny);
+    drawHandOverlay(cv.hands.R, rx, ry, scalePx, false);
+    ctx.save(); ctx.setLineDash([2, 4]);
+    strokeLine(rx, ry, rx, geo.nowY, mixInk(cv.hands.R.pinchProx, 0.32 * cv.hands.R.fade), 0.9);
+    ctx.restore();
+  }
+
+  drawDropShockwaves(nowPerf);
+  drawTensionPiston(nowPerf);
+  requestAnimationFrame(frame);
+}
+
+recomputeFuture(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

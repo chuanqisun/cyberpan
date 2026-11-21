@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>37 — Straight Vertical Wall × Pseudo-Perspective Funnel Stage</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 11px; font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased; user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 10px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.70); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.64);
+    border: 1px solid rgba(255,255,255,0.18); font: inherit; font-size: 10px; letter-spacing: 0.09em;
+    height: 22px; padding: 0 9px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.72); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 780px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>37</b> · STRAIGHT PAST WALL ↑ · PSEUDO-3D FUNNEL FUTURE ↓ · drag PAST (<b>SHIFT</b> multi-group) · click/drag FUNNEL plant · RMB erase · WHEEL lens · <b>1-9</b> strike</span>
+  <div class="grp">
+    <button id="flareBtn" type="button" title="Cycle Front Funnel Perspective Flare (F)">FLARE 1.56×</button>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 37 — STRAIGHT-UP VERTICAL PAST WALL × PSEUDO-PERSPECTIVE FUNNEL FRONT STAGE
+// TOP (PAST):     100% straight-up parallel vertical wall + #27 C¹ log lens,
+//                 1€ adaptive memory halo, hover micro-lens & Shift multi-group
+// MIDDLE (NOW):   Architectural 90° fold hinge + interferometer + 9 strike loci
+// BOTTOM (FUTURE):One-point pseudo-perspective floor funneling INTO the upright
+//                 wall (scale(u) = 1/(1 - γu), exact straight rails & C¹ join)
+// ============================================================================
+const NOTES = [
+  ['D3','^1',146.83], ['A3','^5',220.00], ['Bb3','^b6',233.08], ['C4','^b7',261.63],
+  ['D4','^1',293.66], ['E4','^2',329.63], ['F4','^b3',349.23], ['G4','^4',392.00], ['A4','^5',440.00],
+].map(([name, deg, freq]) => ({ name, deg, freq }));
+
+const BPM = 84, TATUM = 60 / BPM / 4, BAR_SEC = 16 * TATUM, LOOKAHEAD = 0.11, FLASH_MS = 420;
+const FUTURE_STEPS = 32, DEFAULT_WARP = 2.6, FLARE_PRESETS = [1.28, 1.56, 1.84];
+const QUANT_DURS = [1, 2, 3, 4, 6, 8], RULER_BARS = [1, 2, 4, 8, 16, 32];
+const METRIC_W = [1.0,.12,.44,.18,.74,.12,.48,.22,.88,.12,.46,.18,.70,.14,.50,.24];
+const CELLS = {
+  low:  [[8], [6,-2], [4,-4], [-2,6], [4,4], [6,2], [-4,4]],
+  mid:  [[3,3,2], [4,2,2], [2,2,4], [3,2,3], [2,4,2], [4,-2,2], [6,1,1]],
+  high: [[3,3,1,1], [2,1,1,2,2], [1,1,2,3,1], [2,2,1,1,2], [3,2,1,2], [1,1,2,2,2]]
+};
+const FIELD_I = [1.00,.78,.18,.24,.92,.26,.76,.22,.42], FIELD_BVI = [.34,.36,1.00,.44,.78,.42,.88,.40,.68], FIELD_BVII = [.16,.26,.52,1.00,.44,.84,.46,.92,.86];
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = s => ((Math.round(s) % 16) + 16) % 16;
+const snapDur = raw => QUANT_DURS.reduce((q, d) => Math.abs(d - raw) <= Math.abs(q - raw) ? d : q, QUANT_DURS[0]);
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.92), h), 0, 1).toFixed(3)})`;
+};
+const harmonicBond = (a, b) => {
+  if (a === b) return 1.0;
+  const r = Math.max(NOTES[a].freq, NOTES[b].freq) / Math.min(NOTES[a].freq, NOTES[b].freq);
+  return Math.abs(r - 2) < 0.03 ? 0.86 : Math.abs(r - 1.5) < 0.03 ? 0.68 : Math.abs(r - 3) < 0.05 ? 0.62 : Math.abs(r - 1.333) < 0.03 ? 0.48 : 0;
+};
+
+// --- Synthetic D Kurd Coupled-Bloom Handpan Voice + Dry Stereo Micro-Clicks ---
+let actx = null, dryBus = null, revSend = null, uiBus = null, noiseBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const comp = actx.createDynamicsCompressor(), master = actx.createGain(), conv = actx.createConvolver();
+    comp.threshold.value = -10; comp.ratio.value = 3; comp.release.value = 0.18; comp.connect(actx.destination);
+    master.gain.value = 0.86; master.connect(comp); dryBus = actx.createGain(); dryBus.connect(master);
+    const irLen = Math.floor(actx.sampleRate * 1.9), ir = actx.createBuffer(2, irLen, actx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.64 + (Math.random() * 2 - 1) * 0.36; d[i] = lp * Math.pow(1 - i / irLen, 3.0) * 0.56; }
+    }
+    conv.buffer = ir; revSend = actx.createGain(); revSend.gain.value = 0.28; revSend.connect(conv); conv.connect(master);
+    uiBus = actx.createGain(); uiBus.gain.value = 0.22; uiBus.connect(comp);
+    noiseBuf = actx.createBuffer(1, Math.floor(actx.sampleRate * 0.12), actx.sampleRate);
+    const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+function playVoice(noteIdx, when, vel = 0.8, durSteps = 4) {
+  ensureAudio();
+  const t0 = Math.max(actx.currentTime + 0.001, when), f0 = NOTES[noteIdx].freq, v = clamp(vel, 0.12, 1.0);
+  const tau = clamp(0.18 + durSteps * 0.275, 0.28, 2.55) * (noteIdx === 0 ? 1.18 : 1.0);
+  const out = actx.createGain(), pan = actx.createStereoPanner(), fg = actx.createGain();
+  out.gain.setValueAtTime(1, t0); pan.pan.setValueAtTime((noteIdx - 4) * 0.12, t0); out.connect(pan); pan.connect(dryBus); pan.connect(revSend);
+  fg.gain.setValueAtTime(0.0001, t0); fg.gain.linearRampToValueAtTime(0.30 * v, t0 + 0.007); fg.gain.exponentialRampToValueAtTime(0.0001, t0 + tau); fg.connect(out);
+  for (const [df, w] of [[0, 0.72], [0.7, 0.28]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(f0 + df, t0); g.gain.value = w; o.connect(g); g.connect(fg); o.start(t0); o.stop(t0 + tau + 0.05);
+  }
+  const bloom = 0.56 + 0.44 * clamp(durSteps / 5, 0, 1);
+  for (const [ratio, del, lvl, mul] of [[2.001, 0.055, 0.20, 0.85], [2.998, 0.082, 0.085, 1.05]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(f0 * ratio, t0);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(lvl * v * bloom, t0 + del); g.gain.exponentialRampToValueAtTime(0.0001, t0 + tau * mul);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + tau * mul + 0.05);
+  }
+  const ns = actx.createBufferSource(), bp = actx.createBiquadFilter(), ng = actx.createGain();
+  ns.buffer = noiseBuf; bp.type = 'bandpass'; bp.frequency.setValueAtTime(clamp(f0 * 2.4, 420, 1250), t0); bp.Q.value = 1.6;
+  ng.gain.setValueAtTime(0.0001, t0); ng.gain.linearRampToValueAtTime(0.14 * v, t0 + 0.0025); ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.022);
+  ns.connect(bp); bp.connect(ng); ng.connect(out); ns.start(t0); ns.stop(t0 + 0.03);
+  return { damp() { const now = actx.currentTime; out.gain.cancelScheduledValues(now); out.gain.setValueAtTime(Math.max(0.001, out.gain.value), now); out.gain.exponentialRampToValueAtTime(0.0001, now + 0.24); } };
+}
+function playClick(panVal = 0, strong = false) {
+  if (!actx) ensureAudio();
+  const t0 = actx.currentTime + 0.001, src = actx.createBufferSource(), bp = actx.createBiquadFilter(), g = actx.createGain(), p = actx.createStereoPanner();
+  src.buffer = noiseBuf; bp.type = 'bandpass'; bp.frequency.value = strong ? 1850 : 2550; bp.Q.value = 4.6;
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(strong ? 0.16 : 0.09, t0 + 0.0012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.015);
+  p.pan.value = clamp(panVal, -0.8, 0.8); src.connect(bp); bp.connect(g); g.connect(p); p.connect(uiBus); src.start(t0); src.stop(t0 + 0.02);
+}
+
+// --- Musical State, 1€ Adaptive Memory & Multi-Group Selection ---
+const warpToK = (w) => { const u = clamp((w - 1) / 3, 0, 1); return u <= 0 ? 0 : 0.142 * Math.pow(u, 0.78); };
+const state = {
+  tension: 0, motion: 0, warp: DEFAULT_WARP, targetWarp: DEFAULT_WARP, k: warpToK(DEFAULT_WARP),
+  flareIdx: 1, flare: FLARE_PRESETS[1], targetFlare: FLARE_PRESETS[1],
+  lensHotPerf: -9999, steerHotPerf: -9999, rightHotPerf: -9999,
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1, nextGroupId: 1, nextPinId: 1, seed: 19, lastUserPitch: 0, pausedPos: 0, lastStrikePerf: -9999,
+  pastNotes: [], futureNotes: [], groups: [], pinnedFuture: [], mutedSteps: new Set(), activeHolds: new Map(),
+};
+const mem = {
+  bias: 0.75, vUser: 0, fc: 0.0031, halfLifeBars: 12.6, adaptNorm: 0.85, pivotHotPerf: -9999, recentPitch: -1,
+  slots: Array.from({ length: 16 }, (_, pos) => ({ pos, sal: new Float32Array(9), dur: 2, energy: 0, pinned: 0, noteIdx: 0, iv: 0, srcPastId: -1, sources: [], bornPerf: -9999, hotPerf: -9999, pulse: 0 })),
+};
+const loci = NOTES.map(() => ({ glow: 0, heat: 0, damp: 1.8 })), blooms = [], sympArcs = [];
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+
+// ============================================================================
+// CORRECTED PSEUDO-3D STAGE PROJECTION:
+//   TOP HALF (PAST):   STRAIGHT UP! Strictly parallel vertical columns (scale=1)
+//                      with C¹ logarithmic past time-lens in Y.
+//   BOTTOM (FUTURE):   One-point pseudo-perspective floor FUNNELING INTO the
+//                      vertical wall at NOW:
+//                        S(u) = 1 / (1 - γ u),  γ = (F - 1) / F
+//                        x(lane, u) = cx + (lane - 4) * wallGap * S(u)
+//                        y(u)       = nowY + frontH * (S(u) - 1) / (F - 1)
+//                      Every lane rail is a mathematically straight line in (x,y)!
+//                      Exact C¹ vertical velocity join at NOW: s0 = frontH / (F * FUTURE_STEPS)
+// ============================================================================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = {
+  cx: 0, nowY: 0, padTop: 50, padBot: 26, wallH: 200, frontH: 240,
+  wallGap: 40, wallHalfW: 185, wallL: 0, wallR: 0,
+  frontL: 0, frontR: 0, locusX: new Float32Array(9), s0: 6,
+  lensX: 48, lensTop: 76, lensBot: 300, steerX: 110, steerY: 480, R: 46, rightX: 900, gaugeR: 64
+};
+const WALL_PAD_LANES = 4.55;
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const F = state.flare;
+  geo.cx = Math.round(W * 0.5);
+  geo.nowY = Math.round(H * 0.50);
+  geo.wallH = Math.max(120, geo.nowY - geo.padTop);
+  geo.frontH = Math.max(130, H - geo.nowY - geo.padBot);
+
+  // Choose wall width so even the flared bottom foreground leaves room for left/right controls
+  const maxBottomHalf = Math.min(W * 0.34, Math.max(160, W * 0.5 - 150));
+  const maxWallHalf = Math.min(255, maxBottomHalf / Math.max(1.2, F));
+  geo.wallGap = clamp(maxWallHalf / WALL_PAD_LANES, 22, 52);
+  geo.wallHalfW = geo.wallGap * WALL_PAD_LANES;
+  geo.wallL = geo.cx - geo.wallHalfW;
+  geo.wallR = geo.cx + geo.wallHalfW;
+  geo.frontL = geo.cx - geo.wallHalfW * F;
+  geo.frontR = geo.cx + geo.wallHalfW * F;
+  for (let i = 0; i < 9; i++) geo.locusX[i] = geo.cx + (i - 4) * geo.wallGap;
+
+  // Exact C¹ vertical speed right at the NOW hinge!
+  geo.s0 = geo.frontH / (F * FUTURE_STEPS);
+
+  // Flanking minimalist controls tucked cleanly outside the stage wings
+  geo.lensX = Math.max(36, Math.min(68, Math.round(geo.wallL * 0.24)));
+  geo.lensTop = geo.padTop + 26;
+  geo.lensBot = Math.max(geo.lensTop + 72, geo.nowY - 34);
+  geo.R = clamp(Math.min((geo.frontL - 28) * 0.36, (geo.frontH - 54) * 0.36, 50), 28, 50);
+  geo.steerX = Math.max(geo.R + 26, Math.min(geo.frontL - geo.R - 18, Math.round(geo.frontL * 0.50)));
+  geo.steerY = Math.round(lerp(geo.nowY + 26, H - geo.padBot - 16, 0.52));
+  geo.gaugeR = clamp(Math.min(geo.frontH * 0.38, geo.wallH * 0.38, 68), 40, 68);
+  geo.rightX = Math.min(W - 44, Math.max(geo.frontR + 34, Math.round(lerp(geo.wallR, W, 0.56))));
+}
+window.addEventListener('resize', layout); layout();
+
+// --- Exact Projection & Inverse Functions ---
+// TOP VERTICAL WALL (PAST): strictly straight up! X invariant with age!
+const wallX = (wx) => geo.cx + wx * geo.wallGap;
+const wallY = (ageSteps, k = state.k) => {
+  const a = Math.max(0, ageSteps);
+  return k < 1e-4 ? geo.nowY - a * geo.s0 : geo.nowY - (geo.s0 / k) * Math.log(1 + k * a);
+};
+const projWall = (wx, ageSteps) => ({ x: wallX(wx), y: wallY(ageSteps), scale: 1.0 });
+const unprojWall = (sx, sy) => {
+  if (sy > geo.nowY) return null;
+  const dy = geo.nowY - sy, k = state.k;
+  const age = k < 1e-4 ? dy / geo.s0 : (Math.exp(Math.min(18, (k * dy) / geo.s0)) - 1) / k;
+  return { wx: (sx - geo.cx) / geo.wallGap, age };
+};
+
+// BOTTOM FUNNEL FLOOR (FUTURE): exact one-point pseudo-perspective converging into NOW!
+function projFunnel(wx, offSteps) {
+  const F = state.flare, gamma = (F - 1) / F;
+  const u = clamp(offSteps / FUTURE_STEPS, 0, 1.08);
+  const S = 1 / Math.max(0.25, 1 - gamma * u);
+  const q = (S - 1) / (F - 1);
+  return { x: geo.cx + wx * geo.wallGap * S, y: geo.nowY + q * geo.frontH, scale: S, u };
+}
+function unprojFunnel(sx, sy) {
+  if (sy < geo.nowY) return null;
+  const F = state.flare, q = (sy - geo.nowY) / geo.frontH;
+  const S = 1 + (F - 1) * q;
+  const u = (F * q) / S;
+  return { wx: (sx - geo.cx) / (geo.wallGap * S), off: u * FUTURE_STEPS, scale: S, u };
+}
+const stepToStage = (wx, step, curStep) => {
+  const dt = step - curStep;
+  return dt < 0 ? projWall(wx, -dt) : projFunnel(wx, dt);
+};
+const localPastScale = (age, k = state.k) => age <= 0 ? 1 : 1 / (1 + k * age);
+const visiblePastSteps = (curStep) => {
+  const top = unprojWall(geo.cx, geo.padTop);
+  return Math.max(32, top ? top.age : 64);
+};
+
+// --- 1€ Adaptive Memory Dynamics & Sympathetic Excitation (from #27) ---
+const pulseVelocity = (amount, nowPerf = performance.now()) => { mem.vUser = clamp(mem.vUser + amount, 0, 3.2); if (amount >= 0.45) mem.pivotHotPerf = nowPerf; };
+function captureSlot(rel, noteIdx, dur, weight, pinnedAmt, srcPastId, iv, nowPerf, additive = false, groupId = -1) {
+  const sl = mem.slots[mod16(rel)], keepSame = additive && sl.sources.length ? 0.90 : 0.55, keepOther = additive && sl.sources.length ? 0.80 : 0.28;
+  for (let i = 0; i < 9; i++) sl.sal[i] *= (i === noteIdx ? keepSame : keepOther);
+  sl.sal[noteIdx] = clamp(sl.sal[noteIdx] + weight, 0, 1);
+  let bestI = noteIdx, bestW = -1; for (let i = 0; i < 9; i++) if (sl.sal[i] > bestW) { bestW = sl.sal[i]; bestI = i; }
+  sl.noteIdx = bestI; sl.dur = dur; sl.iv = iv;
+  sl.energy = clamp(Math.max(sl.energy * (additive ? 0.85 : 0.45), weight), 0, 1); sl.pinned = clamp(Math.max(sl.pinned, pinnedAmt), 0, 1);
+  if (srcPastId > 0) {
+    sl.srcPastId = srcPastId;
+    if (!additive) sl.sources = [{ pastId: srcPastId, noteIdx, dur, groupId }];
+    else { sl.sources = sl.sources.filter(s => s.pastId !== srcPastId); sl.sources.push({ pastId: srcPastId, noteIdx, dur, groupId }); if (sl.sources.length > 4) sl.sources.shift(); }
+  } else if (!additive) sl.sources = [];
+  sl.bornPerf = sl.hotPerf = nowPerf; sl.pulse = 1.0;
+}
+function syncGroupsToMemory() {
+  const activePastIds = new Set(), liveIds = new Set(state.pastNotes.map(p => p.id));
+  for (const sl of mem.slots) if (sl.energy > 0.16) for (const src of sl.sources) activePastIds.add(src.pastId);
+  for (const g of state.groups) for (const id of [...g.noteIds]) if (!liveIds.has(id) || !activePastIds.has(id)) g.noteIds.delete(id);
+  state.groups = state.groups.filter(g => g.noteIds.size > 0);
+  const grouped = new Set(); for (const g of state.groups) for (const id of g.noteIds) grouped.add(id);
+  for (const p of state.pastNotes) p.locked = grouped.has(p.id);
+}
+function stepAdaptiveMemory(dt, nowPerf) {
+  mem.vUser *= Math.exp(-dt / 0.74); if (mem.vUser < 0.0005) mem.vUser = 0;
+  const fMin = 0.026 * Math.pow(0.0015 / 0.026, mem.bias), beta = lerp(0.155, 0.088, mem.bias);
+  mem.fc = fMin + beta * mem.vUser; mem.halfLifeBars = Math.LN2 / (2 * Math.PI * mem.fc * BAR_SEC);
+  mem.adaptNorm = clamp((Math.log(0.18) - Math.log(clamp(mem.fc, 0.0015, 0.18))) / (Math.log(0.18) - Math.log(0.0015)), 0, 1);
+  const activeDecay = state.playing || mem.vUser > 0.15; let dropped = false;
+  for (const sl of mem.slots) {
+    sl.pulse = Math.max(0, sl.pulse * Math.exp(-dt * 2.6));
+    if (!activeDecay || sl.energy <= 0 || nowPerf - sl.bornPerf < 1050) continue;
+    const wasActive = sl.energy > 0.16, rate = 2 * Math.PI * mem.fc * (state.playing ? 1 : 0.72), keep = Math.exp(-dt * rate), keepPin = Math.exp(-dt * rate * (mem.vUser > 0.4 ? 1.15 : 0.58));
+    sl.energy *= keep; sl.pinned *= keepPin; for (let i = 0; i < 9; i++) sl.sal[i] *= keep;
+    if (wasActive && sl.energy <= 0.16) dropped = true;
+    if (sl.energy < 0.03) { sl.energy = sl.pinned = 0; sl.sal.fill(0); sl.srcPastId = -1; sl.sources = []; }
+  }
+  if (dropped) { syncGroupsToMemory(); recomputeFuture(true); }
+}
+function exciteSympatheticPast(noteIdx, vel, durSteps, curStep, nowPerf) {
+  const curPhase = mod16(curStep), cands = [];
+  for (let i = state.pastNotes.length - 1; i >= 0; i--) {
+    const p = state.pastNotes[i], ageSteps = curStep - p.step; if (ageSteps <= 0.15 || ageSteps > 264) continue;
+    let bond = harmonicBond(noteIdx, p.noteIdx);
+    if (mod16(p.step) === curPhase && mem.slots[curPhase].energy > 0.25) bond = Math.max(bond, 0.56);
+    if (bond <= 0.42) continue;
+    const atten = clamp(1 - Math.log(1 + ageSteps / 14) / Math.log(20), 0.24, 1), excite = clamp(bond * (0.52 + vel * 0.48) * (0.48 + atten * 0.52), 0, 1);
+    p.symp = Math.max(p.symp || 0, excite); p.sympDecay = clamp(2.6 / (0.72 + durSteps * 0.34), 0.85, 3.0);
+    cands.push({ p, bond, score: excite * (p.locked ? 1.35 : 1) * atten });
+  }
+  cands.sort((a, b) => b.score - a.score);
+  for (let k = 0; k < Math.min(6, cands.length); k++) sympArcs.push({ fromIdx: noteIdx, past: cands[k].p, bond: cands[k].bond, bornPerf: nowPerf, lifeMs: 440 + cands[k].bond * 380 });
+  if (sympArcs.length > 28) sympArcs.splice(0, sympArcs.length - 28);
+}
+function triggerResonator(idx, vel, durSteps, hot = false, stepForSymp = getCurrentStep(), nowPerf = performance.now()) {
+  const loc = loci[idx]; loc.glow = clamp(Math.max(loc.glow * 0.4, 0.45 + vel * 0.55), 0, 1); loc.damp = clamp(3.6 / (0.65 + durSteps * 0.48), 0.65, 3.6);
+  if (hot) loc.heat = 1.0;
+  blooms.push({ idx, vel, dur: durSteps, bornPerf: nowPerf, lifeMs: clamp(360 + durSteps * 300, 420, 2750) * (idx === 0 ? 1.16 : 1), hot });
+  if (blooms.length > 24) blooms.shift();
+  exciteSympatheticPast(idx, vel, durSteps, stepForSymp, nowPerf);
+}
+
+// --- Grammar-Guided Multi-Group Attention Generator (from #27) ---
+function pickCell(len, barIdx, subIdx, isCadence) {
+  if (len === 8) {
+    const m = state.motion, t = state.tension, pool = [];
+    const wLow = clamp(0.65 - m * 0.95 + (isCadence && t < 0.25 ? 0.35 : 0), 0.04, 1.5), wMid = clamp(1.05 - Math.abs(m) * 0.75, 0.12, 1.2), wHigh = clamp(0.55 + m * 0.95 - (isCadence && t < -0.2 ? 0.25 : 0), 0.03, 1.5);
+    for (const c of CELLS.low) pool.push([c, wLow]); for (const c of CELLS.mid) pool.push([c, wMid]); for (const c of CELLS.high) pool.push([c, wHigh]);
+    let r = hash01(barIdx * 13 + subIdx, state.seed, 101) * pool.reduce((s, x) => s + x[1], 0);
+    for (const [cell, w] of pool) { r -= w; if (r <= 0) return cell; } return CELLS.mid[0];
+  }
+  const out = [];
+  for (let rem = len, k = 0; rem > 0; k++) {
+    const avail = QUANT_DURS.filter(d => d <= rem), u = hash01(barIdx * 31 + subIdx, rem * 7 + k, 202);
+    const pref = state.motion < -0.25 ? avail[avail.length - 1] : state.motion > 0.35 ? avail[Math.min(1, avail.length - 1)] : avail[Math.floor(avail.length * 0.55)];
+    if (rem >= 2 && k > 0 && u < (0.28 - state.motion * 0.14)) { const rLen = rem >= 4 && state.motion < -0.2 ? 4 : 2; out.push(-rLen); rem -= rLen; }
+    else { const pick = avail[Math.min(avail.length - 1, Math.floor(u * avail.length * 0.4 + avail.indexOf(pref) * 0.65))]; out.push(pick); rem -= pick; }
+  }
+  return out;
+}
+function choosePitch(step, dur, barIdx, prevPitch, prevInt, echo, memAnchor, srcOverride, nearPin) {
+  const pos = mod16(step), T = state.tension, M = clamp(mem.adaptNorm * (0.35 + mem.bias * 0.65), 0.08, 0.96);
+  if (memAnchor) {
+    const pKeep = clamp(0.44 + memAnchor.energy * 0.44 + memAnchor.pinned * 0.22 - Math.max(0, Math.abs(T) - 0.72) * 0.16, 0.28, 0.98);
+    if (hash01(step, barIdx + memAnchor.pos * 7 + (srcOverride ? srcOverride.pastId : 0), 303) < pKeep) {
+      let chosen = srcOverride ? srcOverride.noteIdx : memAnchor.noteIdx;
+      if (!srcOverride && Math.abs(T) > 0.68 && memAnchor.iv !== 0 && prevPitch >= 0 && hash01(step, barIdx, 317) < (Math.abs(T) - 0.62) * 0.72) chosen = clamp(prevPitch + memAnchor.iv, 0, 8);
+      return { noteIdx: chosen, attn: { pastId: srcOverride ? srcOverride.pastId : memAnchor.srcPastId, memSlot: memAnchor.pos, weight: clamp(memAnchor.energy, 0.25, 1), locked: memAnchor.pinned > 0.42 } };
+    }
+  }
+  if (echo && hash01(step, barIdx, 404) < clamp((M * 0.82 - 0.08) * (echo.source === 'user' ? 1.32 : 1) * echo.lagW, 0, 0.90))
+    return { noteIdx: echo.noteIdx, attn: echo.id > 0 ? { pastId: echo.id, memSlot: -1, weight: clamp(M * echo.lagW, 0.2, 0.90), locked: false } : null };
+  const odd = (barIdx & 1) === 1, t01 = (T + 1) * 0.5;
+  const wI = clamp(1 - t01 * (odd ? 1.05 : 0.78), 0.06, 1), wBVI = clamp(Math.sin(t01 * Math.PI) * 0.85 + (odd ? 0.28 : 0.15) * t01, 0.08, 1), wBVII = clamp(Math.pow(t01, 1.35) * (odd ? 1.15 : 0.72), 0.04, 1.1);
+  const weights = new Float32Array(9); let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    let w = (FIELD_I[i] * wI + FIELD_BVI[i] * wBVI + FIELD_BVII[i] * wBVII) * (0.65 + 0.75 * (1 - Math.abs(i / 8 - clamp(0.26 + t01 * 0.52, 0.12, 0.84))));
+    if (pos === 0 && dur >= 4) { if (T <= 0.15 && (i === 0 || i === 4)) w *= 2.2 - T; if (T > 0.25 && (i === 2 || i === 3 || i === 5)) w *= 1.65; }
+    if (dur >= 4 && (i === 2 || i === 8) && T > 0.1) w *= 1.35;
+    if (prevPitch >= 0) {
+      const d = i - prevPitch, ad = Math.abs(d);
+      w *= dur === 1 ? (ad === 1 ? 2.6 : ad === 2 ? 1.35 : 0.35) : (ad === 0 ? (pos === 0 ? 0.55 : 0.32) : ad <= 2 ? 1.75 : ad <= 4 ? 0.92 : 0.42);
+      if (Math.abs(prevInt) >= 3 && Math.sign(d) === -Math.sign(prevInt) && ad > 0 && ad <= 2) w *= 2.15;
+      if (T < -0.15 && d < 0) w *= 1 + (-T) * 0.48; else if (T > 0.15 && d > 0) w *= 1 + T * 0.48;
+    }
+    if (nearPin) { const hb = harmonicBond(i, nearPin.noteIdx); if (hb > 0.4) w *= 1 + hb * 0.48; else if (Math.abs(i - nearPin.noteIdx) <= 2) w *= 1.24; }
+    if (memAnchor && memAnchor.sal[i] > 0.1) w *= 1 + memAnchor.sal[i] * 2.2; else if (echo && echo.noteIdx === i) w *= 1 + M * 0.85;
+    weights[i] = Math.max(0.001, w); sum += weights[i];
+  }
+  let r = hash01(step * 17 + dur, barIdx * 11 + prevPitch + 2, 505) * sum;
+  for (let i = 0; i < 9; i++) { r -= weights[i]; if (r <= 0) return { noteIdx: i, attn: null }; } return { noteIdx: 4, attn: null };
+}
+function findPastAt(history, targetStep) {
+  let best = null, bestDist = 2;
+  for (let i = history.length - 1; i >= 0; i--) { const d = Math.abs(history[i].step - targetStep); if (d < bestDist) { best = history[i]; bestDist = d; if (d < 0.35) break; } }
+  return best;
+}
+function generateBar(barIdx, history, anchors, pinnedInBar, prevPitchIn, prevIntIn) {
+  const barStart = barIdx * 16, barNotes = [], slots = [], M = clamp(mem.adaptNorm * (0.35 + mem.bias * 0.65), 0.08, 0.96);
+  const pushFill = (start, len, sub, cad) => { let p = start; for (const v of pickCell(len, barIdx, sub, cad)) { if (v > 0) slots.push({ pos: p, dur: v, memAnchor: null, src: null }); p += Math.abs(v); } };
+  let echoRhythm = null;
+  if (M > 0.28 && !anchors.length) {
+    const srcStart = barStart - ((M > 0.62 || (barIdx & 1) === 0) ? 16 : 32), found = history.filter(n => n.step >= srcStart - 0.25 && n.step < srcStart + 15.75);
+    if (found.length >= 2 && hash01(barIdx, state.seed, 606) < (M - 0.18) * 0.95) echoRhythm = found;
+  }
+  if (anchors.length) {
+    let cursor = 0;
+    for (let k = 0; k < anchors.length; k++) {
+      const a = anchors[k]; if (a.pos < cursor) continue;
+      if (a.pos > cursor) pushFill(cursor, a.pos - cursor, k, false);
+      const maxSpan = Math.max(1, (k + 1 < anchors.length ? anchors[k + 1].pos : 16) - a.pos);
+      if (a.sources.length >= 2) {
+        const picks = [], usedPitch = new Set();
+        for (let j = 0; j < a.sources.length && picks.length < 2; j++) { const s = a.sources[(barIdx + j) % a.sources.length]; if (!usedPitch.has(s.noteIdx)) { usedPitch.add(s.noteIdx); picks.push(s); } }
+        let maxD = 1; for (const s of picks) { const d = clamp(s.dur, 1, maxSpan); slots.push({ pos: a.pos, dur: d, memAnchor: a, src: s }); maxD = Math.max(maxD, d); } cursor = a.pos + maxD;
+      } else { const s = a.sources[0] || null, d = clamp(s ? s.dur : a.dur, 1, maxSpan); slots.push({ pos: a.pos, dur: d, memAnchor: a, src: s }); cursor = a.pos + d; }
+    }
+    if (cursor < 16) pushFill(cursor, 16 - cursor, 9, (barIdx & 1) === 1);
+  } else if (echoRhythm) {
+    let cursor = 0; for (const en of echoRhythm) { const rel = clamp(mod16(en.step), cursor, 15); if (rel < cursor) continue; const d = clamp(en.dur, 1, 16 - rel); slots.push({ pos: rel, dur: d, memAnchor: null, src: null }); cursor = rel + d; }
+  } else { pushFill(0, 8, 0, false); pushFill(8, 8, 1, (barIdx & 1) === 1); }
+
+  const pinnedSteps = new Set(pinnedInBar.map(p => p.step)); let prevPitch = prevPitchIn, prevInt = prevIntIn;
+  for (const sl of slots) {
+    const step = barStart + sl.pos; if (state.mutedSteps.has(step) || pinnedSteps.has(step)) continue;
+    let nearPin = null, bestPinDist = 5; for (const p of pinnedInBar) { const dist = Math.abs(p.step - step); if (dist < bestPinDist) { bestPinDist = dist; nearPin = p; } }
+    const l16 = findPastAt(history, step - 16), l32 = findPastAt(history, step - 32), echo = l16 ? { ...l16, lagW: 1.0 } : (l32 ? { ...l32, lagW: 0.78 } : null);
+    const { noteIdx, attn } = choosePitch(step, sl.dur, barIdx, prevPitch, prevInt, echo, sl.memAnchor, sl.src, nearPin);
+    let dur = sl.dur; for (const p of pinnedInBar) if (p.noteIdx === noteIdx && p.step > step && step + dur > p.step) dur = Math.max(1, p.step - step);
+    const vel = clamp(0.46 + METRIC_W[sl.pos] * 0.36 + (dur >= 4 ? 0.11 : dur === 1 ? -0.14 : 0) + state.tension * 0.06, 0.28, 0.98);
+    barNotes.push({ id: 0, step, dur, noteIdx, vel, source: 'gen', userPinned: false, locked: false, symp: 0, attn, flashPerf: -9999 });
+    if (prevPitch >= 0) prevInt = noteIdx - prevPitch; prevPitch = noteIdx;
+  }
+  for (const p of pinnedInBar) { barNotes.push({ id: 0, pinId: p.pinId, step: p.step, dur: p.dur, noteIdx: p.noteIdx, vel: p.vel, source: 'user', userPinned: true, locked: false, symp: 0, attn: null, flashPerf: p.flashPerf }); if (prevPitch >= 0) prevInt = p.noteIdx - prevPitch; prevPitch = p.noteIdx; }
+  barNotes.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  return { barNotes, prevPitch, prevInt };
+}
+function recomputeFuture(flashChanges = true) {
+  const nowPerf = performance.now(), prevByKey = new Map(state.futureNotes.map(n => [`${n.step}:${n.noteIdx}:${n.userPinned ? 'p' : 'g'}`, n]));
+  const curStep = getCurrentStep(), minStep = Math.ceil(Math.max(state.nextSchedStep, curStep - 0.001)), curBar = Math.floor(minStep / 16);
+  state.pinnedFuture = state.pinnedFuture.filter(p => p.step >= minStep); for (const s of state.mutedSteps) if (s < minStep) state.mutedSteps.delete(s);
+  const anchors = mem.slots.filter(s => s.energy > 0.16), hist = state.pastNotes.slice();
+  let prevPitch = hist.length ? hist[hist.length - 1].noteIdx : state.lastUserPitch, prevInt = hist.length >= 2 ? hist[hist.length - 1].noteIdx - hist[hist.length - 2].noteIdx : 0;
+  const nextFuture = [];
+  for (let b = curBar; b <= curBar + 2; b++) {
+    const bStart = b * 16, res = generateBar(b, hist, anchors, state.pinnedFuture.filter(p => p.step >= bStart && p.step < bStart + 16), prevPitch, prevInt);
+    prevPitch = res.prevPitch; prevInt = res.prevInt;
+    for (const ev of res.barNotes) {
+      if (ev.step < minStep) continue;
+      if (!ev.userPinned) { const old = prevByKey.get(`${ev.step}:${ev.noteIdx}:g`); if (old && old.dur === ev.dur && Boolean(old.attn && old.attn.locked) === Boolean(ev.attn && ev.attn.locked)) ev.flashPerf = old.flashPerf; else if (flashChanges && prevByKey.size) ev.flashPerf = nowPerf; }
+      nextFuture.push(ev); hist.push(ev);
+    }
+  }
+  state.futureNotes = nextFuture;
+}
+function seedInitialPast() {
+  const chapters = [[-0.50, -0.42], [0.40, 0.08], [0.58, 0.48], [-0.14, -0.10]]; let prevPitch = 0, prevInt = 0;
+  for (let b = -16; b < 0; b++) {
+    [state.tension, state.motion] = chapters[Math.floor((b + 16) / 4)];
+    const res = generateBar(b, state.pastNotes, [], [], prevPitch, prevInt); prevPitch = res.prevPitch; prevInt = res.prevInt;
+    for (const ev of res.barNotes) { ev.id = state.nextId++; ev.firedVisual = true; state.pastNotes.push(ev); }
+  }
+  state.tension = state.motion = 0;
+}
+
+// --- Scheduler, Transport & Direct Performance ---
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const ev = state.futureNotes.shift(); if (ev.step < state.nextSchedStep - 0.001) continue;
+    playVoice(ev.noteIdx, state.anchorAudioTime + (ev.step - state.anchorStep) * TATUM, ev.vel, ev.dur);
+    if (ev.userPinned && ev.pinId) state.pinnedFuture = state.pinnedFuture.filter(p => p.pinId !== ev.pinId);
+    ev.id = state.nextId++; ev.firedVisual = false; ev.symp = 0; state.pastNotes.push(ev);
+    if (!state.futureNotes.length || state.futureNotes[0].step > ev.step + 0.001) state.nextSchedStep = Math.max(state.nextSchedStep, ev.step + 0.5);
+  }
+  const curStep = getCurrentStep(), curBar = Math.floor(curStep / 16);
+  if ((state.futureNotes.length ? state.futureNotes[state.futureNotes.length - 1].step : -1) < (curBar + 2) * 16 + 12) recomputeFuture(false);
+  if (state.pastNotes.length > 720) { const maxAge = Math.max(540, visiblePastSteps(curStep) + 64); state.pastNotes = state.pastNotes.filter(n => n.locked || curStep - n.step < maxAge); }
+}
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl'), flareBtn = document.getElementById('flareBtn');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) { state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025; state.nextSchedStep = Math.ceil(state.playheadStep - 0.001); state.playing = true; recomputeFuture(false); schedulerTick(); schedTimer = setInterval(schedulerTick, 24); }
+  else { state.playheadStep = getCurrentStep(); state.playing = false; clearInterval(schedTimer); schedTimer = null; }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+function cycleFlare() {
+  state.flareIdx = (state.flareIdx + 1) % FLARE_PRESETS.length;
+  state.targetFlare = FLARE_PRESETS[state.flareIdx];
+  flareBtn.textContent = `FLARE ${state.targetFlare.toFixed(2)}×`;
+  ensureAudio(); playClick(0, true);
+}
+playBtn.addEventListener('click', togglePlay);
+flareBtn.addEventListener('click', cycleFlare);
+
+function startUserNote(noteIdx, holdKey) {
+  ensureAudio(); if (state.activeHolds.has(holdKey)) return;
+  const nowPerf = performance.now(), cur = getCurrentStep(), voice = playVoice(noteIdx, actx.currentTime, 0.9, 5);
+  triggerResonator(noteIdx, 0.96, 5, true, cur, nowPerf); state.lastUserPitch = noteIdx; pulseVelocity(0.78, nowPerf);
+  let rel = mod16(cur); if (!state.playing) { if (nowPerf - state.lastStrikePerf > 2400) state.pausedPos = 0; rel = state.pausedPos % 16; state.pausedPos = (state.pausedPos + 2) % 16; }
+  state.lastStrikePerf = nowPerf; const iv = mem.recentPitch >= 0 ? noteIdx - mem.recentPitch : 0; mem.recentPitch = noteIdx;
+  const noteObj = state.playing ? { id: state.nextId++, step: cur, dur: 2, noteIdx, vel: 0.92, source: 'user', userPinned: false, locked: false, symp: 0.6, attn: null, firedVisual: true, holding: true } : null;
+  if (noteObj) state.pastNotes.push(noteObj);
+  captureSlot(rel, noteIdx, 2, 0.95, 0.72, noteObj ? noteObj.id : -1, iv, nowPerf, false, -1);
+  if (state.groups.length) syncGroupsToMemory();
+  recomputeFuture(true); state.activeHolds.set(holdKey, { noteIdx, rel, startPerf: nowPerf, voice, noteObj });
+}
+function endUserNote(holdKey) {
+  const h = state.activeHolds.get(holdKey); if (!h) return;
+  state.activeHolds.delete(holdKey); const holdMs = performance.now() - h.startPerf;
+  if (holdMs < 155) { h.voice.damp(); loci[h.noteIdx].damp = 3.2; }
+  const q = snapDur((holdMs / 1000) / TATUM); if (h.noteObj) { h.noteObj.dur = q; h.noteObj.holding = false; }
+  mem.slots[h.rel].dur = q; recomputeFuture(true);
+}
+
+// --- Direct Interaction Across Straight Wall (PAST) & Funnel Floor (FUTURE) ---
+const drag = { mode: null, detent: '', locus: -1, clickT: 0, clickWho: '', x0: 0, y0: 0, x1: 0, y1: 0, step0: 0, hitNote: null, shift: false, selIds: new Set(), prevX: 0, prevY: 0, activePin: null, editMoved: false };
+const hover = { target: null, pastId: -1, futKey: '', locusIdx: -1, mx: 0, my: 0, focus: 0, focusX: 0, focusY: 0, ghostLocus: -1, ghostStep: -1 };
+const ptrXY = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+const lensKnobY = (w = state.warp) => lerp(geo.lensBot, geo.lensTop, clamp((w - 1) / 3, 0, 1));
+const lensYToWarp = my => lerp(1, 4, clamp((geo.lensBot - my) / (geo.lensBot - geo.lensTop), 0, 1));
+const steerKnobPos = () => ({ x: geo.steerX + state.motion * geo.R, y: geo.steerY - state.tension * geo.R });
+const rightKnobPos = () => ({ x: geo.rightX, y: geo.nowY + geo.gaugeR - mem.bias * geo.gaugeR * 2 });
+const inLens = (mx, my, p = 24) => Math.abs(mx - geo.lensX) <= p && my >= geo.lensTop - 16 && my <= geo.lensBot + 24;
+const inSteer = (mx, my, sk, p = 14) => Math.hypot(mx - sk.x, my - sk.y) <= p + 8 || Math.hypot(mx - geo.steerX, my - geo.steerY) <= geo.R + p;
+const inRight = (mx, my, p = 30) => Math.abs(mx - geo.rightX) <= p && Math.abs(my - geo.nowY) <= geo.gaugeR + 20;
+const inPastField = (mx, my) => my < geo.nowY - 14 && my >= geo.padTop - 8 && mx >= geo.wallL - 20 && mx <= geo.wallR + 20;
+const inFunnelField = (mx, my) => {
+  if (my <= geo.nowY + 14 || my > H - geo.padBot + 10) return false;
+  const f = unprojFunnel(mx, my); return Boolean(f && Math.abs(f.wx) <= WALL_PAD_LANES + 0.35 && f.off <= FUTURE_STEPS + 1);
+};
+const nearestWallLocus = mx => (mx < geo.wallL - 12 || mx > geo.wallR + 12) ? -1 : clamp(Math.round((mx - geo.cx) / geo.wallGap + 4), 0, 8);
+const minFutureStep = (cur = getCurrentStep()) => Math.max(Math.ceil(state.nextSchedStep), Math.ceil(cur + 1));
+
+function hitTestPastNote(mx, my) {
+  if (my >= geo.nowY - 8 || my < geo.padTop - 8) return null;
+  const cur = getCurrentStep(), hw = Math.min(18, geo.wallGap * 0.48); let best = null, bestScore = Infinity;
+  for (let i = state.pastNotes.length - 1; i >= 0; i--) {
+    const n = state.pastNotes[i]; if (n.step >= cur) continue;
+    const dx = Math.abs(mx - geo.locusX[n.noteIdx]); if (dx > hw) continue;
+    const y0 = wallY(cur - n.step), y1 = Math.min(geo.nowY, wallY(Math.max(0, cur - (n.step + n.dur))));
+    if (y1 < geo.padTop - 6) continue;
+    const dyDist = my < y0 ? y0 - my : (my > y1 ? my - y1 : 0);
+    if (dyDist <= 11 && dyDist + dx * 0.42 < bestScore) { bestScore = dyDist + dx * 0.42; best = n; }
+  }
+  return best;
+}
+function hitTestFutureNote(mx, my) {
+  if (!inFunnelField(mx, my)) return null;
+  const cur = getCurrentStep(); let best = null, bestScore = Infinity;
+  for (const n of state.futureNotes) {
+    const off0 = n.step - cur, off1 = n.step + n.dur - cur;
+    if (off0 > FUTURE_STEPS + 0.8 || off1 < 0) continue;
+    const p0 = projFunnel(n.noteIdx - 4, Math.max(0, off0)), p1 = projFunnel(n.noteIdx - 4, Math.min(FUTURE_STEPS, off1));
+    const hw = Math.min(24, geo.wallGap * p0.scale * 0.46);
+    const tY = p1.y > p0.y ? clamp((my - p0.y) / (p1.y - p0.y), 0, 1) : 0;
+    const cxAtY = lerp(p0.x, p1.x, tY), dx = Math.abs(mx - cxAtY);
+    if (dx > hw) continue;
+    const dyDist = my < p0.y ? p0.y - my : (my > Math.max(p0.y + 10, p1.y) ? my - Math.max(p0.y + 10, p1.y) : 0);
+    const score = dyDist + dx * 0.42 - (n.userPinned ? 2.5 : 0);
+    if (dyDist <= 12 && score < bestScore) { bestScore = score; best = n; }
+  }
+  return best;
+}
+const getMarqueeRect = (curStep) => {
+  const yS = clamp(wallY(Math.max(0, curStep - drag.step0)), geo.padTop, geo.nowY - 4), yE = clamp(drag.y1, geo.padTop, geo.nowY - 4);
+  return { x0: Math.min(drag.x0, drag.x1), x1: Math.max(drag.x0, drag.x1), y0: Math.min(yS, yE), y1: Math.max(yS, yE) };
+};
+function queryMarqueeNotes(curStep) {
+  const r = getMarqueeRect(curStep), out = [];
+  for (const n of state.pastNotes) {
+    if (n.step >= curStep) continue; const nx = geo.locusX[n.noteIdx]; if (nx < r.x0 - 8 || nx > r.x1 + 8) continue;
+    const yTop = wallY(curStep - n.step), yBot = Math.min(geo.nowY, wallY(Math.max(0, curStep - (n.step + n.dur))));
+    if (yBot >= r.y0 - 3 && yTop <= r.y1 + 3 && yBot >= geo.padTop - 4) out.push(n);
+  }
+  return out.sort((a, b) => a.step - b.step);
+}
+function ingestGroup(notes, additive) {
+  const nowPerf = performance.now(); pulseVelocity(additive ? 1.15 : 1.75, nowPerf);
+  if (!additive) { state.groups = []; for (const p of state.pastNotes) p.locked = false; for (const sl of mem.slots) { sl.pinned = 0; sl.energy *= 0.16; sl.sources = []; for (let i = 0; i < 9; i++) sl.sal[i] *= 0.16; } }
+  const grp = { id: state.nextGroupId++, noteIds: new Set(notes.map(n => n.id)), hotPerf: nowPerf }; state.groups.push(grp);
+  for (let k = 0; k < notes.length; k++) { const n = notes[k], iv = k > 0 ? n.noteIdx - notes[k - 1].noteIdx : 0; n.locked = true; n.symp = 1.0; n.sympDecay = 1.6; captureSlot(mod16(n.step), n.noteIdx, n.dur, 1.0, 1.0, n.id, iv, nowPerf, additive, grp.id); }
+  playClick(notes.reduce((s, n) => s + (n.noteIdx - 4) * 0.12, 0) / notes.length, true); recomputeFuture(true);
+}
+function togglePastNoteLock(n, additive) {
+  const nowPerf = performance.now(), rel = mod16(n.step);
+  if (n.locked) {
+    n.locked = false; for (const g of state.groups) g.noteIds.delete(n.id); state.groups = state.groups.filter(g => g.noteIds.size > 0);
+    const sl = mem.slots[rel]; sl.sources = sl.sources.filter(s => s.pastId !== n.id);
+    if (sl.sources.length) { const last = sl.sources[sl.sources.length - 1]; sl.noteIdx = last.noteIdx; sl.dur = last.dur; sl.srcPastId = last.pastId; sl.hotPerf = nowPerf; }
+    else { sl.pinned = 0; sl.energy *= 0.32; sl.sal[n.noteIdx] *= 0.32; }
+    pulseVelocity(0.32, nowPerf); playClick((n.noteIdx - 4) * 0.12, true); recomputeFuture(true);
+  } else ingestGroup([n], additive);
+}
+function softenPastMemory(hard = false) {
+  let any = state.groups.length > 0; state.groups = [];
+  for (const p of state.pastNotes) if (p.locked) { p.locked = false; any = true; }
+  for (const sl of mem.slots) if (sl.pinned > 0.05 || sl.sources.length) { sl.pinned = 0; sl.sources = []; sl.energy = Math.min(sl.energy, hard ? 0.22 : 0.52); any = true; }
+  if (any) { pulseVelocity(hard ? 1.15 : 0.42); playClick(0, hard); recomputeFuture(true); }
+}
+function updateLensWarp(newWarp, instant = false) {
+  const w = clamp(newWarp, 1.0, 4.0); state.targetWarp = Math.abs(w - DEFAULT_WARP) < 0.055 ? DEFAULT_WARP : w;
+  if (instant) { state.warp = state.targetWarp; state.k = warpToK(state.warp); }
+  state.lensHotPerf = performance.now(); const det = Math.round(state.targetWarp * 4);
+  if (`w:${det}` !== drag.detent) { drag.detent = `w:${det}`; playClick(-0.48, det === 4 || det === 11 || det === 16); }
+}
+function updateSteer(mx, my) {
+  const spd = Math.hypot(mx - drag.prevX, my - drag.prevY) / Math.max(24, geo.R); drag.prevX = mx; drag.prevY = my;
+  if (spd > 0.015) pulseVelocity(clamp(spd * 0.85, 0, 0.55));
+  let dx = (mx - geo.steerX) / geo.R, dy = (geo.steerY - my) / geo.R, len = Math.hypot(dx, dy);
+  if (len > 1) { dx /= len; dy /= len; } if (len < 0.06) dx = dy = 0;
+  state.motion = dx; state.tension = dy; state.steerHotPerf = performance.now();
+  const rStep = Math.round(Math.hypot(dx, dy) * 5), key = `${rStep}:${len > 0.12 ? Math.round(Math.atan2(dy, dx) / (Math.PI / 6)) : 0}`;
+  if (key !== drag.detent) { drag.detent = key; playClick(-0.36, rStep === 0 || rStep === 5); }
+  recomputeFuture(true);
+}
+function updateRight(my) {
+  const raw = clamp((geo.nowY + geo.gaugeR - my) / (geo.gaugeR * 2), 0, 1);
+  mem.bias = Math.abs(raw - 0.75) < 0.025 ? 0.75 : raw; state.rightHotPerf = performance.now();
+  const step = Math.round(mem.bias * 10); if (`m:${step}` !== drag.detent) { drag.detent = `m:${step}`; playClick(0.42, step === 0 || step === 5 || step === 10); }
+  recomputeFuture(true);
+}
+function ensurePinForFutureNote(n, nowPerf) {
+  if (n.userPinned && n.pinId) { const ex = state.pinnedFuture.find(p => p.pinId === n.pinId); if (ex) return ex; }
+  const pin = { pinId: state.nextPinId++, step: n.step, noteIdx: n.noteIdx, dur: n.dur, vel: clamp(Math.max(n.vel, 0.84), 0.76, 0.96), flashPerf: nowPerf };
+  state.pinnedFuture.push(pin); state.mutedSteps.delete(pin.step); return pin;
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const [mx, my] = ptrXY(e), now = performance.now(), sk = steerKnobPos(), cur = getCurrentStep();
+  if (e.button === 2) {
+    const fn = hitTestFutureNote(mx, my);
+    if (fn) { ensureAudio(); if (fn.userPinned && fn.pinId) state.pinnedFuture = state.pinnedFuture.filter(p => p.pinId !== fn.pinId); state.mutedSteps.add(fn.step); pulseVelocity(0.32, now); playClick((fn.noteIdx - 4) * 0.12, false); recomputeFuture(true); }
+    return;
+  }
+  if (e.button !== 0) return;
+  canvas.setPointerCapture(e.pointerId);
+  if (inLens(mx, my)) { ensureAudio(); if (drag.clickWho === 'lens' && now - drag.clickT < 320) { drag.detent = ''; updateLensWarp(DEFAULT_WARP, true); playClick(-0.48, true); drag.clickWho = ''; return; } drag.clickWho = 'lens'; drag.clickT = now; drag.mode = 'lens'; drag.detent = ''; return updateLensWarp(lensYToWarp(my), true); }
+  if (inSteer(mx, my, sk)) { ensureAudio(); if (drag.clickWho === 'steer' && now - drag.clickT < 320) { state.motion = state.tension = 0; state.steerHotPerf = now; pulseVelocity(0.6, now); playClick(-0.36, true); recomputeFuture(true); drag.clickWho = ''; return; } drag.clickWho = 'steer'; drag.clickT = now; drag.mode = 'steer'; drag.detent = ''; drag.prevX = mx; drag.prevY = my; return updateSteer(mx, my); }
+  if (inRight(mx, my)) { ensureAudio(); if (drag.clickWho === 'right' && now - drag.clickT < 320) { mem.bias = 0.75; state.rightHotPerf = now; playClick(0.42, true); recomputeFuture(true); drag.clickWho = ''; return; } drag.clickWho = 'right'; drag.clickT = now; drag.mode = 'right'; drag.detent = ''; return updateRight(my); }
+  if (inPastField(mx, my)) {
+    ensureAudio(); const uw = unprojWall(mx, my);
+    drag.mode = 'pastPending'; drag.x0 = drag.x1 = mx; drag.y0 = drag.y1 = my; drag.step0 = cur - (uw ? uw.age : 0);
+    drag.hitNote = hitTestPastNote(mx, my); drag.shift = e.shiftKey; drag.selIds.clear(); return;
+  }
+  if (inFunnelField(mx, my)) {
+    ensureAudio(); const fn = hitTestFutureNote(mx, my);
+    if (fn) { drag.mode = 'editFuture'; drag.x0 = mx; drag.y0 = my; drag.editMoved = false; drag.activePin = ensurePinForFutureNote(fn, now); return; }
+    const uf = unprojFunnel(mx, my);
+    if (uf) {
+      const lIdx = clamp(Math.round(uf.wx + 4), 0, 8), step = Math.max(minFutureStep(cur), Math.round(cur + uf.off));
+      const ex = state.pinnedFuture.find(p => p.step === step && p.noteIdx === lIdx);
+      const pin = ex || { pinId: state.nextPinId++, step, noteIdx: lIdx, dur: 2, vel: 0.88, flashPerf: now };
+      if (!ex) state.pinnedFuture.push(pin); state.mutedSteps.delete(step); pin.flashPerf = now;
+      drag.mode = 'placeFuture'; drag.x0 = mx; drag.y0 = my; drag.activePin = pin;
+      pulseVelocity(0.38, now); playClick((lIdx - 4) * 0.12, true); recomputeFuture(true);
+    }
+    return;
+  }
+  const lIdx = nearestWallLocus(mx);
+  if (lIdx >= 0 && Math.abs(my - geo.nowY) <= 18) { drag.mode = 'strike'; drag.locus = lIdx; startUserNote(lIdx, 'ptr'); }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const [mx, my] = ptrXY(e), cur = getCurrentStep(), now = performance.now(); hover.mx = mx; hover.my = my;
+  if (drag.mode === 'lens') return updateLensWarp(lensYToWarp(my), true);
+  if (drag.mode === 'steer') return updateSteer(mx, my);
+  if (drag.mode === 'right') return updateRight(my);
+  if (drag.mode === 'strike') { const lIdx = nearestWallLocus(mx); if (lIdx >= 0 && lIdx !== drag.locus) { endUserNote('ptr'); drag.locus = lIdx; startUserNote(lIdx, 'ptr'); } return; }
+  if (drag.mode === 'placeFuture' && drag.activePin) {
+    const uf = unprojFunnel(mx, Math.max(geo.nowY + 2, my));
+    if (uf && Math.abs(my - drag.y0) > 7) {
+      const q = snapDur((cur + uf.off) - drag.activePin.step);
+      if (q !== drag.activePin.dur) { drag.activePin.dur = q; drag.activePin.flashPerf = now; playClick((drag.activePin.noteIdx - 4) * 0.12, false); recomputeFuture(false); }
+    }
+    return;
+  }
+  if (drag.mode === 'editFuture' && drag.activePin) {
+    const pin = drag.activePin, dx = Math.abs(mx - drag.x0), dy = Math.abs(my - drag.y0); if (dx > 7 || dy > 7) drag.editMoved = true;
+    const uf = unprojFunnel(mx, Math.max(geo.nowY + 2, my));
+    if (uf) {
+      let changed = false; const lIdx = clamp(Math.round(uf.wx + 4), 0, 8);
+      if (lIdx !== pin.noteIdx && dx > 7) { pin.noteIdx = lIdx; changed = true; }
+      if (dy > 10) { const q = snapDur((cur + uf.off) - pin.step); if (q !== pin.dur) { pin.dur = q; changed = true; } }
+      if (changed) { pin.flashPerf = now; pulseVelocity(0.24, now); playClick((pin.noteIdx - 4) * 0.12, false); recomputeFuture(true); }
+    }
+    return;
+  }
+  if (drag.mode === 'pastPending' || drag.mode === 'marquee') {
+    drag.x1 = clamp(mx, geo.wallL - 12, geo.wallR + 12); drag.y1 = clamp(my, geo.padTop, geo.nowY - 4);
+    if (drag.mode === 'pastPending' && Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0) > 6) drag.mode = 'marquee';
+    if (drag.mode === 'marquee') { const prevN = drag.selIds.size; drag.selIds = new Set(queryMarqueeNotes(cur).map(n => n.id)); if (drag.selIds.size !== prevN) playClick(clamp((drag.x1 - geo.cx) / (W * 0.35), -0.6, 0.6), false); }
+    return;
+  }
+  const sk = steerKnobPos(); hover.target = null; hover.pastId = -1; hover.futKey = ''; hover.locusIdx = -1; hover.ghostLocus = -1; hover.ghostStep = -1;
+  if (inLens(mx, my, 24)) { hover.target = 'lens'; canvas.style.cursor = 'ns-resize'; }
+  else if (inSteer(mx, my, sk, 10)) { hover.target = 'steer'; canvas.style.cursor = 'grab'; }
+  else if (inRight(mx, my, 28)) { hover.target = 'right'; canvas.style.cursor = 'ns-resize'; }
+  else if (inPastField(mx, my)) { const p = hitTestPastNote(mx, my); if (p) { hover.target = 'past'; hover.pastId = p.id; canvas.style.cursor = 'pointer'; } else { hover.target = 'pastEmpty'; canvas.style.cursor = 'crosshair'; } }
+  else if (inFunnelField(mx, my)) {
+    const fn = hitTestFutureNote(mx, my);
+    if (fn) { hover.target = 'futNote'; hover.futKey = `${fn.step}:${fn.noteIdx}`; canvas.style.cursor = 'grab'; }
+    else { const uf = unprojFunnel(mx, my); if (uf) { hover.target = 'futEmpty'; hover.ghostLocus = clamp(Math.round(uf.wx + 4), 0, 8); hover.ghostStep = Math.max(minFutureStep(cur), Math.round(cur + uf.off)); canvas.style.cursor = 'cell'; } }
+  } else { const l = nearestWallLocus(mx); if (l >= 0 && Math.abs(my - geo.nowY) <= 18) { hover.target = 'now'; hover.locusIdx = l; canvas.style.cursor = 'pointer'; } else canvas.style.cursor = 'default'; }
+});
+const endPointer = (e) => {
+  const additive = drag.shift || Boolean(e && e.shiftKey);
+  if (drag.mode === 'strike') endUserNote('ptr');
+  else if (drag.mode === 'marquee') { const cap = queryMarqueeNotes(getCurrentStep()); if (cap.length) ingestGroup(cap, additive); }
+  else if (drag.mode === 'pastPending') { if (drag.hitNote) togglePastNoteLock(drag.hitNote, additive); else if (!additive) softenPastMemory(false); }
+  else if (drag.mode === 'editFuture' && drag.activePin && !drag.editMoved) {
+    const pin = drag.activePin; pin.dur = QUANT_DURS[(QUANT_DURS.indexOf(pin.dur) + 1) % QUANT_DURS.length]; pin.flashPerf = performance.now();
+    pulseVelocity(0.26); playClick((pin.noteIdx - 4) * 0.12, true); recomputeFuture(true);
+  }
+  drag.mode = null; drag.locus = -1; drag.hitNote = null; drag.activePin = null; drag.editMoved = false; drag.selIds.clear();
+};
+canvas.addEventListener('pointerup', endPointer); canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('wheel', (e) => { const [mx, my] = ptrXY(e); if (my <= geo.nowY + 20 || Math.abs(mx - geo.lensX) < 56) { e.preventDefault(); ensureAudio(); updateLensWarp(state.targetWarp + clamp(-e.deltaY * 0.0024, -0.26, 0.26), false); } }, { passive: false });
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); return togglePlay(); }
+  if (e.key === 'Escape') softenPastMemory(true);
+  else if (e.key.toLowerCase() === 'f') cycleFlare();
+  else if (!e.repeat && e.key >= '1' && e.key <= '9') startUserNote(Number(e.key) - 1, `k:${e.key}`);
+});
+window.addEventListener('keyup', (e) => { if (e.key >= '1' && e.key <= '9') endUserNote(`k:${e.key}`); });
+
+// ============================================================================
+// RENDERER: STRAIGHT-UP VERTICAL PAST WALL + FUNNELING PSEUDO-3D FUTURE FLOOR
+// ============================================================================
+const edgeFadeTop = y => clamp((y - geo.padTop) / 28, 0, 1);
+const edgeFadeBot = y => clamp((H - geo.padBot - y) / 26, 0, 1);
+const strokeLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const strokeCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fillCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+const traceDiamond = (x, y, r) => { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath(); };
+const drawGradLine = (ax, ay, bx, by, c0, c1, lw) => { const g = ctx.createLinearGradient(ax, ay, bx, by); g.addColorStop(0, c0); g.addColorStop(1, c1); ctx.strokeStyle = g; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); };
+
+function microOffsetY(y, x) {
+  if (hover.focus < 0.01 || hover.focusY <= 0 || y >= geo.nowY - 2) return 0;
+  const dy = y - hover.focusY, dx = x - hover.focusX; if (Math.abs(dy) > 34 || Math.abs(dx) > geo.wallGap * 2.4) return 0;
+  return (dy === 0 ? 0 : Math.sign(dy)) * (1 - Math.exp(-Math.abs(dy) / 5.5)) * Math.exp(-(dy * dy) / 260 - (dx * dx) / (geo.wallGap * geo.wallGap * 2.1)) * 3.6 * hover.focus;
+}
+
+function drawArchitecturalStage(curStep, nowPerf) {
+  const lensHeat = drag.mode === 'lens' ? 1 : clamp(1 - (nowPerf - state.lensHotPerf) / FLASH_MS, 0, 1);
+
+  // 1. Subtle architectural shading differentiating UPRIGHT BACKDROP WALL vs APPROACHING FUNNEL FLOOR
+  const wallBg = ctx.createLinearGradient(0, geo.nowY, 0, geo.padTop);
+  wallBg.addColorStop(0, 'rgba(255,255,255,0.024)'); wallBg.addColorStop(0.65, 'rgba(255,255,255,0.006)'); wallBg.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = wallBg; ctx.fillRect(geo.wallL, geo.padTop, geo.wallR - geo.wallL, geo.wallH);
+
+  const fBL = projFunnel(-WALL_PAD_LANES, FUTURE_STEPS), fBR = projFunnel(WALL_PAD_LANES, FUTURE_STEPS);
+  const floorBg = ctx.createLinearGradient(0, geo.nowY, 0, fBL.y);
+  floorBg.addColorStop(0, 'rgba(0,0,0,0.92)'); floorBg.addColorStop(0.14, 'rgba(255,255,255,0.012)'); floorBg.addColorStop(0.82, 'rgba(255,255,255,0.032)'); floorBg.addColorStop(1, 'rgba(255,255,255,0.008)');
+  ctx.fillStyle = floorBg;
+  ctx.beginPath(); ctx.moveTo(geo.wallL, geo.nowY); ctx.lineTo(geo.wallR, geo.nowY); ctx.lineTo(fBR.x, fBR.y); ctx.lineTo(fBL.x, fBL.y); ctx.closePath(); ctx.fill();
+
+  // Architectural fold corner brackets & perspective floor border rails funneling into upright wall
+  drawGradLine(geo.wallL, geo.nowY, geo.wallL, geo.padTop, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.03)', 1);
+  drawGradLine(geo.wallR, geo.nowY, geo.wallR, geo.padTop, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.03)', 1);
+  drawGradLine(geo.wallL, geo.nowY, fBL.x, fBL.y, 'rgba(255,255,255,0.28)', 'rgba(255,255,255,0.10)', 1.05);
+  drawGradLine(geo.wallR, geo.nowY, fBR.x, fBR.y, 'rgba(255,255,255,0.28)', 'rgba(255,255,255,0.10)', 1.05);
+
+  // 2. STRAIGHT-UP VERTICAL COLUMNS on PAST WALL (strictly parallel!) + CONVERGING RAILS on FUTURE FUNNEL!
+  for (let i = 0; i < 9; i++) {
+    const wx = i - 4, xW = wallX(wx), pBot = projFunnel(wx, FUTURE_STEPS), loc = loci[i];
+    const hov = hover.locusIdx === i || hover.ghostLocus === i, isRoot = i === 0 || i === 4;
+    const baseA = hov ? 0.24 : isRoot ? 0.11 : 0.062;
+    // Straight-up vertical column on PAST wall
+    drawGradLine(xW, geo.nowY, xW, geo.padTop, mixInk(loc.heat, baseA + loc.glow * 0.16), 'rgba(255,255,255,0)', hov ? 1.1 : 0.85);
+    // Converging pseudo-perspective rail on FUTURE floor funneling straight into (xW, nowY)
+    drawGradLine(xW, geo.nowY, pBot.x, pBot.y, mixInk(loc.heat, baseA * 1.15 + loc.glow * 0.18), mixInk(loc.heat, baseA * 0.65), hov ? 1.15 : 0.88);
+  }
+
+  // 3. PAST WALL HORIZONTAL LOG-LENS BAR LINES & RULER (straight horizontal across parallel wall)
+  const curBar = Math.floor(curStep / 16), maxPastBars = Math.min(64, Math.ceil(visiblePastSteps(curStep) / 16) + 1);
+  let prevBarY = 1e9;
+  for (let b = curBar; b >= curBar - maxPastBars; b--) {
+    const g = b * 16; if (g > curStep) continue;
+    const y = Math.round(wallY(curStep - g)) + 0.5; if (y < geo.padTop + 3 || y >= geo.nowY) continue;
+    const f = edgeFadeTop(y), gapPx = Math.abs(prevBarY - y); if (gapPx < 3.4) continue;
+    prevBarY = y; const da = clamp((gapPx - 2.5) / 15, 0.20, 1);
+    strokeLine(geo.wallL, y, geo.wallR, y, `rgba(255,255,255,${(0.10 * f * da).toFixed(3)})`);
+    ctx.fillStyle = `rgba(255,255,255,${(0.22 * f * da).toFixed(3)})`;
+    for (let i = 0; i < 9; i++) ctx.fillRect(geo.locusX[i] - 0.5, y - 1.2, 1, 2.4);
+  }
+  ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+  let lastLabelY = geo.nowY - 6;
+  for (const b of RULER_BARS) {
+    const y = Math.round(wallY(b * 16)) + 0.5; if (y < geo.padTop + 4) break;
+    const f = clamp((y - geo.padTop) / 18, 0.28, 1);
+    strokeLine(geo.wallL - 6, y, geo.wallL + 1, y, mixInk(lensHeat * 0.85, 0.44 * f));
+    if (lastLabelY - y >= 11) { ctx.fillStyle = mixInk(lensHeat * 0.75, 0.50 * f); ctx.fillText(`−${b}b`, geo.wallL - 9, y); lastLabelY = y; }
+  }
+
+  // 4. FUTURE FUNNEL CROSS-LINES (foreshortened perspective spacing expanding toward viewer!)
+  for (let s = Math.ceil(curStep), sEnd = Math.floor(curStep) + FUTURE_STEPS; s <= sEnd; s++) {
+    const off = s - curStep; if (off <= 0.08 || off > FUTURE_STEPS) continue;
+    const isBeat = (s & 3) === 0, isBar = mod16(s) === 0;
+    const pL = projFunnel(-WALL_PAD_LANES, off), pR = projFunnel(WALL_PAD_LANES, off);
+    const fade = edgeFadeBot(pL.y);
+    if (isBar) {
+      strokeLine(pL.x, pL.y, pR.x, pR.y, `rgba(255,255,255,${(0.18 * fade).toFixed(3)})`, 1.05);
+      ctx.fillStyle = `rgba(255,255,255,${(0.32 * fade).toFixed(3)})`; ctx.textAlign = 'right';
+      ctx.fillText(`+${Math.max(1, Math.round(off / 16))}b`, pL.x - 8, pL.y);
+    } else if (isBeat) {
+      strokeLine(pL.x, pL.y, pR.x, pR.y, `rgba(255,255,255,${(0.055 * fade).toFixed(3)})`, 0.8);
+    } else {
+      const tk = 4 * pL.scale;
+      strokeLine(pL.x, pL.y, pL.x + tk, pL.y, `rgba(255,255,255,${(0.11 * fade).toFixed(3)})`, 0.75);
+      strokeLine(pR.x - tk, pR.y, pR.x, pR.y, `rgba(255,255,255,${(0.11 * fade).toFixed(3)})`, 0.75);
+    }
+  }
+
+  // Note names at top of straight wall + scale degrees flared at bottom foreground of funnel!
+  ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const loc = loci[i], xTop = wallX(i - 4), pBot = projFunnel(i - 4, FUTURE_STEPS);
+    ctx.font = '10px ui-monospace, monospace'; ctx.textBaseline = 'bottom';
+    ctx.fillStyle = mixInk(loc.heat, 0.28 + loc.glow * 0.72 + (hover.locusIdx === i || hover.ghostLocus === i ? 0.28 : 0));
+    ctx.fillText(NOTES[i].name, xTop, geo.padTop - 8);
+    ctx.font = '9.5px ui-monospace, monospace'; ctx.textBaseline = 'top';
+    ctx.fillStyle = mixInk(loc.heat, clamp(0.24 + loc.glow * 0.48 + (hover.ghostLocus === i ? 0.35 : 0), 0, 0.90));
+    ctx.fillText(`${NOTES[i].name} ${NOTES[i].deg}`, pBot.x, pBot.y + 6);
+  }
+}
+
+function drawMemoryHalo(nowPerf) {
+  const y = geo.padTop + 1.5, ret = new Float32Array(9), hot = new Float32Array(9), pul = new Float32Array(9); let activeSlots = 0;
+  for (const sl of mem.slots) {
+    if (sl.energy <= 0.12) continue; activeSlots++;
+    const h = clamp(1 - (nowPerf - sl.hotPerf) / FLASH_MS, 0, 1), idxs = sl.sources.length ? sl.sources.map(s => s.noteIdx) : [sl.noteIdx];
+    for (const i of idxs) { ret[i] = Math.max(ret[i], sl.energy); hot[i] = Math.max(hot[i], h); pul[i] = Math.max(pul[i], sl.pulse); }
+  }
+  strokeLine(geo.wallL, y, geo.wallR, y, `rgba(255,255,255,${activeSlots ? 0.16 : 0.06})`);
+  for (let i = 0; i < 9; i++) {
+    if (ret[i] <= 0.08) continue; const x = geo.locusX[i], r = 4.2 + ret[i] * 7.2 + pul[i] * 4.0;
+    ctx.strokeStyle = mixInk(hot[i], 0.24 + ret[i] * 0.48 + pul[i] * 0.26); ctx.lineWidth = 0.85 + pul[i] * 0.6;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI); ctx.stroke();
+    fillCirc(x, y, 1.5 + ret[i] * 1.4, mixInk(hot[i], 0.55 + ret[i] * 0.45));
+  }
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const modeLbl = mem.adaptNorm > 0.62 ? 'HOLD' : mem.adaptNorm < 0.32 ? 'PIVOT' : 'ADAPT', gLbl = state.groups.length ? ` · ${state.groups.length}G` : '';
+  ctx.fillStyle = mixInk(clamp(1 - (nowPerf - mem.pivotHotPerf) / FLASH_MS, 0, 1) * 0.85, activeSlots ? 0.48 : 0.22);
+  ctx.fillText(`MEM ${activeSlots}/16${gLbl} · T½ ${mem.halfLifeBars >= 10 ? mem.halfLifeBars.toFixed(0) : mem.halfLifeBars.toFixed(1)}b · ${modeLbl}`, geo.wallR + 10, y);
+}
+
+const cubicPt = (p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y, t) => {
+  const u = 1 - t, tt = t * t, uu = u * u;
+  return { x: uu * u * p0x + 3 * uu * t * c1x + 3 * u * tt * c2x + tt * t * p3x, y: uu * u * p0y + 3 * uu * t * c1y + 3 * u * tt * c2y + tt * t * p3y };
+};
+
+// Signature Wall-to-Funnel Attention Arcs (leaping off straight vertical PAST wall across NOW crease onto funnel FUTURE notes!)
+function drawWallToFunnelAttention(curStep, nowPerf) {
+  for (let i = sympArcs.length - 1; i >= 0; i--) {
+    const a = sympArcs[i], age = nowPerf - a.bornPerf; if (age >= a.lifeMs) { sympArcs.splice(i, 1); continue; }
+    const y2 = wallY(curStep - a.past.step); if (y2 < geo.padTop + 2 || y2 >= geo.nowY - 3) continue;
+    const env = Math.pow(1 - age / a.lifeMs, 1.65) * edgeFadeTop(y2), x1 = geo.locusX[a.fromIdx], x2 = geo.locusX[a.past.noteIdx], bow = a.fromIdx === a.past.noteIdx ? (a.fromIdx < 4 ? -14 : 14) : (x2 - x1) * 0.14;
+    ctx.strokeStyle = `rgba(255,255,255,${(env * a.bond * 0.30).toFixed(3)})`; ctx.lineWidth = 0.75;
+    ctx.beginPath(); ctx.moveTo(x1, geo.nowY); ctx.quadraticCurveTo((x1 + x2) * 0.5 + bow, (geo.nowY + y2) * 0.5, x2, y2); ctx.stroke();
+  }
+
+  const pastById = new Map(state.pastNotes.map(p => [p.id, p])), rightHeat = clamp(1 - (nowPerf - state.rightHotPerf) / FLASH_MS, 0, 1);
+  for (const fn of state.futureNotes) {
+    if (!fn.attn) continue;
+    const off = fn.step - curStep; if (off <= 0.05 || off > FUTURE_STEPS + 0.5) continue;
+    const pDst = projFunnel(fn.noteIdx - 4, off);
+    const src = pastById.get(fn.attn.pastId), sl = fn.attn.memSlot >= 0 ? mem.slots[fn.attn.memSlot] : null;
+    let x1, y1, fromHalo = false, srcIdx = fn.noteIdx;
+    if (src) {
+      y1 = wallY(curStep - src.step);
+      if (y1 >= geo.padTop + 2) { x1 = geo.locusX[src.noteIdx]; srcIdx = src.noteIdx; }
+      else if (sl && sl.energy > 0.12) { x1 = geo.locusX[fn.noteIdx]; y1 = geo.padTop + 2; srcIdx = fn.noteIdx; fromHalo = true; }
+      else continue;
+    } else if (sl && sl.energy > 0.12) { x1 = geo.locusX[sl.noteIdx]; y1 = geo.padTop + 2; srcIdx = sl.noteIdx; fromHalo = true; }
+    else continue;
+
+    const x2 = pDst.x, y2 = pDst.y, f = (fromHalo ? 1 : edgeFadeTop(y1)) * edgeFadeBot(y2);
+    const heat = Math.max(sl ? clamp(1 - (nowPerf - sl.hotPerf) / FLASH_MS, 0, 1) : 0, clamp(1 - (nowPerf - fn.flashPerf) / FLASH_MS, 0, 1), rightHeat * 0.65);
+    const isLock = Boolean(fn.attn.locked);
+    const baseA = isLock ? (fromHalo ? 0.36 : 0.50) : clamp(0.10 + fn.attn.weight * 0.22, 0.06, 0.32);
+
+    // 1. Cast crease trace pinned along the 90° fold hinge (straight down wall -> NOW crease -> along funnel floor!)
+    if (isLock) {
+      const hingeX = lerp(x1, x2, clamp((geo.nowY - y1) / Math.max(1, y2 - y1), 0.15, 0.85));
+      ctx.save(); ctx.setLineDash([2, 4]);
+      ctx.strokeStyle = `rgba(255,255,255,${(0.11 * f).toFixed(3)})`; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(hingeX, geo.nowY); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.restore();
+      strokeLine(hingeX - 3.5, geo.nowY, hingeX + 3.5, geo.nowY, mixInk(heat, 0.38 * f), 1.1);
+    }
+
+    // 2. Luminous cubic Bezier arc leaping off the upright wall onto the pseudo-perspective funnel floor
+    const bowDir = (srcIdx + fn.noteIdx) < 8 ? -1 : 1;
+    const bow = bowDir * clamp(20 + (y2 - y1) * 0.14, 20, 78);
+    const c1x = x1 + bow, c1y = lerp(y1, geo.nowY, 0.52), c2x = x2 + bow * 0.72, c2y = lerp(geo.nowY, y2, 0.54);
+    ctx.strokeStyle = mixInk(heat, baseA * f); ctx.lineWidth = isLock ? (heat > 0.08 ? 1.35 : 1.0) : 0.78;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x2, y2); ctx.stroke();
+
+    // 3. Sliding pulse bead for locked motif groups
+    if (isLock) {
+      const uRaw = (nowPerf * (state.playing ? 0.00068 : 0.00038) + (fn.step * 0.17 + fn.noteIdx * 0.23)) % 1;
+      const u = uRaw * uRaw * (3 - 2 * uRaw);
+      const bead = cubicPt(x1, y1, c1x, c1y, c2x, c2y, x2, y2, u);
+      const bA = Math.sin(u * Math.PI) * 0.88 * f;
+      if (bA > 0.04) fillCirc(bead.x, bead.y, 1.9, mixInk(Math.max(heat, 0.82), bA));
+    }
+  }
+
+  // Multi-group selection brackets strictly upright on straight vertical PAST wall!
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+  for (let gi = 0; gi < state.groups.length; gi++) {
+    const g = state.groups[gi]; let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, maxE = 0, cnt = 0;
+    for (const id of g.noteIds) {
+      const p = pastById.get(id); if (!p || p.step >= curStep) continue;
+      const x = geo.locusX[p.noteIdx]; minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      minY = Math.min(minY, wallY(curStep - p.step)); maxY = Math.max(maxY, wallY(Math.max(0, curStep - (p.step + p.dur))));
+      maxE = Math.max(maxE, mem.slots[mod16(p.step)].energy); cnt++;
+    }
+    if (!cnt || maxY < geo.padTop + 2 || minY > geo.nowY - 2) continue;
+    const x0 = minX - 11, x1 = maxX + 11, y0 = Math.max(geo.padTop + 3, minY - 5), y1 = Math.min(geo.nowY - 4, maxY + 5);
+    const f = edgeFadeTop((y0 + y1) * 0.5), gHeat = clamp(1 - (nowPerf - g.hotPerf) / FLASH_MS, 0, 1);
+    const col = mixInk(gHeat, (0.36 + maxE * 0.44) * f), s = clamp(Math.min(7, (x1 - x0) * 0.32, (y1 - y0) * 0.38), 3, 7);
+    ctx.fillStyle = mixInk(gHeat, (0.028 + gHeat * 0.055) * f); ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    for (const [cx, cy, dx, dy] of [[x0, y0, s, s], [x1, y0, -s, s], [x0, y1, s, -s], [x1, y1, -s, -s]]) {
+      strokeLine(cx, cy, cx + dx, cy, col, gHeat > 0.08 ? 1.35 : 1.0);
+      strokeLine(cx, cy, cx, cy + dy, col, gHeat > 0.08 ? 1.35 : 1.0);
+    }
+    if (state.groups.length > 1 || cnt > 1) { ctx.fillStyle = mixInk(gHeat, (0.45 + maxE * 0.40) * f); ctx.fillText(state.groups.length > 1 ? `G${gi + 1}` : `${cnt}n`, x1, y0 - 2); }
+  }
+}
+
+// #27 Wave-Packet Glyphs projected cleanly onto Straight Wall (PAST) AND Funnel Floor (FUTURE)!
+function drawWavePackets(curStep, dt, nowPerf) {
+  const tSec = nowPerf * 0.001;
+
+  // 1. PAST notes rising STRAIGHT UP the upright vertical wall
+  for (const n of state.pastNotes) {
+    if (n.step >= curStep) continue;
+    if (n.symp > 0.004) n.symp = Math.max(0, n.symp * Math.exp(-dt * (n.sympDecay || 2.1)));
+    const dur = n.holding ? Math.max(0.6, curStep - n.step) : n.dur;
+    const rawY0 = wallY(curStep - n.step), rawY1 = wallY(Math.max(0, curStep - (n.step + dur)));
+    if (rawY1 < geo.padTop - 2) continue;
+    const x = geo.locusX[n.noteIdx], age = curStep - n.step, isHov = hover.pastId === n.id;
+    const dyMicro = microOffsetY(rawY0, x), y0 = rawY0 + dyMicro, y1 = Math.min(geo.nowY, rawY1 + dyMicro);
+    const rawL = Math.max(1.0, y1 - y0), f = edgeFadeTop((y0 + y1) * 0.5);
+    const sVis = clamp(Math.pow(localPastScale(age), 0.28), 0.44, 1.0), inMarquee = drag.mode === 'marquee' && drag.selIds.has(n.id), symp = n.symp || 0;
+    const sl = mem.slots[mod16(n.step)], inMem = sl && sl.energy > 0.22 && (sl.noteIdx === n.noteIdx || sl.sources.some(s => s.pastId === n.id));
+    const heat = inMarquee ? 1 : (n.locked && sl ? clamp(1 - (nowPerf - sl.hotPerf) / FLASH_MS, 0, 1) : 0);
+    const crossing = n.step <= curStep && n.step + dur >= curStep;
+    const maxW = (3.3 + n.vel * 4.0) * (n.noteIdx === 0 ? 1.24 : 1) * (0.72 + 0.28 * clamp(dur / 6, 0, 1)) * sVis * (1 + symp * 0.15) * (isHov ? 1.16 : 1);
+    const segs = clamp(Math.round(rawL / 2.2), 5, 32), cycles = (0.95 + n.noteIdx * 0.26) * Math.max(0.75, dur * 0.45);
+    const shimmer = clamp(Math.max(1 - age / (dur + 2.5), symp * 0.95, inMem ? 0.24 : 0), 0, 1);
+    const phase = (shimmer > 0.02 ? tSec * (11 + n.noteIdx * 1.6) * shimmer : 0) + n.step * 0.9;
+    const sampleY = u => Math.min(geo.nowY, wallY(Math.max(0, curStep - (n.step + u * dur * 0.94))) + dyMicro);
+
+    ctx.beginPath();
+    for (let k = 0; k <= segs; k++) { const u = k / segs, e = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38); k ? ctx.lineTo(x + e * maxW, sampleY(u)) : ctx.moveTo(x + e * maxW, y0); }
+    for (let k = segs; k >= 0; k--) { const u = k / segs, e = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38); ctx.lineTo(x - e * maxW, sampleY(u)); }
+    ctx.closePath();
+    ctx.fillStyle = mixInk(heat, (0.13 + (crossing ? 0.12 : 0) + symp * 0.22) * f); ctx.fill();
+    ctx.strokeStyle = mixInk(heat, (0.32 + n.vel * 0.26 + (crossing ? 0.16 : 0) + symp * 0.38) * f);
+    ctx.lineWidth = crossing || symp > 0.35 ? 1.15 : 0.75 + sVis * 0.2; ctx.stroke();
+
+    if (rawL > 2.2) {
+      ctx.beginPath();
+      for (let k = 0; k <= segs; k++) { const u = k / segs, e = Math.min(1, u / 0.08) * Math.pow(1 - u, 1.42), px = x + e * maxW * 0.86 * Math.sin(u * cycles * Math.PI * 2 + phase); k ? ctx.lineTo(px, sampleY(u)) : ctx.moveTo(px, y0); }
+      ctx.strokeStyle = mixInk(heat, (0.62 + n.vel * 0.28 + symp * 0.32) * f); ctx.lineWidth = crossing || symp > 0.4 ? 1.5 : 0.85 + sVis * 0.35; ctx.stroke();
+    }
+    const rHead = ((n.noteIdx === 0 ? 3.1 : 2.25) + n.vel * 1.0) * sVis * (isHov ? 1.25 : 1);
+    strokeLine(x - maxW * 0.92, y0, x + maxW * 0.92, y0, mixInk(heat, (0.62 + symp * 0.34) * f), 0.85);
+    fillCirc(x, y0, rHead + symp * 0.7, mixInk(heat, clamp(0.88 + symp * 0.12, 0, 1) * f));
+    if (symp > 0.08) strokeCirc(x, y0, rHead + 2.4 + (1 - symp) * 8.5 * sVis, `rgba(255,255,255,${(symp * 0.48 * f).toFixed(3)})`, 0.8);
+    if (inMarquee) strokeCirc(x, y0, rHead + 5.6 * clamp(sVis + 0.25, 0.65, 1), '#ff5a1f', 1.4);
+    else if (n.locked || isHov) strokeCirc(x, y0, rHead + 5.2 * clamp(sVis + 0.25, 0.65, 1), n.locked ? mixInk(heat, 0.88 * f) : 'rgba(255,255,255,0.68)', n.locked ? 1.25 : 0.95);
+    else if (inMem) strokeCirc(x, y0, rHead + 4.0 * clamp(sVis + 0.25, 0.65, 1), `rgba(255,255,255,${(0.24 * sl.energy * f).toFixed(3)})`, 0.75);
+  }
+
+  // 2. FUTURE notes funneling along the pseudo-perspective front floor INTO NOW!
+  for (const n of state.futureNotes) {
+    const off0 = n.step - curStep, off1 = n.step + n.dur - curStep;
+    if (off0 > FUTURE_STEPS + 0.4 || off1 < 0) continue;
+    const wx = n.noteIdx - 4, c0 = Math.max(0, off0), c1 = Math.min(FUTURE_STEPS, off1);
+    const p0 = projFunnel(wx, c0), p1 = projFunnel(wx, c1);
+    const f = edgeFadeBot((p0.y + p1.y) * 0.5), isHov = hover.futKey === `${n.step}:${n.noteIdx}`;
+    const pinned = Boolean(n.userPinned), heat = clamp(1 - (nowPerf - n.flashPerf) / FLASH_MS, 0, 1);
+    const baseMaxW = (3.4 + n.vel * 4.2) * (n.noteIdx === 0 ? 1.24 : 1) * (0.72 + 0.28 * clamp(n.dur / 6, 0, 1)) * (isHov ? 1.18 : 1);
+    const segs = clamp(Math.round((p1.y - p0.y) / 2.2), 6, 32), cycles = (0.95 + n.noteIdx * 0.26) * Math.max(0.75, n.dur * 0.45);
+    const phase = -tSec * 3.8 + n.step * 0.7;
+
+    // Perspective-foreshortened wave-packet envelope tracking the exact converging rail!
+    ctx.beginPath();
+    for (let k = 0; k <= segs; k++) {
+      const u = k / segs, pt = projFunnel(wx, lerp(c0, c1, u * 0.94));
+      const hw = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38) * baseMaxW * pt.scale;
+      k ? ctx.lineTo(pt.x + hw, pt.y) : ctx.moveTo(pt.x + hw, pt.y);
+    }
+    for (let k = segs; k >= 0; k--) {
+      const u = k / segs, pt = projFunnel(wx, lerp(c0, c1, u * 0.94));
+      const hw = Math.min(1, u / 0.10) * Math.pow(1 - u, 1.38) * baseMaxW * pt.scale;
+      ctx.lineTo(pt.x - hw, pt.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = mixInk(heat, ((pinned ? 0.14 : 0.04) + heat * 0.12) * f); ctx.fill();
+    ctx.strokeStyle = mixInk(heat, ((pinned ? 0.54 : 0.22) + n.vel * 0.24) * f); ctx.lineWidth = pinned || heat > 0.05 ? 1.15 : 0.8; ctx.stroke();
+
+    // Inner oscillating carrier scaled smoothly by perspective!
+    ctx.beginPath();
+    for (let k = 0; k <= segs; k++) {
+      const u = k / segs, pt = projFunnel(wx, lerp(c0, c1, u * 0.94));
+      const e = Math.min(1, u / 0.08) * Math.pow(1 - u, 1.42) * baseMaxW * pt.scale * 0.86;
+      const px = pt.x + e * Math.sin(u * cycles * Math.PI * 2 + phase);
+      k ? ctx.lineTo(px, pt.y) : ctx.moveTo(px, pt.y);
+    }
+    ctx.strokeStyle = mixInk(heat, ((pinned ? 0.62 : 0.34) + n.vel * 0.28) * f); ctx.lineWidth = pinned || heat > 0.05 ? 1.3 : 0.95; ctx.stroke();
+
+    if (off0 >= 0) {
+      const rHead = ((n.noteIdx === 0 ? 3.2 : 2.3) + n.vel * 1.0) * p0.scale * (isHov ? 1.24 : 1);
+      strokeLine(p0.x - baseMaxW * p0.scale * 0.92, p0.y, p0.x + baseMaxW * p0.scale * 0.92, p0.y, mixInk(heat, (pinned ? 0.72 : 0.34) * f), 0.9);
+      if (pinned) {
+        strokeCirc(p0.x, p0.y, rHead + 4.4 * p0.scale, mixInk(heat, (isHov ? 0.96 : 0.78) * f), 1.15);
+        traceDiamond(p0.x, p0.y, rHead + 1.4); ctx.fillStyle = '#000'; ctx.fill(); ctx.strokeStyle = mixInk(heat, 0.96 * f); ctx.lineWidth = 1.45; ctx.stroke();
+        fillCirc(p0.x, p0.y, 1.8 * p0.scale, mixInk(heat, 0.98 * f));
+      } else {
+        fillCirc(p0.x, p0.y, rHead, '#000'); strokeCirc(p0.x, p0.y, rHead, mixInk(heat, (0.50 + n.vel * 0.36) * f), heat > 0.05 ? 1.35 : 1.05);
+        if (isHov) strokeCirc(p0.x, p0.y, rHead + 4.2, 'rgba(255,255,255,0.55)', 0.9);
+        if (n.attn && n.attn.locked) fillCirc(p0.x, p0.y, 1.7 * p0.scale, mixInk(heat, 0.92 * f));
+      }
+    }
+  }
+}
+
+function drawNowFoldInterferometer(dt, nowPerf) {
+  const y = geo.nowY, xL = geo.wallL, xR = geo.wallR, span = xR - xL;
+  for (const loc of loci) { loc.glow = Math.max(0, loc.glow * Math.exp(-dt * loc.damp)); loc.heat = Math.max(0, loc.heat - dt * 2.4); }
+  for (let i = blooms.length - 1; i >= 0; i--) if (nowPerf - blooms[i].bornPerf >= blooms[i].lifeMs) blooms.splice(i, 1);
+
+  // Resonant ellipses unfolding cleanly across the NOW hinge
+  for (const b of blooms) {
+    const ageMs = nowPerf - b.bornPerf, p = clamp(ageMs / b.lifeMs, 0, 1), e = Math.pow(1 - p, 1.85), bx = geo.locusX[b.idx], h = b.hot ? clamp(1 - ageMs / FLASH_MS, 0, 1) : 0;
+    const rx = 5 + Math.pow(p, 0.72) * (25 + b.dur * 11) * (0.68 + b.vel * 0.44) * (b.idx === 0 ? 1.24 : 1), ry = rx * (0.48 + 0.24 * Math.pow(p, 0.6));
+    ctx.strokeStyle = mixInk(h, e * 0.68); ctx.lineWidth = 0.8 + e * 1.0;
+    ctx.beginPath(); ctx.ellipse(bx, y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    if (p > 0.04 && rx > 11) { ctx.strokeStyle = mixInk(h * 0.7, e * 0.30); ctx.lineWidth = 0.65; ctx.beginPath(); ctx.ellipse(bx, y, rx * 0.56, ry * 0.56, 0, 0, Math.PI * 2); ctx.stroke(); }
+  }
+
+  // Architectural fold crease & standing-wave interferometer
+  strokeLine(geo.lensX + 16, y + 0.5, xL, y + 0.5, 'rgba(255,255,255,0.12)');
+  strokeLine(xR, y + 0.5, geo.rightX - 18, y + 0.5, 'rgba(255,255,255,0.12)');
+  let energy = 0; for (const b of blooms) energy += Math.pow(1 - (nowPerf - b.bornPerf) / b.lifeMs, 2);
+  if (!blooms.length) strokeLine(xL - 8, y + 0.5, xR + 8, y + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  else {
+    ctx.strokeStyle = `rgba(255,255,255,${clamp(0.56 + energy * 0.34, 0.56, 0.98).toFixed(3)})`; ctx.lineWidth = 1.2; ctx.beginPath();
+    for (let s = 0; s <= 140; s++) {
+      const u = s / 140, px = xL + u * span, win = Math.pow(Math.sin(u * Math.PI), 0.45); let dy = 0;
+      for (const b of blooms) {
+        const age = (nowPerf - b.bornPerf) * 0.001, e = Math.pow(1 - (nowPerf - b.bornPerf) / b.lifeMs, 1.8), dist = Math.abs(px - geo.locusX[b.idx]);
+        dy += e * (4.4 + b.vel * 6.2) * (b.idx === 0 ? 1.24 : 1) * Math.cos(dist * (0.075 + b.idx * 0.014) - age * (16 + b.idx * 2.2)) * Math.exp(-dist / (44 + b.dur * 11));
+      }
+      s ? ctx.lineTo(px, y + clamp(dy * win, -20, 20)) : ctx.moveTo(px, y + clamp(dy * win, -20, 20));
+    }
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locusIdx === i;
+    strokeLine(x + 0.5, y - 5.5, x + 0.5, y + 5.5, mixInk(loc.heat, 0.28 + loc.glow * 0.65 + (hov ? 0.3 : 0)));
+    if (i === 0 || loc.glow > 0.08 || hov) strokeCirc(x, y, (i === 0 ? 6.5 : 5) + loc.glow * 3.5, mixInk(loc.heat, (i === 0 ? 0.30 : 0) + loc.glow * 0.70 + (hov ? 0.35 : 0)), 0.9);
+    fillCirc(x, y, (i === 0 ? 2.6 : 2.0) + loc.glow * 2.1 + (hov ? 0.9 : 0), mixInk(loc.heat, 0.58 + loc.glow * 0.42));
+  }
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.26)';
+  ctx.textBaseline = 'bottom'; ctx.fillText('PAST · UPRIGHT WALL ↑', xR + 10, y - 7);
+  ctx.textBaseline = 'top';    ctx.fillText('FUTURE · FUNNEL FLOOR ↓', xR + 10, y + 7);
+}
+
+function drawOverlays(curStep) {
+  if (drag.mode === 'marquee') {
+    const r = getMarqueeRect(curStep), rw = Math.max(2, r.x1 - r.x0), rh = Math.max(2, r.y1 - r.y0), b = Math.min(8, rw * 0.35, rh * 0.35);
+    ctx.fillStyle = 'rgba(255,90,31,0.065)'; ctx.fillRect(r.x0, r.y0, rw, rh);
+    ctx.save(); ctx.strokeStyle = 'rgba(255,90,31,0.58)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.strokeRect(r.x0 + 0.5, r.y0 + 0.5, rw, rh); ctx.restore();
+    ctx.strokeStyle = '#ff5a1f'; ctx.lineWidth = 1.4;
+    for (const [cx, cy, sx, sy] of [[r.x0, r.y0, 1, 1], [r.x1, r.y0, -1, 1], [r.x0, r.y1, 1, -1], [r.x1, r.y1, -1, -1]]) { ctx.beginPath(); ctx.moveTo(cx + sx * b, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * b); ctx.stroke(); }
+    const u0 = unprojWall(geo.cx, r.y0), u1 = unprojWall(geo.cx, r.y1);
+    const b0 = Math.max(0, (u0 ? u0.age : 0) / 16), b1 = Math.max(0, (u1 ? u1.age : 0) / 16), pfx = drag.shift ? `+G${state.groups.length + 1} · ` : '';
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillStyle = '#ff5a1f';
+    ctx.fillText(`${pfx}${drag.selIds.size}n · −${b0.toFixed(1)}b..−${b1.toFixed(1)}b`, r.x1, Math.max(geo.padTop + 12, r.y0 - 4)); return;
+  }
+  if ((drag.mode === 'placeFuture' || drag.mode === 'editFuture') && drag.activePin) {
+    const p = drag.activePin, pt = projFunnel(p.noteIdx - 4, p.step - curStep);
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = p.noteIdx >= 6 ? 'right' : 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ff5a1f';
+    ctx.fillText(`${NOTES[p.noteIdx].name} · d=${p.dur}`, p.noteIdx >= 6 ? pt.x - 15 : pt.x + 15, pt.y); return;
+  }
+  if (hover.target === 'futEmpty' && !drag.mode && hover.ghostLocus >= 0) {
+    const off = hover.ghostStep - curStep;
+    if (off > 0.2 && off <= FUTURE_STEPS) {
+      const pt = projFunnel(hover.ghostLocus - 4, off), pL = projFunnel(-WALL_PAD_LANES, off), f = edgeFadeBot(pt.y);
+      strokeLine(pL.x, pt.y + 0.5, pt.x - 10 * pt.scale, pt.y + 0.5, `rgba(255,255,255,${(0.08 * f).toFixed(3)})`);
+      ctx.save(); ctx.setLineDash([2, 2]); traceDiamond(pt.x, pt.y, 5.2 * pt.scale); ctx.strokeStyle = `rgba(255,255,255,${(0.50 * f).toFixed(3)})`; ctx.lineWidth = 1; ctx.stroke(); ctx.restore();
+      ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = hover.ghostLocus >= 6 ? 'right' : 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = `rgba(255,255,255,${(0.48 * f).toFixed(3)})`;
+      ctx.fillText(`+ ${NOTES[hover.ghostLocus].name}`, hover.ghostLocus >= 6 ? pt.x - 12 : pt.x + 12, pt.y);
+    }
+    return;
+  }
+  if (hover.pastId > 0 && hover.focus > 0.05 && !drag.mode) {
+    const n = state.pastNotes.find(p => p.id === hover.pastId); if (!n || n.step >= curStep) return;
+    const x = geo.locusX[n.noteIdx], y = wallY(curStep - n.step); if (y < geo.padTop - 2 || y >= geo.nowY) return;
+    const a = hover.focus, col = n.locked ? `rgba(255,90,31,${(0.75 * a).toFixed(3)})` : `rgba(255,255,255,${(0.32 * a).toFixed(3)})`;
+    strokeCirc(x, y, 13, col, 0.85); strokeLine(geo.wallL, y + 0.5, x - 16, y + 0.5, `rgba(255,255,255,${(0.10 * a).toFixed(3)})`);
+    const label = `−${Math.max(0, (curStep - n.step) / 16).toFixed(1)}b · ${NOTES[n.noteIdx].name} · d=${n.dur}`;
+    ctx.font = '9px ui-monospace, monospace'; const tw = ctx.measureText(label).width + 12, bx = n.noteIdx >= 6 ? x - 18 - tw : x + 18, by = clamp(y - 9, geo.padTop + 2, geo.nowY - 22);
+    ctx.fillStyle = `rgba(0,0,0,${(0.90 * a).toFixed(3)})`; ctx.fillRect(bx, by, tw, 17);
+    ctx.strokeStyle = n.locked ? `rgba(255,90,31,${(0.75 * a).toFixed(3)})` : `rgba(255,255,255,${(0.34 * a).toFixed(3)})`; ctx.lineWidth = 0.85; ctx.strokeRect(bx + 0.5, by + 0.5, tw, 17);
+    ctx.fillStyle = n.locked ? `rgba(255,90,31,${(0.96 * a).toFixed(3)})` : `rgba(255,255,255,${(0.90 * a).toFixed(3)})`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(label, bx + 6, by + 9);
+  }
+}
+
+const drawKnob = (x, y, act, heat, hov) => { fillCirc(x, y, act ? 6.8 : 5.8, act ? '#ff5a1f' : '#000'); strokeCirc(x, y, act ? 6.8 : 5.8, mixInk(heat, hov || act ? 1 : 0.78), act ? 1.9 : 1.25); if (!act) fillCirc(x, y, 1.8, mixInk(heat, 0.92)); };
+function drawControls(nowPerf) {
+  ctx.font = '9px ui-monospace, monospace';
+  const lbl = (txt, x, y, al, bl, h, a) => { ctx.textAlign = al; ctx.textBaseline = bl; ctx.fillStyle = mixInk(h, a); ctx.fillText(txt, x, y); };
+  // Left Top: Log Past Lens Slider
+  const lx = geo.lensX, lTop = geo.lensTop, lBot = geo.lensBot, ky = lensKnobY(), lAct = drag.mode === 'lens', lHeat = lAct ? 1 : clamp(1 - (nowPerf - state.lensHotPerf) / FLASH_MS, 0, 1);
+  strokeLine(lx + 0.5, lTop, lx + 0.5, lBot, 'rgba(255,255,255,0.14)');
+  for (let w = 1; w <= 4; w += 0.5) {
+    const ty = Math.round(lensKnobY(w)) + 0.5, maj = Number.isInteger(w), tw = maj ? 6 : 3;
+    strokeLine(lx - tw, ty, lx + tw, ty, Math.abs(ty - ky) < 9 ? mixInk(lHeat, 0.85) : `rgba(255,255,255,${maj ? 0.30 : 0.12})`);
+    if (maj) lbl(`${w}×`, lx - 9, ty, 'right', 'middle', Math.abs(state.warp - w) < 0.2 ? lHeat : 0, Math.abs(state.warp - w) < 0.25 ? 0.72 : 0.28);
+  }
+  strokeLine(lx + 0.5, lBot, lx + 0.5, ky, mixInk(lHeat, 0.58), 1.4);
+  drawKnob(lx, ky, lAct, lHeat, hover.target === 'lens');
+  lbl('LENS', lx, lTop - 13, 'center', 'bottom', lHeat, 0.38);
+
+  // Left Bottom: 2D Motion × Tension Compass (only if space allows outside funnel)
+  if (geo.frontL > geo.R * 2 + 26) {
+    const sx = geo.steerX, sy = geo.steerY, R = geo.R, sk = steerKnobPos(), sAct = drag.mode === 'steer', sHeat = sAct ? 1 : clamp(1 - (nowPerf - state.steerHotPerf) / FLASH_MS, 0, 1);
+    strokeCirc(sx, sy, R, mixInk(sHeat, 0.18 + sHeat * 0.24)); strokeCirc(sx, sy, R * 0.5, 'rgba(255,255,255,0.06)');
+    strokeLine(sx - R, sy + 0.5, sx + R, sy + 0.5, 'rgba(255,255,255,0.09)'); strokeLine(sx + 0.5, sy - R, sx + 0.5, sy + R, 'rgba(255,255,255,0.09)');
+    strokeLine(sx, sy, sk.x, sk.y, mixInk(sHeat, 0.52), 1.25); drawKnob(sk.x, sk.y, sAct, sHeat, hover.target === 'steer');
+    lbl('TENSE', sx, sy - R - 7, 'center', 'bottom', sHeat, 0.28); lbl('CALM', sx, sy + R + 7, 'center', 'top', sHeat, 0.28);
+  }
+
+  // Right Wing: 1€ Adaptive Memory Bias Slider
+  if (W - geo.frontR > 54) {
+    const rx = geo.rightX, gR = geo.gaugeR, rk = rightKnobPos(), rAct = drag.mode === 'right', rHeat = rAct ? 1 : clamp(1 - (nowPerf - state.rightHotPerf) / FLASH_MS, 0, 1);
+    strokeLine(rx + 0.5, geo.nowY - gR, rx + 0.5, geo.nowY + gR, 'rgba(255,255,255,0.14)');
+    strokeLine(rx + 0.5, geo.nowY + gR, rx + 0.5, rk.y, mixInk(rHeat, 0.52), 1.35);
+    drawKnob(rx, rk.y, rAct, rHeat, hover.target === 'right');
+    lbl('HOLD', rx, geo.nowY - gR - 9, 'center', 'bottom', rHeat, 0.34);
+    lbl('DRIFT', rx, geo.nowY + gR + 9, 'center', 'top', rHeat, 0.30);
+  }
+}
+
+let lastFramePerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastFramePerf) / 1000)); lastFramePerf = nowPerf;
+  const kSmooth = 1 - Math.exp(-dt * 12);
+  if (Math.abs(state.warp - state.targetWarp) > 0.0005) { state.warp = lerp(state.warp, state.targetWarp, kSmooth); state.k = warpToK(state.warp); }
+  if (Math.abs(state.flare - state.targetFlare) > 0.001) { state.flare = lerp(state.flare, state.targetFlare, kSmooth); layout(); }
+
+  stepAdaptiveMemory(dt, nowPerf);
+  const curStep = getCurrentStep();
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; triggerResonator(n.noteIdx, n.vel, n.dur, false, curStep, nowPerf); }
+
+  const wantFocus = hover.target === 'past' && !drag.mode && hover.pastId > 0 ? 1 : 0;
+  hover.focus = lerp(hover.focus, wantFocus, 1 - Math.exp(-dt * 14));
+  if (hover.pastId > 0) { const hn = state.pastNotes.find(p => p.id === hover.pastId); if (hn && hn.step < curStep) { hover.focusX = geo.locusX[hn.noteIdx]; hover.focusY = wallY(curStep - hn.step); } }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  drawArchitecturalStage(curStep, nowPerf);
+  drawMemoryHalo(nowPerf);
+  drawWallToFunnelAttention(curStep, nowPerf);
+  drawWavePackets(curStep, dt, nowPerf);
+  drawNowFoldInterferometer(dt, nowPerf);
+  drawOverlays(curStep);
+  drawControls(nowPerf);
+  requestAnimationFrame(frame);
+}
+
+seedInitialPast();
+recomputeFuture(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

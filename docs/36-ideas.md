@@ -1,0 +1,4 @@
+- I readlly like #29 and #30 for dj experience
+- I also like the #27 for selection and visualization
+- Is it possible to use hand (#31) to control the DJ?
+- The 3D visualization is wrong. The vertical should be straight up, and the front should funnel into the vertical with pseudo perspective display
