@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>52 — Gist Grid Learning &amp; Direct Variability Control</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none;
+  }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.76); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>52</b> · GIST GRID LEARNING · <b>1–9 / click NOW</b> play rough phrase → snaps to musical grid gist · <b>DRAG VAR BAR</b> on any feature to steer variability (0% exact ↔ 100% bold) · <b>× / RMB</b> drop · <b>SPACE</b> play</span>
+  <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 52 — GIST TEMPORAL-GRID LEARNING + DIRECT PER-FEATURE VARIABILITY CONTROL
+//   - Solves #46 feedback:
+//     1. Gist Recognizer locks rough human input onto the closest SOLID
+//        musical structure (temporal grid: DOWNBEAT / TRESILLO / a-PICKUP /
+//        OFFBEAT / 3:2 FLOW) + extracts pitch contour gist
+//     2. Each learned feature exposes a direct, tactile VARIABILITY slider
+//        (0% = exact structural skeleton → 50% = living chord/ghost ornaments
+//         → 100% = bold rhythmic displacement, octave bloom & melodic leaps)
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.56 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), shift: 0,  pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), shift: -1, pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), shift: 1,  pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), shift: 0,  pool: [0, 1, 4, 6, 5] },
+];
+
+// Canonical Musical Grid Archetypes that the Gist Learner snaps rough human performances onto!
+const GRID_ARCHETYPES = [
+  { name: 'TRESILLO', slots: [0, 6, 12] },
+  { name: 'a-PICKUP', slots: [0, 3, 8, 11, 15] },
+  { name: 'BACKBEAT', slots: [0, 4, 8, 12] },
+  { name: '3:2 FLOW', slots: [0, 3, 6, 9, 12] },
+  { name: 'SYNCOP',   slots: [0, 3, 6, 10, 14] },
+  { name: '8TH-BED',  slots: [0, 2, 4, 6, 8, 10, 12, 14] },
+];
+
+const BPM = 105, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.10, PHRASE_SETTLE_MS = 950;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM HANDPAN AUDIO ====================
+let actx = null, masterLP = null, clickBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.84; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2380; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.44;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.020), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, octUp = false, dingHz = null } = opts, isDing = idx === 0;
+  const freq = ((isDing && dingHz) ? dingHz : n.hz) * (octUp ? 2 : 1);
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.12, 1.05);
+  const sus = clamp(0.42 + dur * 0.30, 0.42, 2.45) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? -0.04 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.22, 0.90], [2.0, 0.30, 0.72], [3.0, 0.38, 0.62]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.85], [2.0, 0.26, 0.68], [3.0, 0.46, 0.66]];
+  for (const [r, amp, dm] of partials) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = isDing ? 0.007 : (r === 3 ? 0.020 : 0.005), dec = Math.max(0.08, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isGhost ? 0.035 : 0.07), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+}
+
+// ==================== 2. GIST QUANTIZER & PER-FEATURE VARIABILITY ENGINE ====================
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1, nextLayerId: 1,
+  pastNotes: [], futureNotes: [],
+  // Each feature has: { id, gridName, events:[{pos, noteIdx, dur, vel}], variability (0..1), muted, hotPerf, rect }
+  features: [],
+  capture: [], captureLastMs: 0,
+};
+const loci = NOTES.map(() => ({ glow: 0, heat: 0 }));
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+const chordAtBar = (b) => PROG[((b % PROG.length) + PROG.length) % PROG.length];
+
+// Gist Extractor: finds the cleanest musical temporal grid archetype matching the user's rough strikes!
+function learnGistFromCapture(rawNotes) {
+  if (!rawNotes.length) return null;
+  // Normalize timestamps into a 16-step bar relative to musical phase (or span-normalized if played while paused)
+  let rawSlots;
+  if (state.playing) {
+    rawSlots = rawNotes.map(n => ({ pos: ((n.step % 16) + 16) % 16, noteIdx: n.noteIdx, vel: n.vel }));
+  } else {
+    const t0 = rawNotes[0].perf, span = Math.max(800, rawNotes[rawNotes.length - 1].perf - t0);
+    const barMs = TATUM * 16 * 1000;
+    rawSlots = rawNotes.map((n, i) => ({
+      pos: rawNotes.length === 1 ? 0 : (((n.perf - t0) / Math.max(barMs, span * 1.15)) * 16) % 16,
+      noteIdx: n.noteIdx, vel: n.vel
+    }));
+  }
+
+  // Score each musical Grid Archetype by circular distance from the user's strikes!
+  const circDist = (a, b) => { const d = Math.abs(a - b); return Math.min(d, 16 - d); };
+  let bestArch = GRID_ARCHETYPES[0], bestCost = Infinity;
+  for (const arch of GRID_ARCHETYPES) {
+    // Prefer archetypes with similar note density + minimal snap error
+    let cost = Math.abs(arch.slots.length - rawSlots.length) * 0.65;
+    for (const r of rawSlots) {
+      let minD = 99; for (const sl of arch.slots) minD = Math.min(minD, circDist(r.pos, sl));
+      cost += minD;
+    }
+    if (cost < bestCost) { bestCost = cost; bestArch = arch; }
+  }
+
+  // Map user's pitch contour cleanly onto the locked archetype's solid temporal slots!
+  const snapped = new Map();
+  rawSlots.forEach((r, idx) => {
+    let bestSlot = bestArch.slots[idx % bestArch.slots.length], minD = 99;
+    for (const sl of bestArch.slots) {
+      const d = circDist(r.pos, sl);
+      if (d < minD && !snapped.has(sl)) { minD = d; bestSlot = sl; }
+    }
+    snapped.set(bestSlot, { pos: bestSlot, noteIdx: r.noteIdx, dur: r.noteIdx === 0 ? 4 : 2, vel: r.vel });
+  });
+
+  // If user played only 1-2 notes, fill the structural gist lightly with octave/5th echo on the grid!
+  if (snapped.size === 1) {
+    const only = [...snapped.values()][0];
+    const secondSlot = only.pos === 0 ? 8 : 0;
+    snapped.set(secondSlot, { pos: secondSlot, noteIdx: only.noteIdx, dur: 3, vel: only.vel * 0.85 });
+  }
+
+  const events = [...snapped.values()].sort((a, b) => a.pos - b.pos);
+  const feat = {
+    id: state.nextLayerId++,
+    gridName: bestArch.name,
+    events,
+    variability: 0.28, // direct user control: 0 = razor-locked grid, 1 = expressive mutation!
+    muted: false,
+    hotPerf: performance.now(),
+    rect: { x: 0, y: 0, w: 0, h: 0, varX0: 0, varX1: 0, varY: 0, dropX: 0, dropY: 0 },
+  };
+  state.features.push(feat);
+  if (state.features.length > 6) state.features.shift();
+  recomputeFuture(true);
+  return feat;
+}
+
+// Render 1 bar where EACH feature's Variability slider directly controls how far it explores from its locked gist!
+function generateBar(barIdx) {
+  const barStart = barIdx * 16, ch = chordAtBar(barIdx), out = [];
+  for (const F of state.features) {
+    if (F.muted) continue;
+    const V = F.variability; // 0.00 .. 1.00
+
+    for (let i = 0; i < F.events.length; i++) {
+      const ev = F.events[i];
+      let pos = ev.pos, noteIdx = ev.noteIdx, dur = ev.dur, vel = ev.vel, octUp = false, varied = false;
+      const r1 = hash01(barIdx * 31 + F.id * 7, i * 13, 52);
+      const r2 = hash01(barIdx * 17 + i * 5, F.id * 29, 83);
+
+      // 1. Pitch Variation scales smoothly with V (0% = exact pitch; >20% harmonic follow; >55% contour leaps!)
+      if (V > 0.12 && ev.noteIdx > 0 && r1 < V * 0.78) {
+        if (V < 0.55) {
+          noteIdx = clamp(ev.noteIdx + ch.shift, 1, 8);
+        } else {
+          const pool = ch.pool.filter(p => p > 0);
+          noteIdx = pool[Math.floor(r2 * pool.length)];
+        }
+        if (noteIdx !== ev.noteIdx) varied = true;
+      }
+
+      // 2. Rhythmic Syncopation Shift (only above V > 0.52, preserving downbeat 0!)
+      if (V > 0.52 && pos !== 0 && r2 < (V - 0.45) * 0.65) {
+        pos = mod16(pos + (r1 < 0.5 ? -1 : 1));
+        varied = true;
+      }
+
+      // 3. Upper Octave Bloom (only at high Variability > 0.74!)
+      if (V > 0.74 && noteIdx >= 4 && r1 > 0.68) { octUp = true; varied = true; }
+
+      out.push({ id: 0, step: barStart + pos, dur, noteIdx, vel, isGhost: false, octUp, featId: F.id, varied, dingHz: ch.dingHz, flashPerf: -9999 });
+
+      // 4. Ghost-note "a"-pickup ornaments grow continuously with Variability!
+      if (V > 0.22 && hash01(barIdx * 19, F.id * 11 + i, 97) < V * 0.72) {
+        const gPos = mod16(pos - 1);
+        const gIdx = ch.pool[(pos + i) % ch.pool.length];
+        out.push({ id: 0, step: barStart + gPos, dur: 1, noteIdx: gIdx, vel: 0.28, isGhost: true, octUp: false, featId: F.id, varied: true, dingHz: ch.dingHz, flashPerf: -9999 });
+      }
+    }
+  }
+  out.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  return out;
+}
+
+function recomputeFuture(flash = false) {
+  const nowPerf = performance.now();
+  const prev = new Map(state.futureNotes.map(n => [`${n.step}:${n.noteIdx}:${n.featId}`, n]));
+  const cur = getCurrentStep(), minS = Math.ceil(Math.max(state.nextSchedStep, cur + 0.01)), curBar = Math.floor(minS / 16);
+  const next = [];
+  for (let b = curBar; b <= curBar + 2; b++) {
+    for (const ev of generateBar(b)) {
+      if (ev.step < minS) continue;
+      const old = prev.get(`${ev.step}:${ev.noteIdx}:${ev.featId}`);
+      if (old) ev.flashPerf = old.flashPerf;
+      else if (flash && prev.size) ev.flashPerf = nowPerf;
+      next.push(ev);
+    }
+  }
+  state.futureNotes = next;
+}
+
+// ==================== 3. SCHEDULER & PERFORM ====================
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const ev = state.futureNotes.shift();
+    if (ev.step < state.nextSchedStep - 0.001) continue;
+    const jitter = (Math.random() * 2 - 1) * 0.006 + (ev.isGhost ? 0.003 : -0.004);
+    const when = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (ev.step - state.anchorStep) * TATUM + jitter);
+    playPan(ev.noteIdx, when, ev.vel, ev.dur, { isGhost: ev.isGhost, octUp: ev.octUp, dingHz: ev.dingHz });
+    ev.id = state.nextId++; ev.firedVisual = false; state.pastNotes.push(ev);
+    if (!state.futureNotes.length || state.futureNotes[0].step > ev.step + 0.001) state.nextSchedStep = Math.max(state.nextSchedStep, ev.step + 0.5);
+  }
+  const curBar = Math.floor(getCurrentStep() / 16);
+  if ((state.futureNotes.length ? state.futureNotes[state.futureNotes.length - 1].step : -1) < (curBar + 2) * 16 + 12) recomputeFuture(false);
+  if (state.pastNotes.length > 240) { const cur = getCurrentStep(); state.pastNotes = state.pastNotes.filter(n => cur - n.step < 90); }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001); state.playing = true;
+    recomputeFuture(false); schedulerTick(); schedTimer = setInterval(schedulerTick, 20);
+  } else { state.playheadStep = getCurrentStep(); state.playing = false; clearInterval(schedTimer); schedTimer = null; }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+function performNote(noteIdx) {
+  ensureAudio();
+  const nowPerf = performance.now(), cur = getCurrentStep(), ch = chordAtBar(Math.floor(cur / 16));
+  playPan(noteIdx, actx.currentTime, 0.94, 3, { dingHz: ch.dingHz });
+  loci[noteIdx].glow = 1; loci[noteIdx].heat = 1;
+  state.capture.push({ step: cur, perf: nowPerf, noteIdx, vel: 0.90 });
+  state.captureLastMs = nowPerf;
+  if (state.playing) state.pastNotes.push({ id: state.nextId++, step: cur, dur: 2, noteIdx, vel: 0.94, isGhost: false, featId: -1, firedVisual: true, flashPerf: nowPerf });
+}
+
+// ==================== 4. LAYOUT & DIRECT VARIABILITY INTERACTION ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { nowY: 0, padTop: 52, padBot: 30, pxPerStep: 10, gap: 44, locusX: new Float32Array(9), fieldL: 0, fieldR: 0, railX: 18, railW: 204 };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  geo.nowY = Math.round(H * 0.48);
+  geo.pxPerStep = Math.max(120, Math.min(geo.nowY - geo.padTop - 10, H - geo.nowY - geo.padBot - 10)) / 28;
+  geo.railW = clamp(Math.round(W * 0.21), 178, 224);
+  const fc = Math.round(lerp(geo.railX + geo.railW + 30, W - 26, 0.50));
+  geo.gap = clamp(Math.min((W - geo.railW - 110) / 9.5, 54), 26, 54);
+  for (let i = 0; i < 9; i++) geo.locusX[i] = fc + (i - 4) * geo.gap;
+  geo.fieldL = geo.locusX[0]; geo.fieldR = geo.locusX[8];
+}
+window.addEventListener('resize', layout); layout();
+
+const stepToY = (s, cur) => geo.nowY + (s - cur) * geo.pxPerStep;
+const drag = { mode: null, feat: null };
+const hover = { featId: -1, onVar: false, onDrop: false, locusIdx: -1 };
+
+function hitFeature(mx, my) {
+  for (const F of state.features) {
+    const r = F.rect;
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+      const onDrop = Math.hypot(mx - r.dropX, my - r.dropY) <= 12;
+      const onVar = my >= r.varY - 12 && my <= r.varY + 12 && mx >= r.varX0 - 6 && mx <= r.varX1 + 6;
+      return { feat: F, onDrop, onVar };
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  canvas.setPointerCapture(e.pointerId);
+  const hf = hitFeature(mx, my);
+  if (hf) {
+    if (e.button === 2 || hf.onDrop) {
+      state.features = state.features.filter(f => f.id !== hf.feat.id); recomputeFuture(true); return;
+    }
+    if (hf.onVar) {
+      drag.mode = 'var'; drag.feat = hf.feat;
+      hf.feat.variability = clamp((mx - hf.feat.rect.varX0) / (hf.feat.rect.varX1 - hf.feat.rect.varX0), 0, 1);
+      hf.feat.hotPerf = performance.now(); recomputeFuture(true); return;
+    }
+    hf.feat.muted = !hf.feat.muted; hf.feat.hotPerf = performance.now(); recomputeFuture(true); return;
+  }
+  if (mx >= geo.fieldL - 24 && mx <= geo.fieldR + 24 && Math.abs(my - geo.nowY) <= 30) {
+    performNote(clamp(Math.round((mx - geo.fieldL) / geo.gap), 0, 8));
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.mode === 'var' && drag.feat) {
+    const F = drag.feat;
+    F.variability = clamp((mx - F.rect.varX0) / (F.rect.varX1 - F.rect.varX0), 0, 1);
+    F.hotPerf = performance.now(); recomputeFuture(true); return;
+  }
+  hover.featId = -1; hover.onVar = false; hover.onDrop = false; hover.locusIdx = -1;
+  const hf = hitFeature(mx, my);
+  if (hf) { hover.featId = hf.feat.id; hover.onVar = hf.onVar; hover.onDrop = hf.onDrop; canvas.style.cursor = hf.onVar ? 'ew-resize' : 'pointer'; return; }
+  if (mx >= geo.fieldL - 24 && mx <= geo.fieldR + 24 && Math.abs(my - geo.nowY) <= 30) {
+    hover.locusIdx = clamp(Math.round((mx - geo.fieldL) / geo.gap), 0, 8); canvas.style.cursor = 'pointer';
+  } else canvas.style.cursor = 'default';
+});
+canvas.addEventListener('pointerup', () => { drag.mode = null; drag.feat = null; });
+canvas.addEventListener('wheel', (e) => {
+  const r = canvas.getBoundingClientRect(), hf = hitFeature(e.clientX - r.left, e.clientY - r.top);
+  if (!hf) return;
+  e.preventDefault();
+  hf.feat.variability = clamp(hf.feat.variability - Math.sign(e.deltaY) * 0.08, 0, 1);
+  hf.feat.hotPerf = performance.now(); recomputeFuture(true);
+}, { passive: false });
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (!e.repeat && e.key >= '1' && e.key <= '9') performNote(Number(e.key) - 1);
+});
+
+// ==================== 5. MINIMALIST RENDERER ====================
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+
+let lastPerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastPerf) / 1000)); lastPerf = nowPerf;
+  const curStep = getCurrentStep(), phase = ((curStep % 16) + 16) % 16;
+
+  if (state.capture.length && (nowPerf - state.captureLastMs) >= PHRASE_SETTLE_MS) {
+    learnGistFromCapture(state.capture);
+    state.capture = [];
+  }
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; loci[n.noteIdx].glow = Math.max(loci[n.noteIdx].glow, n.isGhost ? 0.35 : 0.95); }
+  for (const loc of loci) { loc.glow *= Math.exp(-dt * 5.0); loc.heat = Math.max(0, loc.heat - dt * 2.5); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // 1. Left Rail: Learned Gist Features + Direct Variability Slider per Feature
+  let ry = geo.padTop + 14;
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillStyle = 'rgba(255,255,255,0.34)'; ctx.fillText(`GIST FEATURES (${state.features.length})`, geo.railX, ry - 4);
+  if (state.capture.length) {
+    const p = clamp((nowPerf - state.captureLastMs) / PHRASE_SETTLE_MS, 0, 1);
+    ctx.strokeStyle = 'rgba(255,90,31,0.55)'; ctx.strokeRect(geo.railX + 0.5, ry + 0.5, geo.railW, 22);
+    ctx.fillStyle = 'rgba(255,90,31,0.18)'; ctx.fillRect(geo.railX + 1, ry + 1, (geo.railW - 2) * p, 20);
+    ctx.fillStyle = '#ff5a1f'; ctx.textBaseline = 'middle'; ctx.fillText(`SNAP TO GRID (${state.capture.length}n)…`, geo.railX + 8, ry + 11.5);
+    ry += 30;
+  }
+
+  const cardH = 68;
+  for (const F of state.features) {
+    const x = geo.railX, y = ry, w = geo.railW;
+    const heat = clamp(1 - (nowPerf - F.hotPerf) / 600, 0, 1), isHov = hover.featId === F.id;
+    const varX0 = x + 36, varX1 = x + w - 34, varY = y + cardH - 13;
+    F.rect = { x, y, w, h: cardH, varX0, varX1, varY, dropX: x + w - 12, dropY: y + 11 };
+
+    ctx.fillStyle = F.muted ? 'rgba(255,255,255,0.015)' : mixInk(heat, isHov ? 0.06 : 0.025);
+    ctx.fillRect(x, y, w, cardH);
+    ctx.strokeStyle = F.muted ? 'rgba(255,255,255,0.12)' : mixInk(heat, isHov ? 0.72 : 0.34);
+    ctx.strokeRect(x + 0.5, y + 0.5, w, cardH);
+
+    // Header: F1 · TRESILLO [×]
+    ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = F.muted ? 'rgba(255,255,255,0.28)' : mixInk(heat, 0.88);
+    ctx.fillText(`F${F.id} · ${F.gridName}`, x + 8, y + 11);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = (isHov && hover.onDrop) ? '#ff5a1f' : 'rgba(255,255,255,0.36)';
+    ctx.fillText('×', F.rect.dropX, F.rect.dropY + 0.5);
+
+    // Mini 16-step locked gist grid sparkline
+    const gx0 = x + 10, gx1 = x + w - 10, gy0 = y + 22, gy1 = y + 44;
+    sLine(gx0, gy1, gx1, gy1, 'rgba(255,255,255,0.09)');
+    for (const ev of F.events) {
+      const px = lerp(gx0, gx1, ev.pos / 15), py = lerp(gy1 - 2, gy0 + 2, ev.noteIdx / 8);
+      const near = !F.muted && state.playing && Math.abs(phase - ev.pos) < 0.7;
+      sLine(px, gy1, px, py, F.muted ? 'rgba(255,255,255,0.12)' : mixInk(near ? 1 : heat, 0.45));
+      fCirc(px, py, near ? 2.8 : 1.9, F.muted ? 'rgba(255,255,255,0.22)' : mixInk(near ? 1 : heat, 0.90));
+    }
+    if (!F.muted && state.playing) sLine(lerp(gx0, gx1, phase / 15), gy0, lerp(gx0, gx1, phase / 15), gy1, 'rgba(255,255,255,0.28)', 0.8);
+
+    // DIRECT VARIABILITY BAR (drag or scroll!)
+    const vx = lerp(varX0, varX1, F.variability);
+    ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(255,255,255,0.40)'; ctx.fillText('VAR', x + 8, varY);
+    sLine(varX0, varY, varX1, varY, 'rgba(255,255,255,0.16)', 1.2);
+    sLine(varX0, varY, vx, varY, mixInk(F.variability > 0.5 ? 0.9 : heat, 0.86), 2.0);
+    fCirc(vx, varY, (isHov && hover.onVar) || drag.feat === F ? 4.4 : 3.2, mixInk(F.variability > 0.5 ? 1 : heat, 0.98));
+    ctx.textAlign = 'right'; ctx.fillStyle = mixInk(F.variability > 0.5 ? 0.9 : 0, 0.65);
+    ctx.fillText(`${Math.round(F.variability * 100)}%`, x + w - 8, varY);
+
+    ry += cardH + 10;
+  }
+
+  // 2. Attention Threads from each Gist Feature to its Future Notes
+  const fMap = new Map(state.features.map(f => [f.id, f]));
+  for (const fn of state.futureNotes) {
+    const F = fMap.get(fn.featId); if (!F || F.muted) continue;
+    const y2 = stepToY(fn.step, curStep); if (y2 < geo.nowY || y2 > H - geo.padBot) continue;
+    const x1 = F.rect.x + F.rect.w, y1 = F.rect.y + F.rect.h * 0.5, x2 = geo.locusX[fn.noteIdx];
+    const isHov = hover.featId === F.id;
+    ctx.strokeStyle = mixInk(fn.varied ? 0.9 : (isHov ? 0.8 : 0), isHov ? 0.45 : fn.isGhost ? 0.08 : 0.16);
+    ctx.lineWidth = isHov ? 1.1 : 0.7;
+    if (fn.varied) ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(lerp(x1, x2, 0.35), y1, lerp(x1, x2, 0.45), y2, x2, y2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 3. Minimal Waterfall
+  const xL = geo.fieldL - 18, xR = geo.fieldR + 18;
+  for (let g = Math.floor(curStep) - 24; g <= Math.ceil(curStep) + 32; g++) {
+    if (mod16(g) !== 0) continue;
+    const y = Math.round(stepToY(g, curStep)) + 0.5;
+    if (y >= geo.padTop && y <= H - geo.padBot) sLine(xL, y, xR, y, 'rgba(255,255,255,0.09)');
+  }
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locusIdx === i;
+    sLine(x, geo.padTop, x, H - geo.padBot, `rgba(255,255,255,${hov ? 0.16 : i === 0 || i === 4 ? 0.06 : 0.028})`);
+    ctx.textBaseline = 'top'; ctx.fillStyle = mixInk(loc.heat, 0.25 + loc.glow * 0.68); ctx.fillText(`${i + 1}·${NOTES[i].name}`, x, H - geo.padBot + 8);
+  }
+  const drawN = (n, isFut) => {
+    const y0 = stepToY(n.step, curStep), y1 = stepToY(n.step + n.dur, curStep);
+    if (y1 < geo.padTop || y0 > H - geo.padBot) return;
+    const x = geo.locusX[n.noteIdx], r = n.isGhost ? 1.5 : 3.2;
+    const heat = n.varied ? 0.85 : (hover.featId === n.featId ? 0.9 : 0);
+    sLine(x, y0, x, y1, mixInk(heat, isFut ? 0.35 : 0.50), n.isGhost ? 0.8 : 1.3);
+    if (isFut) {
+      fCirc(x, y0, r, '#000'); sCirc(x, y0, r, mixInk(heat, n.isGhost ? 0.35 : 0.86), 1.15);
+      if (n.varied) sCirc(x, y0, r + 3.2, 'rgba(255,90,31,0.42)', 0.75);
+    } else fCirc(x, y0, r, mixInk(heat, n.isGhost ? 0.30 : 0.88));
+  };
+  for (const n of state.pastNotes) drawN(n, false);
+  for (const n of state.futureNotes) drawN(n, true);
+
+  sLine(xL, geo.nowY + 0.5, xR, geo.nowY + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  for (let i = 0; i < 9; i++) fCirc(geo.locusX[i], geo.nowY, (i === 0 ? 2.8 : 2.1) + loci[i].glow * 2.2, mixInk(loci[i].heat, 0.55 + loci[i].glow * 0.45));
+
+  requestAnimationFrame(frame);
+}
+
+// Seed 2 starter Gist Features so user can immediately drag Variability 0% ↔ 100% and hear the difference!
+state.features.push({
+  id: state.nextLayerId++, gridName: 'TRESILLO', variability: 0.18, muted: false, hotPerf: -9999, rect: {},
+  events: [{ pos: 0, noteIdx: 0, dur: 4, vel: 0.94 }, { pos: 6, noteIdx: 0, dur: 3, vel: 0.78 }, { pos: 12, noteIdx: 0, dur: 3, vel: 0.84 }]
+});
+state.features.push({
+  id: state.nextLayerId++, gridName: 'a-PICKUP', variability: 0.42, muted: false, hotPerf: -9999, rect: {},
+  events: [{ pos: 3, noteIdx: 4, dur: 2, vel: 0.86 }, { pos: 6, noteIdx: 6, dur: 2, vel: 0.84 }, { pos: 11, noteIdx: 8, dur: 2, vel: 0.90 }, { pos: 14, noteIdx: 6, dur: 2, vel: 0.80 }]
+});
+recomputeFuture(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

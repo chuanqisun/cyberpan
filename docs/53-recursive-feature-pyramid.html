@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>53 — Recursive Feature Pyramid (Meta-Features × Prominence × Variability)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.09em;
+    height: 22px; padding: 0 9px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  button:disabled { opacity: 0.30; cursor: default; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 900px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>53</b> · RECURSIVE FEATURE PYRAMID · <b>CLICK</b> select nodes · <b>G / +META</b> group 2+ nodes (at ANY level!) · <b>DRAG NODE</b> ↑↓ Prominence (weight) · ←→ Variability · <b>1–9</b> add leaf · <b>SPACE</b> play</span>
+  <div class="grp">
+    <button id="metaBtn" class="sig" type="button" disabled>+ META (G)</button>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 53 — RECURSIVE PYRAMID OF FEATURES & META-FEATURES (1 CORE INTERACTION)
+//   - Level 0: Atomic Musical Features (Bass Ding, Rim Perc, Ghost Bed, Melody,
+//              plus any new phrase you perform with keys 1–9!)
+//   - Level 1, 2, 3… (indefinitely recursive!): Select any 2+ ungrouped top-level
+//     nodes (atoms OR metas!) and press G / [+ META] to abstract them under a
+//     new parent Meta-Feature!
+//   - Every node at EVERY level carries TWO continuous parameters:
+//       * PROMINENCE (vertical drag ↑↓): Weight of this feature under its parent!
+//         Effective leaf prominence = product of Prominence weights down the tree.
+//       * VARIABILITY (horizontal drag ←→): Recursively shifts the variability
+//         of all descendants beneath that Meta-Feature!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.58 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 5] },
+];
+
+const BPM = 105, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.10;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM HANDPAN + PERC SYNTH ====================
+let actx = null, masterLP = null, noiseBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.85; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2420; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.44;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.05), sr);
+    const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, octUp = false, dingHz = null } = opts, isDing = idx === 0;
+  const freq = ((isDing && dingHz) ? dingHz : n.hz) * (octUp ? 2 : 1);
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.05, 1.05);
+  const sus = clamp(0.40 + dur * 0.30, 0.40, 2.40) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.44 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? 0 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.88], [2, 0.28, 0.70], [3, 0.44, 0.65]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = r === 3 ? 0.020 : 0.005, dec = Math.max(0.06, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+}
+
+function playPerc(kind, when, vel = 0.7) {
+  ensureAudio();
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.05, 1.0);
+  if (kind === 'gu') {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(120, t0); o.frequency.exponentialRampToValueAtTime(60, t0 + 0.13);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(v * 0.52, t0 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+    o.connect(g); g.connect(masterLP); o.start(t0); o.stop(t0 + 0.24); return;
+  }
+  const ns = actx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = kind === 'tak' ? 2400 : 3800; bp.Q.value = 3.2;
+  const g = actx.createGain(); g.gain.setValueAtTime(v * (kind === 'tak' ? 0.34 : 0.22), t0);
+  ns.connect(bp); bp.connect(g); g.connect(masterLP); ns.start(t0);
+}
+
+// ==================== 2. RECURSIVE FEATURE PYRAMID DATA MODEL ====================
+// Nodes form an arbitrary-depth forest/pyramid:
+//   Leaf (level 0): { id, name, level: 0, parentId: null, children: [], prom: 0..1, vari: 0..1, kind, events, pulse, x, y, w, h }
+//   Meta (level >= 1): { id, name, level: 1 + max(child.level), parentId: null, children: [ids], prom: 0..1, vari: 0..1, pulse, x, y, w, h }
+const state = {
+  playing: false, step: 0, bar: 0, nextTime: 0,
+  nodes: new Map(), nextNodeId: 1, nextMetaNum: 1,
+  selectedIds: new Set(),
+  capture: [], captureLastMs: 0,
+  lociGlow: new Float32Array(9),
+};
+
+function addLeaf(name, kind, events, prom = 0.85, vari = 0.25) {
+  const id = state.nextNodeId++;
+  state.nodes.set(id, { id, name, level: 0, parentId: null, children: [], prom, vari, kind, events, pulse: 0, x: 0, y: 0, w: 96, h: 48 });
+  return id;
+}
+
+// Recursively group 2+ top-level nodes (atoms OR existing metas!) into a higher-level Meta-Feature!
+function createMetaFromSelection() {
+  const roots = [...state.selectedIds]
+    .map(id => state.nodes.get(id))
+    .filter(n => n && n.parentId === null);
+  if (roots.length < 2) return null;
+
+  const id = state.nextNodeId++;
+  const level = 1 + Math.max(...roots.map(r => r.level));
+  const meta = {
+    id, name: `META ${state.nextMetaNum++}`, level, parentId: null,
+    children: roots.map(r => r.id),
+    prom: 0.90, vari: 0.50, // vari 0.5 = neutral pass-through; <0.5 tightens children, >0.5 expands children!
+    pulse: 1.0, x: 0, y: 0, w: 108, h: 50
+  };
+  for (const r of roots) r.parentId = id;
+  state.nodes.set(id, meta);
+  state.selectedIds.clear(); state.selectedIds.add(id);
+  updateButtons();
+  return meta;
+}
+
+// Compute effective recursive Prominence & Variability for any node by walking UP to root!
+function effectiveParams(node) {
+  let prom = node.prom;
+  let vari = node.vari;
+  let cur = node.parentId ? state.nodes.get(node.parentId) : null;
+  while (cur) {
+    prom *= cur.prom; // Weight multiplies cleanly up the hierarchy!
+    vari = clamp(vari + (cur.vari - 0.5) * 0.72, 0, 1); // Parent variability shifts children!
+    cur = cur.parentId ? state.nodes.get(cur.parentId) : null;
+  }
+  return { prom: clamp(prom, 0, 1), vari: clamp(vari, 0, 1) };
+}
+
+function pulseAncestors(node, amt = 1.0) {
+  let cur = node;
+  while (cur) {
+    cur.pulse = Math.max(cur.pulse, amt);
+    cur = cur.parentId ? state.nodes.get(cur.parentId) : null;
+  }
+}
+
+// ==================== 3. SCHEDULER ====================
+let schedTimer = null;
+function scheduler() {
+  if (!state.playing || !actx) return;
+  while (state.nextTime < actx.currentTime + LOOKAHEAD) {
+    const s = state.step, bar = state.bar, t0 = state.nextTime, ch = PROG[bar % 4];
+    const jitter = (Math.random() * 2 - 1) * 0.006;
+
+    for (const node of state.nodes.values()) {
+      if (node.level !== 0) continue; // only leaves synthesize sound, modulated by all Meta ancestors!
+      const { prom, vari } = effectiveParams(node);
+      if (prom < 0.04) continue;
+
+      for (let i = 0; i < node.events.length; i++) {
+        const ev = node.events[i];
+        // Variability can probabilistically displace or ornament non-downbeat steps
+        let targetPos = ev.pos;
+        if (vari > 0.55 && ev.pos !== 0 && hash01(bar * 19 + node.id, i * 7, 53) < (vari - 0.5) * 0.65) {
+          targetPos = (ev.pos + 1) % 16;
+        }
+        if (targetPos !== s) continue;
+
+        const vel = clamp(ev.vel * prom, 0.08, 1.0);
+        if (node.kind === 'perc') {
+          playPerc(ev.percKind || 'tak', t0 + jitter, vel);
+        } else {
+          let idx = ev.noteIdx;
+          if (vari > 0.18 && idx > 0 && hash01(bar * 23 + i, node.id * 11, 41) < vari * 0.72) {
+            const pool = ch.pool.filter(p => p > 0);
+            idx = pool[Math.floor(hash01(bar * 7, s * 13 + node.id, 17) * pool.length)];
+          }
+          const octUp = vari > 0.75 && idx >= 4 && hash01(bar, s + node.id, 99) > 0.65;
+          playPan(idx, t0 + jitter, vel, ev.dur || 3, { isGhost: ev.isGhost, octUp, dingHz: ch.dingHz });
+          if (node.kind === 'bass' && s === 0) playPerc('gu', t0 + jitter, vel * 0.75);
+          visAt(t0, () => { state.lociGlow[idx] = Math.max(state.lociGlow[idx], vel); });
+        }
+        visAt(t0, () => pulseAncestors(node, clamp(0.45 + prom * 0.55, 0.3, 1)));
+      }
+    }
+    state.nextTime += TATUM;
+    state.step = (state.step + 1) % 16;
+    if (state.step === 0) state.bar++;
+  }
+}
+
+function visAt(when, fn) { setTimeout(() => { if (state.playing) fn(); }, Math.max(0, (when - actx.currentTime) * 1000)); }
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl'), metaBtn = document.getElementById('metaBtn');
+function updateButtons() {
+  const groupable = [...state.selectedIds].filter(id => state.nodes.get(id)?.parentId === null);
+  metaBtn.disabled = groupable.length < 2;
+  metaBtn.textContent = groupable.length >= 2 ? `+ META (${groupable.length}) [G]` : '+ META (G)';
+}
+function togglePlay() {
+  ensureAudio();
+  state.playing = !state.playing;
+  if (state.playing) { state.nextTime = actx.currentTime + 0.025; scheduler(); schedTimer = setInterval(scheduler, 20); }
+  else { clearInterval(schedTimer); schedTimer = null; }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+metaBtn.addEventListener('click', createMetaFromSelection);
+
+// ==================== 4. PYRAMID AUTO-LAYOUT & INTERACTION ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize); resize();
+
+function layoutPyramid() {
+  const byLevel = new Map();
+  let maxLvl = 0;
+  for (const n of state.nodes.values()) {
+    maxLvl = Math.max(maxLvl, n.level);
+    if (!byLevel.has(n.level)) byLevel.set(n.level, []);
+    byLevel.get(n.level).push(n);
+  }
+  const topY = 82, botY = H - 108, levels = Math.max(1, maxLvl + 1);
+  // Position Level 0 leaves evenly across bottom first, then center each Meta above its children!
+  const leaves = byLevel.get(0) || [];
+  const leafSpan = Math.min(W - 80, Math.max(360, leaves.length * 136));
+  const leafW = clamp((leafSpan / Math.max(1, leaves.length)) - 16, 86, 118);
+  leaves.forEach((n, i) => {
+    n.w = leafW; n.h = 52;
+    n.x = W * 0.5 - leafSpan * 0.5 + (i + 0.5) * (leafSpan / leaves.length);
+    n.y = botY;
+  });
+
+  for (let lvl = 1; lvl <= maxLvl; lvl++) {
+    const arr = byLevel.get(lvl) || [];
+    const y = lerp(botY, topY, lvl / Math.max(1, maxLvl));
+    arr.forEach((n, idx) => {
+      n.w = 114; n.h = 52; n.y = y;
+      const kids = n.children.map(cid => state.nodes.get(cid)).filter(Boolean);
+      n.x = kids.length ? kids.reduce((s, c) => s + c.x, 0) / kids.length : W * 0.5 + (idx - (arr.length - 1) * 0.5) * 140;
+    });
+    // Prevent sibling overlap on same level
+    arr.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i].x - arr[i - 1].x < 126) arr[i].x = arr[i - 1].x + 126;
+    }
+  }
+}
+
+function hitNode(mx, my) {
+  for (const n of state.nodes.values()) {
+    if (Math.abs(mx - n.x) <= n.w * 0.5 && Math.abs(my - n.y) <= n.h * 0.5) return n;
+  }
+  return null;
+}
+
+const drag = { node: null, sx: 0, sy: 0, p0: 0, v0: 0, moved: false };
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const n = hitNode(mx, my);
+  if (!n) { state.selectedIds.clear(); updateButtons(); return; }
+  // Right-click a Meta-Feature ungroups it cleanly!
+  if (e.button === 2 && n.level > 0) {
+    for (const cid of n.children) { const c = state.nodes.get(cid); if (c) c.parentId = n.parentId; }
+    if (n.parentId) {
+      const p = state.nodes.get(n.parentId);
+      if (p) p.children = p.children.filter(id => id !== n.id).concat(n.children);
+    }
+    state.nodes.delete(n.id); state.selectedIds.delete(n.id); updateButtons(); return;
+  }
+  canvas.setPointerCapture(e.pointerId);
+  drag.node = n; drag.sx = mx; drag.sy = my; drag.p0 = n.prom; drag.v0 = n.vari; drag.moved = false;
+});
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.node) {
+    if (!drag.moved && Math.hypot(mx - drag.sx, my - drag.sy) > 4) drag.moved = true;
+    if (drag.moved) {
+      // Vertical drag ↑↓ = Prominence (weight under parent); Horizontal drag ←→ = Variability!
+      drag.node.prom = clamp(drag.p0 + (drag.sy - my) / 110, 0, 1);
+      drag.node.vari = clamp(drag.v0 + (mx - drag.sx) / 110, 0, 1);
+      drag.node.pulse = 1;
+    }
+    return;
+  }
+  canvas.style.cursor = hitNode(mx, my) ? 'grab' : 'default';
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (drag.node && !drag.moved) {
+    const id = drag.node.id;
+    if (state.selectedIds.has(id)) state.selectedIds.delete(id);
+    else state.selectedIds.add(id);
+    updateButtons();
+  }
+  drag.node = null;
+});
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  if (e.key.toLowerCase() === 'g') { createMetaFromSelection(); return; }
+  if (e.key >= '1' && e.key <= '9') {
+    ensureAudio();
+    const idx = Number(e.key) - 1, ch = PROG[state.bar % 4];
+    playPan(idx, actx.currentTime, 0.92, 3, { dingHz: ch.dingHz });
+    state.lociGlow[idx] = 1;
+    state.capture.push({ pos: state.playing ? state.step : (state.capture.length * 3) % 16, noteIdx: idx, dur: 2, vel: 0.88 });
+    state.captureLastMs = performance.now();
+  }
+});
+
+// ==================== 5. MINIMAL ARCHITECTURAL PYRAMID RENDERER ====================
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  // Auto-crystallize performed phrase as a brand-new Level-0 Leaf in the pyramid!
+  if (state.capture.length && nowMs - state.captureLastMs > 950) {
+    addLeaf(`USER ${state.nextNodeId}`, 'melody', state.capture.slice(), 0.88, 0.25);
+    state.capture = [];
+  }
+  for (const n of state.nodes.values()) n.pulse *= Math.exp(-dt * 5.2);
+  for (let i = 0; i < 9; i++) state.lociGlow[i] *= Math.exp(-dt * 5.2);
+
+  layoutPyramid();
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // 1. Recursive Tree Edges — line thickness & brightness show child's PROMINENCE weight!
+  for (const n of state.nodes.values()) {
+    for (const cid of n.children) {
+      const c = state.nodes.get(cid); if (!c) continue;
+      const eff = effectiveParams(c);
+      ctx.strokeStyle = mixInk(Math.max(n.pulse, c.pulse) * 0.65, 0.14 + eff.prom * 0.62);
+      ctx.lineWidth = 0.7 + eff.prom * 2.1;
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y + n.h * 0.5);
+      ctx.bezierCurveTo(n.x, lerp(n.y, c.y, 0.5), c.x, lerp(n.y, c.y, 0.5), c.x, c.y - c.h * 0.5);
+      ctx.stroke();
+    }
+  }
+
+  // 2. Pyramid Nodes (Atomic Leaves + Recursive Meta-Features)
+  for (const n of state.nodes.values()) {
+    const x0 = n.x - n.w * 0.5, y0 = n.y - n.h * 0.5;
+    const sel = state.selectedIds.has(n.id), eff = effectiveParams(n);
+    const heat = sel ? 1 : (drag.node === n ? 1 : n.pulse * 0.75);
+
+    // Subtle prominence fill from bottom up inside card!
+    ctx.fillStyle = mixInk(heat, 0.04 + eff.prom * 0.08);
+    ctx.fillRect(x0, y0 + n.h * (1 - n.prom), n.w, n.h * n.prom);
+    ctx.strokeStyle = mixInk(heat, sel ? 0.96 : 0.30 + eff.prom * 0.48);
+    ctx.lineWidth = sel || n.level > 0 ? 1.3 : 0.9;
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, n.w, n.h);
+
+    // Node Title + Level tag
+    ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = mixInk(heat, 0.90);
+    ctx.fillText(n.name, x0 + 7, y0 + 6);
+    ctx.font = '8px ui-monospace, monospace'; ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.36)';
+    ctx.fillText(`L${n.level}`, x0 + n.w - 6, y0 + 7);
+
+    // PROMINENCE bar (left vertical) & VARIABILITY bar (bottom horizontal)
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillStyle = 'rgba(255,255,255,0.48)';
+    ctx.fillText(`P ${Math.round(n.prom * 100)}`, x0 + 7, y0 + n.h - 14);
+    ctx.textAlign = 'right';
+    ctx.fillText(`V ${Math.round(n.vari * 100)}`, x0 + n.w - 7, y0 + n.h - 14);
+
+    // Variability track along bottom inside card
+    const bx0 = x0 + 7, bx1 = x0 + n.w - 7, by = y0 + n.h - 7;
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(bx0, by); ctx.lineTo(bx1, by); ctx.stroke();
+    ctx.strokeStyle = mixInk(n.vari > 0.55 ? 0.9 : heat, 0.85); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(bx0, by); ctx.lineTo(lerp(bx0, bx1, n.vari), by); ctx.stroke();
+  }
+
+  // 3. Minimal 9-locus sound horizon strip along very bottom
+  const yH = H - 32, span = Math.min(W * 0.60, 480);
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W * 0.5 - span * 0.5, yH); ctx.lineTo(W * 0.5 + span * 0.5, yH); ctx.stroke();
+  for (let i = 0; i < 9; i++) {
+    const lx = lerp(W * 0.5 - span * 0.5, W * 0.5 + span * 0.5, i / 8), g = state.lociGlow[i];
+    ctx.fillStyle = mixInk(g * 0.7, 0.30 + g * 0.70);
+    ctx.beginPath(); ctx.arc(lx, yH, 2.2 + g * 3.4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// Seed 4 atomic leaves + 1 initial Level-1 Meta so the recursive pyramid is immediately tangible!
+const fBass = addLeaf('DING BASS', 'bass', [{ pos: 0, noteIdx: 0, dur: 4, vel: 0.95 }, { pos: 6, noteIdx: 0, dur: 3, vel: 0.78 }, { pos: 12, noteIdx: 0, dur: 3, vel: 0.86 }], 0.90, 0.15);
+const fPerc = addLeaf('a-TAK PERC', 'perc', [{ pos: 3, vel: 0.62, percKind: 'click' }, { pos: 4, vel: 0.85, percKind: 'tak' }, { pos: 11, vel: 0.72, percKind: 'click' }, { pos: 12, vel: 0.88, percKind: 'tak' }, { pos: 15, vel: 0.68, percKind: 'click' }], 0.78, 0.20);
+const fBed  = addLeaf('GHOST BED', 'bed', [0,2,3,4,6,7,8,10,11,12,14,15].map((p, k) => ({ pos: p, noteIdx: [1,4,6,4][k % 4], dur: 1, vel: p % 4 === 3 ? 0.42 : 0.26, isGhost: true })), 0.82, 0.35);
+const fMel  = addLeaf('MELODY', 'melody', [{ pos: 0, noteIdx: 4, dur: 3, vel: 0.88 }, { pos: 3, noteIdx: 6, dur: 2, vel: 0.92 }, { pos: 6, noteIdx: 8, dur: 3, vel: 0.90 }, { pos: 10, noteIdx: 7, dur: 2, vel: 0.84 }], 0.86, 0.38);
+
+// Pre-group Bass + Perc into "META 1 (RHYTHM)" so user can immediately group META 1 + MELODY into Level-2 META 2!
+state.selectedIds.add(fBass); state.selectedIds.add(fPerc);
+createMetaFromSelection();
+state.selectedIds.clear();
+updateButtons();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

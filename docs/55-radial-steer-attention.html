@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>55 — Sample-Accurate Radial Pan · Center Steering &amp; Sector Attention</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.09em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>55</b> · RADIAL STEER &amp; ATTENTION · <b>DRAG CENTER</b> 2D gravity steer (sparse↔dense × warm↔bright) · <b>DRAG OUTER RIM</b> paint attention sector (locks steps inside; double-click clears) · <b>1–8 / click pan</b> play · <b>SPACE</b> play</span>
+  <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 55 — SAMPLE-ACCURATE RADIAL PAN × CENTER STEERING × SECTOR ATTENTION
+//   Fixes #47's two critiques while staying radically simple (1 circular stage):
+//     1. EXACT CONTINUOUS AUDIO-LOCKED SWEEP: needle angle reads actx.currentTime
+//        directly every frame (zero discrete 16th-note stepping lag!)
+//     2. MINIMALIST STEERING (Center Gravity Puck): drag inside center Ding
+//        (X = sparse meditative ↔ dense syncopated; Y = warm low ↔ bright high)
+//     3. MINIMALIST ATTENTION (Radial Sector Wedge): drag along outer ring to
+//        spotlight an angular beat slice — steps INSIDE the wedge stay LOCKED
+//        across bars while steps OUTSIDE continuously evolve with Steering!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const TONES = [
+  { name: 'E3',  hz: semiHz(-17), pan:  0.00 },
+  { name: 'B3',  hz: semiHz(-10), pan: -0.34 }, { name: 'C4',  hz: semiHz(-9),  pan:  0.34 },
+  { name: 'D4',  hz: semiHz(-7),  pan: -0.46 }, { name: 'E4',  hz: semiHz(-5),  pan:  0.46 },
+  { name: 'F#4', hz: semiHz(-3),  pan: -0.36 }, { name: 'G4',  hz: semiHz(-2),  pan:  0.36 },
+  { name: 'A4',  hz: semiHz(0),   pan: -0.20 }, { name: 'B4',  hz: semiHz(2),   pan:  0.20 },
+];
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), pool: [1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), pool: [2, 4, 6, 8] },
+  { sym: 'VII', dingHz: semiHz(-19), pool: [3, 5, 7, 8] },
+  { sym: 'i',   dingHz: semiHz(-17), pool: [1, 4, 6, 5] },
+];
+
+const BPM = 104, TATUM = 60 / BPM / 4, BAR_SEC = TATUM * 16, LOOKAHEAD = 0.095;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM SINGLE-INSTRUMENT AUDIO ====================
+let actx = null, masterLP = null, noiseBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.85; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2400; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.42;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.05), sr);
+    const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playTone(idx, when, vel = 0.8, opts = {}) {
+  ensureAudio();
+  const t = TONES[idx]; if (!t) return;
+  const { isGhost = false, dingHz = null, bright = 0.5 } = opts, isDing = idx === 0;
+  const freq = (isDing && dingHz) ? dingHz : t.hz;
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.10, 1.05);
+  const sus = isGhost ? 0.55 : isDing ? 2.10 : 1.55;
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.44 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(t.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+  const br = lerp(0.70, 1.38, clamp(bright, 0, 1));
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.88], [2, 0.26 * br, 0.70], [3, 0.44 * br, 0.65]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = r === 3 ? 0.020 : 0.005, dec = Math.max(0.06, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+}
+
+function playPerc(kind, when, vel = 0.75) {
+  ensureAudio();
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.10, 1.0);
+  if (kind === 'gu') {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(120, t0); o.frequency.exponentialRampToValueAtTime(60, t0 + 0.14);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(v * 0.52, t0 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.23);
+    o.connect(g); g.connect(masterLP); o.start(t0); o.stop(t0 + 0.25); return;
+  }
+  const ns = actx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = kind === 'tak' ? 2350 : 3800; bp.Q.value = 3.2;
+  const g = actx.createGain(); g.gain.setValueAtTime(v * (kind === 'tak' ? 0.34 : 0.22), t0);
+  ns.connect(bp); bp.connect(g); g.connect(masterLP); ns.start(t0);
+}
+
+// ==================== 2. CONTINUOUS AUDIO CLOCK + STEER + SECTOR ATTENTION ====================
+const state = {
+  playing: false,
+  anchorAudioTime: 0, anchorAbsStep: 0, nextSchedAbsStep: 0, pausedAbsStep: 0,
+  // Center Steering Vector (in unit circle: x = -1 sparse .. +1 dense; y = -1 warm low .. +1 bright high)
+  steerX: 0.15, steerY: 0.10, steerHot: 0,
+  // Radial Sector Attention Wedge (step range [start, end) mod 16 locked against drift; null = off)
+  attn: { active: true, startStep: 8, spanSteps: 6, hot: 0 },
+  // 4-Layer 16-step state
+  bass:   new Float32Array([1,0,0,0, 0,0,.8,0, 0,0,0,0, .9,0,0,.7]),
+  perc:   new Float32Array([0,0,0,.7, 1,0,0,.7, 0,0,0,.9, 1,0,0,.8]),
+  ghost:  new Float32Array([0,.16,.28,.40, .28,.16,0,.38, .28,.16,.28,0, .28,.16,.28,.40]),
+  melody: new Int8Array([4,-1,-1,6, -1,-1,8,-1, -1,-1,7,-1, 4,-1,-1,-1]),
+  // Visual excitation
+  toneGlow: new Float32Array(9), toneHeat: new Float32Array(9),
+  stepFlash: [new Float32Array(16), new Float32Array(16), new Float32Array(16), new Float32Array(16)],
+};
+
+// Exact sample-locked continuous step position for silky 60fps needle sweep!
+function getExactAbsStep() {
+  if (!state.playing || !actx) return state.pausedAbsStep;
+  return state.anchorAbsStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+}
+function isStepInAttn(s) {
+  if (!state.attn.active || state.attn.spanSteps <= 0) return false;
+  const rel = ((s - state.attn.startStep) % 16 + 16) % 16;
+  return rel < state.attn.spanSteps;
+}
+
+// At each new bar boundary, steps OUTSIDE the Attention Wedge gently evolve toward Center Steering!
+// Steps INSIDE the Attention Wedge stay locked & crystal-clear!
+function evolveUnattendedSteps(barIdx) {
+  const ch = PROG[barIdx % 4];
+  const density = (state.steerX + 1) * 0.5; // 0..1
+  const bright  = (state.steerY + 1) * 0.5; // 0..1
+
+  for (let s = 0; s < 16; s++) {
+    if (isStepInAttn(s)) continue; // LOCKED by Radial Attention Wedge!
+    const r = hash01(barIdx * 29 + s * 7, Math.round(density * 10), Math.round(bright * 10));
+
+    // Evolve Bass subtly (always keep beat 0 anchored unless ultra-sparse)
+    if (s === 0) state.bass[0] = 0.94;
+    else if (s === 6 || s === 12 || s === 15) state.bass[s] = r < (0.28 + density * 0.65) ? 0.80 : 0;
+    else state.bass[s] = 0;
+
+    // Evolve Perc ("a"-16th pickups + backbeat 4/12)
+    if (s === 4 || s === 12) state.perc[s] = density > 0.22 ? 0.92 : 0;
+    else if (s % 4 === 3) state.perc[s] = r < (0.25 + density * 0.72) ? 0.72 : 0;
+    else state.perc[s] = 0;
+
+    // Evolve Melody register guided by steerY (warm low ↔ bright high) & density by steerX!
+    if (s % 4 === 3 || s === 0 || s === 6 || s === 10) {
+      if (r < (0.18 + density * 0.52)) {
+        const target = lerp(1.5, 7.6, bright);
+        let best = ch.pool[0], bestD = 99;
+        for (const p of ch.pool) { const d = Math.abs(p - target) + (hash01(barIdx, s * 13 + p, 55) - 0.5) * 2.2; if (d < bestD) { bestD = d; best = p; } }
+        state.melody[s] = best;
+      } else state.melody[s] = -1;
+    } else state.melody[s] = -1;
+
+    // Re-couple Ghost bed cleanly around Melody
+    state.ghost[s] = state.melody[s] >= 1 ? 0 : (s % 4 === 1 ? (density > 0.6 ? 0.16 : 0) : (s % 4 === 3 ? 0.38 : 0.24 * (0.4 + density * 0.8)));
+  }
+}
+
+// ==================== 3. SAMPLE-ACCURATE SCHEDULER ====================
+let schedTimer = null;
+function scheduler() {
+  if (!state.playing || !actx) return;
+  const horizonStep = state.anchorAbsStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+
+  while (state.nextSchedAbsStep <= horizonStep) {
+    const absStep = state.nextSchedAbsStep++;
+    const s = ((absStep % 16) + 16) % 16, bar = Math.floor(absStep / 16);
+    if (s === 0 && bar > 0) evolveUnattendedSteps(bar);
+
+    const tBase = state.anchorAudioTime + (absStep - state.anchorAbsStep) * TATUM;
+    const ch = PROG[bar % 4], bright = (state.steerY + 1) * 0.5;
+    const inAttn = isStepInAttn(s);
+    const attnBoost = inAttn ? 1.12 : 0.94;
+    if (masterLP) masterLP.frequency.setTargetAtTime(lerp(1350, 3200, bright), tBase, 0.04);
+
+    if (state.bass[s] > 0.05) {
+      playTone(0, tBase, clamp(state.bass[s] * attnBoost, 0.2, 1), { dingHz: ch.dingHz, bright });
+      if (s === 0 || s === 8) playPerc('gu', tBase, state.bass[s] * 0.78);
+      visAt(tBase, () => { state.toneGlow[0] = 1; state.stepFlash[0][s] = 1; });
+    }
+    if (state.perc[s] > 0.05) {
+      const isTak = s === 4 || s === 12 || state.perc[s] >= 0.9;
+      playPerc(isTak ? 'tak' : 'click', tBase, clamp(state.perc[s] * attnBoost, 0.15, 1));
+      visAt(tBase, () => { state.stepFlash[1][s] = 1; });
+    }
+    if (state.ghost[s] > 0.05) {
+      const gIdx = ch.pool[(s + bar) % ch.pool.length];
+      playTone(gIdx, tBase + 0.002, state.ghost[s], { isGhost: true, bright });
+      visAt(tBase, () => { state.toneGlow[gIdx] = Math.max(state.toneGlow[gIdx], 0.34); state.stepFlash[2][s] = 0.75; });
+    }
+    if (state.melody[s] >= 1) {
+      const mIdx = state.melody[s];
+      playTone(mIdx, tBase, clamp(0.88 * attnBoost, 0.3, 1), { bright });
+      visAt(tBase, () => { state.toneGlow[mIdx] = 1; state.stepFlash[3][s] = 1; });
+    }
+  }
+}
+function visAt(when, fn) { setTimeout(() => { if (state.playing) fn(); }, Math.max(0, (when - actx.currentTime) * 1000)); }
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) {
+    state.playing = true; state.anchorAbsStep = state.pausedAbsStep;
+    state.anchorAudioTime = actx.currentTime + 0.025; state.nextSchedAbsStep = Math.ceil(state.pausedAbsStep);
+    scheduler(); schedTimer = setInterval(scheduler, 16);
+  } else {
+    state.pausedAbsStep = getExactAbsStep(); state.playing = false;
+    clearInterval(schedTimer); schedTimer = null;
+  }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+// ==================== 4. SINGLE-CIRCLE GEOMETRY & INTERACTION ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { cx: 0, cy: 0, panR: 120, steerR: 42, fieldR: 82, padR: 20, rings: [158, 184, 210, 236], outerR: 260 };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  geo.cx = W * 0.5; geo.cy = H * 0.52;
+  const maxR = Math.min(W, H - 72) * 0.44;
+  geo.panR = clamp(maxR * 0.50, 88, 150);
+  geo.steerR = geo.panR * 0.34;
+  geo.fieldR = geo.panR * 0.68;
+  geo.padR = geo.panR * 0.16;
+  const rStep = clamp((maxR - geo.panR - 20) / 4.4, 18, 30);
+  geo.rings = [0, 1, 2, 3].map(i => geo.panR + 18 + i * rStep);
+  geo.outerR = geo.rings[3] + 20;
+}
+window.addEventListener('resize', layout); layout();
+
+const tonePos = (idx) => {
+  const order = [0, 4, 3, 5, 2, 6, 1, 7];
+  const a = Math.PI * 0.5 + (order[idx - 1] / 8) * Math.PI * 2;
+  return { x: geo.cx + Math.cos(a) * geo.fieldR, y: geo.cy + Math.sin(a) * geo.fieldR };
+};
+const phaseToAngle = (stepFloat) => -Math.PI * 0.5 + (stepFloat / 16) * Math.PI * 2;
+const angleToStep = (mx, my) => {
+  let a = Math.atan2(my - geo.cy, mx - geo.cx) + Math.PI * 0.5;
+  if (a < 0) a += Math.PI * 2;
+  return Math.round((a / (Math.PI * 2)) * 16) % 16;
+};
+
+const drag = { mode: null, attnStart: 0, lastClickT: 0 };
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const dist = Math.hypot(mx - geo.cx, my - geo.cy);
+  ensureAudio(); canvas.setPointerCapture(e.pointerId);
+
+  // 1. Center Ding = 2D Gravity Steer Puck!
+  if (dist <= geo.steerR + 6) {
+    drag.mode = 'steer';
+    let dx = (mx - geo.cx) / geo.steerR, dy = (geo.cy - my) / geo.steerR, len = Math.hypot(dx, dy);
+    if (len > 1) { dx /= len; dy /= len; }
+    state.steerX = dx; state.steerY = dy; state.steerHot = 1;
+    return;
+  }
+
+  // 2. Tone Fields 1..8 -> live play & stamp at exact current step!
+  for (let i = 1; i <= 8; i++) {
+    const p = tonePos(i);
+    if (Math.hypot(mx - p.x, my - p.y) <= geo.padR + 4) {
+      const s = Math.round(getExactAbsStep()) % 16;
+      playTone(i, actx.currentTime, 0.94, { bright: (state.steerY + 1) * 0.5 });
+      state.toneGlow[i] = 1; state.toneHeat[i] = 1;
+      state.melody[s] = i; state.ghost[s] = 0; state.stepFlash[3][s] = 1;
+      return;
+    }
+  }
+
+  // 3. Outer Attention Perimeter -> drag to sweep Attention Sector Wedge! (double-click clears)
+  if (dist >= geo.rings[3] + 6 && dist <= geo.outerR + 26) {
+    const now = performance.now();
+    if (now - drag.lastClickT < 320) { state.attn.active = false; drag.lastClickT = 0; return; }
+    drag.lastClickT = now;
+    drag.mode = 'attn'; drag.attnStart = angleToStep(mx, my);
+    state.attn.active = true; state.attn.startStep = drag.attnStart; state.attn.spanSteps = 4; state.attn.hot = 1;
+    return;
+  }
+
+  // 4. Individual ring step toggle
+  for (let ri = 0; ri < 4; ri++) {
+    if (Math.abs(dist - geo.rings[ri]) <= 11) {
+      const s = angleToStep(mx, my);
+      if (ri === 0) state.bass[s] = state.bass[s] > 0 ? 0 : 0.90;
+      else if (ri === 1) state.perc[s] = state.perc[s] > 0 ? 0 : 0.85;
+      else if (ri === 2) state.ghost[s] = state.ghost[s] > 0 ? 0 : 0.32;
+      else if (ri === 3) state.melody[s] = state.melody[s] >= 1 ? -1 : PROG[0].pool[s % 4];
+      state.stepFlash[ri][s] = 1;
+      return;
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.mode === 'steer') {
+    let dx = (mx - geo.cx) / geo.steerR, dy = (geo.cy - my) / geo.steerR, len = Math.hypot(dx, dy);
+    if (len > 1) { dx /= len; dy /= len; }
+    state.steerX = dx; state.steerY = dy; state.steerHot = 1;
+    return;
+  }
+  if (drag.mode === 'attn') {
+    const curS = angleToStep(mx, my);
+    const span = ((curS - drag.attnStart) % 16 + 16) % 16;
+    state.attn.spanSteps = clamp(span || 1, 1, 14);
+    state.attn.hot = 1;
+    return;
+  }
+  const dist = Math.hypot(mx - geo.cx, my - geo.cy);
+  canvas.style.cursor = dist <= geo.steerR + 6 ? 'grab' : (dist >= geo.rings[3] + 6 && dist <= geo.outerR + 24) ? 'crosshair' : dist <= geo.rings[3] + 6 ? 'pointer' : 'default';
+});
+canvas.addEventListener('pointerup', () => { drag.mode = null; });
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (!e.repeat && e.key >= '1' && e.key <= '8') {
+    ensureAudio();
+    const i = Number(e.key), s = Math.round(getExactAbsStep()) % 16;
+    playTone(i, actx.currentTime, 0.94, { bright: (state.steerY + 1) * 0.5 });
+    state.toneGlow[i] = 1; state.toneHeat[i] = 1; state.melody[s] = i; state.ghost[s] = 0; state.stepFlash[3][s] = 1;
+  }
+});
+
+// ==================== 5. SAMPLE-ACCURATE MINIMAL RENDERER ====================
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  for (let i = 0; i < 9; i++) { state.toneGlow[i] *= Math.exp(-dt * 5.2); state.toneHeat[i] = Math.max(0, state.toneHeat[i] - dt * 2.5); }
+  for (let ri = 0; ri < 4; ri++) for (let s = 0; s < 16; s++) state.stepFlash[ri][s] *= Math.exp(-dt * 8.0);
+  state.steerHot = Math.max(0, state.steerHot - dt * 2.2);
+  state.attn.hot = Math.max(0, state.attn.hot - dt * 2.0);
+
+  // EXACT continuous phase in [0, 16) locked sample-accurately to actx.currentTime!
+  const exactStep = ((getExactAbsStep() % 16) + 16) % 16;
+  const sweepAngle = phaseToAngle(exactStep);
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const cx = geo.cx, cy = geo.cy;
+
+  // 1. RADIAL ATTENTION SECTOR WEDGE (clean pie spotlight showing locked steps!)
+  if (state.attn.active && state.attn.spanSteps > 0) {
+    const a0 = phaseToAngle(state.attn.startStep - 0.35), a1 = phaseToAngle(state.attn.startStep + state.attn.spanSteps - 0.65);
+    ctx.beginPath();
+    ctx.arc(cx, cy, geo.outerR, a0, a1);
+    ctx.arc(cx, cy, geo.panR + 6, a1, a0, true);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(255,90,31,${(0.055 + state.attn.hot * 0.06).toFixed(3)})`; ctx.fill();
+
+    // Crisp outer attention arc rail
+    ctx.strokeStyle = mixInk(1, 0.62 + state.attn.hot * 0.35); ctx.lineWidth = 2.0;
+    ctx.beginPath(); ctx.arc(cx, cy, geo.outerR, a0, a1); ctx.stroke();
+  }
+  // Faint dashed outer drag rail hint for Attention Wedge
+  ctx.save(); ctx.setLineDash([2, 5]);
+  sCirc(cx, cy, geo.outerR, 'rgba(255,255,255,0.14)', 0.9);
+  ctx.restore();
+
+  // 2. The 4 Concentric Layer Rings + Nodes
+  for (let ri = 0; ri < 4; ri++) {
+    const R = geo.rings[ri];
+    sCirc(cx, cy, R, `rgba(255,255,255,${ri === 2 ? 0.055 : 0.11})`, 0.85);
+    for (let s = 0; s < 16; s++) {
+      const a = phaseToAngle(s), px = cx + Math.cos(a) * R, py = cy + Math.sin(a) * R;
+      const val = ri === 0 ? state.bass[s] : ri === 1 ? state.perc[s] : ri === 2 ? state.ghost[s] : (state.melody[s] >= 1 ? 0.92 : 0);
+      const fl = state.stepFlash[ri][s], locked = isStepInAttn(s);
+      if (val > 0.05) {
+        const rad = ri === 0 ? 4.2 : ri === 1 ? 3.0 : ri === 2 ? 1.8 : 3.8;
+        const heat = locked ? Math.max(0.65, fl) : fl * 0.8;
+        fCirc(px, py, rad + fl * 2.0, mixInk(heat, ri === 2 ? (0.28 + fl * 0.5) : (0.60 + fl * 0.40)));
+      }
+    }
+  }
+
+  // 3. SAMPLE-ACCURATE CONTINUOUS SWEEP NEEDLE (60 FPS locked to AudioContext!)
+  ctx.strokeStyle = 'rgba(255,90,31,0.82)'; ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.moveTo(cx + Math.cos(sweepAngle) * (geo.panR + 6), cy + Math.sin(sweepAngle) * (geo.panR + 6));
+  ctx.lineTo(cx + Math.cos(sweepAngle) * (geo.outerR + 4), cy + Math.sin(sweepAngle) * (geo.outerR + 4));
+  ctx.stroke();
+
+  // 4. Center Handpan Shell + 8 Tone Fields + Center 2D Gravity Steer Puck!
+  sCirc(cx, cy, geo.panR, 'rgba(255,255,255,0.32)', 1.15);
+  for (let i = 1; i <= 8; i++) {
+    const p = tonePos(i), g = state.toneGlow[i], h = state.toneHeat[i];
+    sCirc(p.x, p.y, geo.padR, mixInk(h, 0.24 + g * 0.72), 0.95 + g * 0.6);
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = mixInk(h, 0.42 + g * 0.58); ctx.fillText(TONES[i].name, p.x, p.y);
+  }
+
+  // CENTER STEERING COMPASS inside the Ding (no extra panels needed!)
+  sCirc(cx, cy, geo.steerR, mixInk(state.steerHot, 0.38 + state.toneGlow[0] * 0.55), 1.15);
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(cx - geo.steerR, cy); ctx.lineTo(cx + geo.steerR, cy); ctx.moveTo(cx, cy - geo.steerR); ctx.lineTo(cx, cy + geo.steerR); ctx.stroke();
+  const sx = cx + state.steerX * (geo.steerR - 6), sy = cy - state.steerY * (geo.steerR - 6);
+  ctx.strokeStyle = mixInk(state.steerHot, 0.72); ctx.lineWidth = 1.25;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(sx, sy); ctx.stroke();
+  fCirc(sx, sy, 5.2, state.steerHot > 0.1 ? '#ff5a1f' : '#fff');
+
+  ctx.font = '8px ui-monospace, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.34)'; ctx.textAlign = 'center';
+  ctx.fillText('BRIGHT', cx, cy - geo.steerR + 10);
+  ctx.fillText('WARM',   cx, cy + geo.steerR - 4);
+  ctx.fillText('ATTENTION RIM (DRAG ARC)', cx, cy - geo.outerR - 10);
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

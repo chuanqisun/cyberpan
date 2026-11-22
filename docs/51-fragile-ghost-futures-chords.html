@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>51 — Fragile Ghost Futures &amp; Polyphonic Chording</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none;
+  }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.76); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>51</b> · FRAGILE GHOST FUTURES · <b>L-DRAG</b> paint over ghosts to confirm (brush across lanes = CHORD) · <b>R-DRAG / SHIFT-DRAG</b> brush away to dismiss · <b>1–9 chord keys</b> strike live · <b>SPACE</b> play</span>
+  <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 51 — FRAGILE GHOST FUTURES & POLYPHONIC CHORDING (1 CORE INTERACTION)
+//   - Clean pure-#000 3D funnel stage (from #45)
+//   - Future displays MULTIPLE fragile Ghost Possibilities per step (including
+//     harmonic dyad/triad chord brackets!) instead of 1 deterministic line
+//   - Fragile Brush Ergonomics:
+//       * Left-drag / paint over ghosts → INSTANTLY CONFIRM (crystallize solid)
+//       * Horizontal paint across lanes on same step → LOCK POLYPHONIC CHORD
+//       * Right-drag (or Shift+drag) → SHATTER / DISMISS ghosts into scatter dust
+//         (automatically lifting the alternate possibility if present!)
+//       * Press multiple keys (1–9) together → LIVE POLYPHONIC HANDPAN CHORD
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.60 }));
+
+// Harmonic chord palettes (from #42 Bank E: Open 5th, Minor Triad, Sus2, Add9)
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), main: [0, 4, 6], alt: [1, 5, 8], chords: [[0,4,8], [1,4,6], [4,6,8]] },
+  { sym: 'VI',  dingHz: semiHz(-21), main: [2, 4, 6], alt: [0, 6, 8], chords: [[2,4,6], [2,6,8], [1,4,8]] },
+  { sym: 'VII', dingHz: semiHz(-19), main: [3, 5, 7], alt: [1, 5, 8], chords: [[3,5,7], [1,3,7], [3,5,8]] },
+  { sym: 'i',   dingHz: semiHz(-17), main: [0, 4, 8], alt: [1, 5, 6], chords: [[0,4,6], [4,5,8], [1,4,8]] },
+];
+
+const BPM = 102, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.10, FUTURE_STEPS = 32;
+const FLARE = 1.56, WALL_PAD = 4.55, PAST_K = 0.055;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM POLYPHONIC HANDPAN + CHORD STRUM SYNTH ====================
+let actx = null, masterLP = null, clickBuf = null, uiBus = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.84; master.connect(comp);
+    uiBus = actx.createGain(); uiBus.gain.value = 0.22; uiBus.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2380; masterLP.Q.value = 0.65;
+
+    const dry = actx.createGain(); dry.gain.value = 0.78;
+    const wet = actx.createGain(); wet.gain.value = 0.46;
+    const irLen = Math.floor(sr * 2.6), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.52; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.022), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.78, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isQuiet = false, dingHz = null, chordSpread = 0 } = opts, isDing = idx === 0;
+  const freq = (isDing && dingHz) ? dingHz : n.hz;
+  const t0 = Math.max(actx.currentTime + 0.002, when + chordSpread), v = clamp(vel, 0.10, 1.05);
+  const sus = clamp(0.45 + dur * 0.34, 0.45, 2.75) * (isDing ? 1.42 : 1.0) * (isQuiet ? 0.68 : 1.0);
+
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.40 : 0.27), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? -0.05 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.22, 0.90], [2.0, 0.30, 0.74], [3.0, 0.40, 0.64]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.86], [2.0, 0.26, 0.70], [3.0, 0.48, 0.68]];
+  for (const [r, amp, dm] of partials) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = isDing ? 0.007 : (r === 3 ? 0.022 : 0.005), dec = Math.max(0.08, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isQuiet ? 0.03 : 0.07), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+}
+
+// Micro tactile brush tick when confirming or shattering fragile ghost notes
+function playBrushTick(confirm = true, panVal = 0) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, o = actx.createOscillator(), g = actx.createGain(), p = actx.createStereoPanner();
+  o.type = 'sine'; o.frequency.setValueAtTime(confirm ? 1480 : 620, t0);
+  o.frequency.exponentialRampToValueAtTime(confirm ? 1960 : 280, t0 + 0.024);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(confirm ? 0.14 : 0.10, t0 + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.028);
+  p.pan.value = clamp(panVal, -0.8, 0.8); o.connect(g); g.connect(p); p.connect(uiBus); o.start(t0); o.stop(t0 + 0.032);
+}
+
+// ==================== 2. FRAGILE MULTI-POSSIBILITY FUTURE MODEL ====================
+// Every future step holds a small cloud of candidates:
+//   status: 'ghost' (fragile possibility — faint, softly audible or silent until confirmed)
+//           'confirmed' (crystallized solid by human brush or core anchor)
+//           'dismissed' (brushed away — shatters into dust!)
+// Multiple confirmed notes on the same step automatically form a STRUMMED CHORD!
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1, generatedUpToBar: -1,
+  pastNotes: [], futureNotes: [], // futureNotes includes both 'ghost' & 'confirmed'
+  dust: [], // shattered ghost particles for immediate fragile visual feedback!
+  brushTrail: [],
+  lociGlow: new Float32Array(9), lociHeat: new Float32Array(9),
+  heldKeys: new Set(), liveChordArcs: [],
+};
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+const chordAtBar = (b) => PROG[((b % PROG.length) + PROG.length) % PROG.length];
+
+function populateBar(barIdx) {
+  const barStart = barIdx * 16, ch = chordAtBar(barIdx);
+  const chordSet = ch.chords[barIdx % ch.chords.length];
+
+  for (let pos = 0; pos < 16; pos++) {
+    const step = barStart + pos;
+
+    // 1. Anchored Foundation (Ding on 0, 6, 12 confirmed softly so track breathes immediately)
+    if (pos === 0 || pos === 6 || pos === 12) {
+      state.futureNotes.push({
+        id: state.nextId++, step, noteIdx: 0, dur: 4, vel: pos === 0 ? 0.90 : 0.72,
+        status: 'confirmed', prob: 1.0, dingHz: ch.dingHz, chordGroup: pos === 0, flashPerf: -9999
+      });
+    }
+
+    // 2. Fragile CHORD Possibilities on beat 1 (0) and beat 3 (8) — brush horizontally to crystallize full triad!
+    if (pos === 0 || pos === 8) {
+      for (const ci of chordSet) {
+        if (ci === 0 && pos === 0) continue;
+        state.futureNotes.push({
+          id: state.nextId++, step, noteIdx: ci, dur: 5, vel: 0.76,
+          status: 'ghost', prob: 0.72, dingHz: ch.dingHz, chordGroup: true, flashPerf: -9999
+        });
+      }
+      continue;
+    }
+
+    // 3. Multiple branching MELODIC Ghost Possibilities on key rhythmic slots ("a"-16th pickups 3,7,11,15 & offbeats 2,6,10,14)
+    if (pos % 4 === 3 || pos === 2 || pos === 6 || pos === 10 || pos === 14) {
+      const mIdx = ch.main[(pos + barIdx) % ch.main.length];
+      const aIdx = ch.alt[(pos + barIdx + 1) % ch.alt.length];
+      // Primary fragile ghost (will softly sound as a 50% ghost note if untouched, OR bloom full-voice if confirmed!)
+      state.futureNotes.push({
+        id: state.nextId++, step, noteIdx: mIdx, dur: pos % 4 === 3 ? 2 : 3, vel: pos % 4 === 3 ? 0.86 : 0.78,
+        status: 'ghost', prob: 0.68, dingHz: ch.dingHz, chordGroup: false, flashPerf: -9999
+      });
+      // Alternate branching possibility on a different lane (visualizes harmonic options — brush to pick IT instead!)
+      if (aIdx !== mIdx) {
+        state.futureNotes.push({
+          id: state.nextId++, step, noteIdx: aIdx, dur: 2, vel: 0.80,
+          status: 'ghost', prob: 0.34, dingHz: ch.dingHz, chordGroup: false, flashPerf: -9999
+        });
+      }
+    }
+  }
+  state.futureNotes.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+}
+
+function ensureFuture() {
+  const curBar = Math.floor(getCurrentStep() / 16);
+  while (state.generatedUpToBar < curBar + 2) {
+    state.generatedUpToBar++;
+    populateBar(state.generatedUpToBar);
+  }
+}
+
+// ==================== 3. SCHEDULER ====================
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+
+  // Group all events firing on the exact same step so chords strum organically (20ms harp spread)!
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const step = state.futureNotes[0].step;
+    const batch = [];
+    while (state.futureNotes.length && state.futureNotes[0].step === step) batch.push(state.futureNotes.shift());
+    if (step < state.nextSchedStep - 0.001) continue;
+
+    const confirmed = batch.filter(n => n.status === 'confirmed');
+    // If user confirmed note(s) on this step, play ALL confirmed notes (as a rich chord if >=2!)
+    // If user didn't touch the step, play ONLY the highest-prob ghost softly as a whisper (50% ghost rule)!
+    const toPlay = confirmed.length ? confirmed : batch.filter(n => n.status === 'ghost' && n.prob >= 0.60).slice(0, 1);
+
+    const tBase = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (step - state.anchorStep) * TATUM);
+    const isChord = toPlay.length >= 2;
+    toPlay.forEach((ev, k) => {
+      const isGhostOnly = ev.status !== 'confirmed';
+      const vel = isGhostOnly ? 0.28 : (isChord ? clamp(ev.vel * 0.86, 0.52, 0.94) : ev.vel);
+      const jitter = (Math.random() * 2 - 1) * 0.005 + (isGhostOnly ? 0.003 : -0.004);
+      playPan(ev.noteIdx, tBase + jitter, vel, isChord ? Math.max(4, ev.dur) : ev.dur, {
+        isQuiet: isGhostOnly, dingHz: ev.dingHz, chordSpread: isChord ? k * 0.020 : 0
+      });
+      ev.playedVel = vel; ev.firedVisual = false; ev.wasChord = isChord;
+      state.pastNotes.push(ev);
+    });
+    state.nextSchedStep = step + 0.5;
+  }
+  ensureFuture();
+  if (state.pastNotes.length > 260) { const cur = getCurrentStep(); state.pastNotes = state.pastNotes.filter(n => cur - n.step < 100); }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001); state.playing = true;
+    ensureFuture(); schedulerTick(); schedTimer = setInterval(schedulerTick, 20);
+  } else {
+    state.playheadStep = getCurrentStep(); state.playing = false; clearInterval(schedTimer); schedTimer = null;
+  }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+// ==================== 4. CLEAN 3D FUNNEL GEOMETRY ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { cx: 0, nowY: 0, padTop: 50, padBot: 30, frontH: 240, wallGap: 44, wallHalfW: 200, wallL: 0, wallR: 0, s0: 6, locusX: new Float32Array(9) };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  geo.cx = Math.round(W * 0.5); geo.nowY = Math.round(H * 0.44);
+  geo.frontH = Math.max(150, H - geo.nowY - geo.padBot);
+  const maxBottomHalf = Math.min(W * 0.43, 470);
+  geo.wallGap = clamp((maxBottomHalf / FLARE) / WALL_PAD, 24, 58);
+  geo.wallHalfW = geo.wallGap * WALL_PAD;
+  geo.wallL = geo.cx - geo.wallHalfW; geo.wallR = geo.cx + geo.wallHalfW;
+  for (let i = 0; i < 9; i++) geo.locusX[i] = geo.cx + (i - 4) * geo.wallGap;
+  geo.s0 = geo.frontH / (FLARE * FUTURE_STEPS);
+}
+window.addEventListener('resize', layout); layout();
+
+const wallX = (wx) => geo.cx + wx * geo.wallGap;
+const wallY = (age) => geo.nowY - (geo.s0 / PAST_K) * Math.log(1 + PAST_K * Math.max(0, age));
+function projFunnel(wx, off) {
+  const gamma = (FLARE - 1) / FLARE, u = clamp(off / FUTURE_STEPS, 0, 1.06);
+  const S = 1 / Math.max(0.25, 1 - gamma * u), q = (S - 1) / (FLARE - 1);
+  return { x: geo.cx + wx * geo.wallGap * S, y: geo.nowY + q * geo.frontH, scale: S };
+}
+function unprojFunnel(sx, sy) {
+  if (sy < geo.nowY) return null;
+  const q = (sy - geo.nowY) / geo.frontH, S = 1 + (FLARE - 1) * q, u = (FLARE * q) / S;
+  return { wx: (sx - geo.cx) / (geo.wallGap * S), off: u * FUTURE_STEPS, scale: S };
+}
+
+// ==================== 5. FRAGILE BRUSH CONFIRM / DISMISS + LIVE CHORDING ====================
+const brush = { active: false, mode: 'confirm', touchedIds: new Set(), lastSweepLocus: -1 };
+
+function shatterParticle(x, y, hot = false) {
+  for (let k = 0; k < 7; k++) {
+    const a = (Math.PI * 2 * k) / 7 + Math.random() * 0.6, sp = 28 + Math.random() * 55;
+    state.dust.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, age: 0, life: 0.34 + Math.random() * 0.16, hot });
+  }
+}
+
+function applyFragileBrush(mx, my, isConfirm) {
+  const cur = getCurrentStep(), nowPerf = performance.now();
+  state.brushTrail.push({ x: mx, y: my, confirm: isConfirm, born: nowPerf });
+  if (state.brushTrail.length > 26) state.brushTrail.shift();
+
+  let hitAny = false;
+  for (let i = state.futureNotes.length - 1; i >= 0; i--) {
+    const n = state.futureNotes[i];
+    if (brush.touchedIds.has(n.id)) continue;
+    const off = n.step - cur; if (off < 0.1 || off > FUTURE_STEPS) continue;
+    const pt = projFunnel(n.noteIdx - 4, off);
+    const hitR = (isConfirm ? 24 : 26) * clamp(pt.scale, 0.9, 1.5);
+    if (Math.hypot(mx - pt.x, my - pt.y) <= hitR) {
+      brush.touchedIds.add(n.id);
+      hitAny = true;
+      if (isConfirm) {
+        if (n.status !== 'confirmed') {
+          n.status = 'confirmed'; n.prob = 1.0; n.flashPerf = nowPerf;
+          playBrushTick(true, NOTES[n.noteIdx].pan);
+        }
+      } else {
+        // Fragile dismiss: shatter instantly & boost any sibling ghost on the same step!
+        shatterParticle(pt.x, pt.y, false);
+        state.futureNotes.splice(i, 1);
+        for (const sib of state.futureNotes) {
+          if (sib.step === n.step && sib.status === 'ghost') { sib.prob = 0.78; sib.flashPerf = nowPerf; }
+        }
+        playBrushTick(false, NOTES[n.noteIdx].pan);
+      }
+    }
+  }
+
+  // If left-clicking empty space in funnel (not sweeping existing ghost), plant a fresh confirmed note!
+  if (!hitAny && isConfirm && brush.touchedIds.size === 0 && my > geo.nowY + 14) {
+    const f = unprojFunnel(mx, my);
+    if (f && Math.abs(f.wx) <= WALL_PAD && f.off <= FUTURE_STEPS) {
+      const noteIdx = clamp(Math.round(f.wx + 4), 0, 8);
+      const step = Math.max(Math.ceil(cur + 1), Math.round(cur + f.off));
+      const ch = chordAtBar(Math.floor(step / 16));
+      const created = { id: state.nextId++, step, noteIdx, dur: 3, vel: 0.90, status: 'confirmed', prob: 1.0, dingHz: ch.dingHz, chordGroup: false, flashPerf: nowPerf };
+      state.futureNotes.push(created); state.futureNotes.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+      brush.touchedIds.add(created.id);
+      playBrushTick(true, NOTES[noteIdx].pan);
+    }
+  }
+}
+
+// Live Polyphonic Chording (strike NOW keys simultaneously -> plays strummed chord + projects ghost chord echoes!)
+function strikeLive(idx) {
+  ensureAudio();
+  const cur = getCurrentStep(), nowPerf = performance.now(), ch = chordAtBar(Math.floor(cur / 16));
+  const chordSize = Math.max(1, state.heldKeys.size);
+  playPan(idx, actx.currentTime, chordSize >= 2 ? 0.84 : 0.94, chordSize >= 2 ? 6 : 4, { dingHz: ch.dingHz });
+  state.lociGlow[idx] = 1; state.lociHeat[idx] = 1;
+  state.pastNotes.push({ id: state.nextId++, step: cur, noteIdx: idx, dur: 4, vel: 0.92, playedVel: 0.92, status: 'confirmed', firedVisual: true, wasChord: chordSize >= 2, flashPerf: nowPerf });
+
+  // When 2+ keys are pressed as a chord, connect them with a chord arc AND seed fragile ghost chord echoes 1 bar ahead!
+  if (state.heldKeys.size >= 2) {
+    const sorted = [...state.heldKeys].sort((a, b) => a - b);
+    state.liveChordArcs.push({ lanes: sorted, born: nowPerf, life: 650 });
+    const echoStep = Math.ceil(cur) + 16;
+    for (const lane of sorted) {
+      if (!state.futureNotes.some(n => n.step === echoStep && n.noteIdx === lane)) {
+        state.futureNotes.push({ id: state.nextId++, step: echoStep, noteIdx: lane, dur: 5, vel: 0.80, status: 'ghost', prob: 0.76, dingHz: ch.dingHz, chordGroup: true, flashPerf: nowPerf });
+      }
+    }
+    state.futureNotes.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  }
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  ensureAudio(); canvas.setPointerCapture(e.pointerId);
+
+  // Horizontal swipe right on NOW horizon = live strummed chord!
+  if (Math.abs(my - geo.nowY) <= 24 && mx >= geo.wallL - 12 && mx <= geo.wallR + 12) {
+    const idx = clamp(Math.round((mx - geo.cx) / geo.wallGap + 4), 0, 8);
+    brush.active = true; brush.mode = 'strumNow'; brush.lastSweepLocus = idx;
+    state.heldKeys.add(idx); strikeLive(idx);
+    return;
+  }
+
+  if (my > geo.nowY + 10) {
+    const isDismiss = e.button === 2 || e.shiftKey;
+    brush.active = true; brush.mode = isDismiss ? 'dismiss' : 'confirm'; brush.touchedIds.clear();
+    applyFragileBrush(mx, my, !isDismiss);
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!brush.active) return;
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (brush.mode === 'strumNow') {
+    const idx = clamp(Math.round((mx - geo.cx) / geo.wallGap + 4), 0, 8);
+    if (idx !== brush.lastSweepLocus) { brush.lastSweepLocus = idx; state.heldKeys.add(idx); strikeLive(idx); }
+    return;
+  }
+  applyFragileBrush(mx, my, brush.mode === 'confirm');
+});
+const endPtr = () => { if (brush.mode === 'strumNow') state.heldKeys.clear(); brush.active = false; brush.touchedIds.clear(); };
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (!e.repeat && e.key >= '1' && e.key <= '9') {
+    const idx = Number(e.key) - 1; state.heldKeys.add(idx); strikeLive(idx);
+  }
+});
+window.addEventListener('keyup', (e) => { if (e.key >= '1' && e.key <= '9') state.heldKeys.delete(Number(e.key) - 1); });
+
+// ==================== 6. MINIMALIST RENDERER ====================
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+const drawGrad = (ax, ay, bx, by, c0, c1, lw) => { const g = ctx.createLinearGradient(ax, ay, bx, by); g.addColorStop(0, c0); g.addColorStop(1, c1); ctx.strokeStyle = g; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); };
+
+let lastPerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastPerf) / 1000)); lastPerf = nowPerf;
+  const curStep = getCurrentStep();
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; state.lociGlow[n.noteIdx] = Math.max(state.lociGlow[n.noteIdx], n.playedVel); }
+  for (let i = 0; i < 9; i++) { state.lociGlow[i] *= Math.exp(-dt * 5.0); state.lociHeat[i] = Math.max(0, state.lociHeat[i] - dt * 2.5); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const fBL = projFunnel(-WALL_PAD, FUTURE_STEPS), fBR = projFunnel(WALL_PAD, FUTURE_STEPS);
+
+  // Pure #000 3D Funnel Rails (zero floor/wall fills!)
+  drawGrad(geo.wallL, geo.nowY, geo.wallL, geo.padTop, 'rgba(255,255,255,0.18)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallR, geo.nowY, geo.wallR, geo.padTop, 'rgba(255,255,255,0.18)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallL, geo.nowY, fBL.x, fBL.y, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.07)', 1);
+  drawGrad(geo.wallR, geo.nowY, fBR.x, fBR.y, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.07)', 1);
+
+  for (let i = 0; i < 9; i++) {
+    const wx = i - 4, xW = wallX(wx), pBot = projFunnel(wx, FUTURE_STEPS);
+    const a = i === 0 || i === 4 ? 0.085 : 0.045;
+    drawGrad(xW, geo.nowY, xW, geo.padTop, `rgba(255,255,255,${a})`, 'rgba(255,255,255,0)', 0.85);
+    drawGrad(xW, geo.nowY, pBot.x, pBot.y, `rgba(255,255,255,${a * 1.1})`, `rgba(255,255,255,${a * 0.5})`, 0.85);
+  }
+
+  // Foreshortened bar lines on funnel
+  for (let s = Math.ceil(curStep); s <= Math.floor(curStep) + FUTURE_STEPS; s++) {
+    if (mod16(s) !== 0) continue;
+    const off = s - curStep; if (off <= 0.1) continue;
+    const pL = projFunnel(-WALL_PAD, off), pR = projFunnel(WALL_PAD, off);
+    sLine(pL.x, pL.y, pR.x, pR.y, 'rgba(255,255,255,0.13)');
+  }
+
+  // Group future notes by step to render subtle horizontal CHORD BRIDGES!
+  const futByStep = new Map();
+  for (const n of state.futureNotes) {
+    const off = n.step - curStep; if (off < 0 || off > FUTURE_STEPS) continue;
+    if (!futByStep.has(n.step)) futByStep.set(n.step, []);
+    futByStep.get(n.step).push(n);
+  }
+  for (const [step, list] of futByStep.entries()) {
+    const off = step - curStep;
+    const confirmed = list.filter(n => n.status === 'confirmed').sort((a, b) => a.noteIdx - b.noteIdx);
+    const ghosts = list.filter(n => n.status === 'ghost').sort((a, b) => a.noteIdx - b.noteIdx);
+    // Horizontal bridge connecting confirmed chord notes!
+    if (confirmed.length >= 2) {
+      const pA = projFunnel(confirmed[0].noteIdx - 4, off), pB = projFunnel(confirmed[confirmed.length - 1].noteIdx - 4, off);
+      sLine(pA.x, pA.y, pB.x, pB.y, 'rgba(255,90,31,0.58)', 1.3 * pA.scale);
+    }
+    // Delicate dashed bridge showing potential ghost chord!
+    if (ghosts.length >= 2 && ghosts.some(g => g.chordGroup)) {
+      const pA = projFunnel(ghosts[0].noteIdx - 4, off), pB = projFunnel(ghosts[ghosts.length - 1].noteIdx - 4, off);
+      ctx.save(); ctx.setLineDash([2, 4]);
+      sLine(pA.x, pA.y, pB.x, pB.y, 'rgba(255,255,255,0.18)', 0.9);
+      ctx.restore();
+    }
+  }
+
+  // Render FUTURE notes: Fragile shimmering hollow ghosts vs. solid crystallized confirmed notes
+  const breathe = 0.5 + 0.5 * Math.sin(nowPerf * 0.005);
+  for (const n of state.futureNotes) {
+    const off0 = n.step - curStep, off1 = n.step + n.dur - curStep;
+    if (off0 > FUTURE_STEPS + 0.3 || off1 < 0) continue;
+    const p0 = projFunnel(n.noteIdx - 4, Math.max(0, off0)), p1 = projFunnel(n.noteIdx - 4, Math.min(FUTURE_STEPS, off1));
+    const fade = clamp((H - geo.padBot - p0.y) / 24, 0, 1);
+    const flash = clamp(1 - (nowPerf - n.flashPerf) / 450, 0, 1);
+
+    if (n.status === 'confirmed') {
+      const r = (3.0 + n.vel * 2.0) * p0.scale;
+      sLine(p0.x, p0.y, p1.x, p1.y, mixInk(Math.max(0.55, flash), 0.55 * fade), 1.6 * p0.scale);
+      fCirc(p0.x, p0.y, r, mixInk(Math.max(0.75, flash), 0.94 * fade));
+    } else {
+      // Fragile Ghost Possibility: delicate dashed hollow ring that breathes softly!
+      const r = (2.8 + n.prob * 2.2) * p0.scale;
+      const a = (0.16 + n.prob * 0.34 + breathe * 0.07) * fade;
+      ctx.save(); ctx.setLineDash([2.5, 2.5]);
+      sCirc(p0.x, p0.y, r, mixInk(flash * 0.6, a), 1.0);
+      ctx.restore();
+      fCirc(p0.x, p0.y, 1.2 * p0.scale, `rgba(255,255,255,${(a * 0.8).toFixed(3)})`);
+    }
+  }
+
+  // Render PAST notes rising straight up
+  for (const n of state.pastNotes) {
+    if (n.step >= curStep) continue;
+    const y0 = wallY(curStep - n.step), y1 = Math.min(geo.nowY, wallY(Math.max(0, curStep - (n.step + n.dur))));
+    if (y1 < geo.padTop) continue;
+    const f = clamp((y0 - geo.padTop) / 24, 0, 1), isC = n.status === 'confirmed';
+    const x = geo.locusX[n.noteIdx];
+    sLine(x, y0, x, y1, mixInk(n.wasChord ? 0.65 : 0, (isC ? 0.45 : 0.16) * f), isC ? 1.4 : 0.8);
+    fCirc(x, y0, isC ? 3.0 : 1.5, mixInk(n.wasChord ? 0.7 : 0, (isC ? 0.88 : 0.28) * f));
+  }
+
+  // Shatter dust particles (fragile dismiss feedback!)
+  for (let i = state.dust.length - 1; i >= 0; i--) {
+    const d = state.dust[i]; d.age += dt;
+    if (d.age >= d.life) { state.dust.splice(i, 1); continue; }
+    d.x += d.vx * dt; d.y += d.vy * dt; d.vx *= 0.94; d.vy *= 0.94;
+    fCirc(d.x, d.y, 1.4 * (1 - d.age / d.life), `rgba(255,255,255,${((1 - d.age / d.life) * 0.72).toFixed(3)})`);
+  }
+
+  // Ephemeral brush stroke ribbon
+  while (state.brushTrail.length && nowPerf - state.brushTrail[0].born > 220) state.brushTrail.shift();
+  for (let i = 1; i < state.brushTrail.length; i++) {
+    const a = state.brushTrail[i - 1], b = state.brushTrail[i], env = 1 - (nowPerf - b.born) / 220;
+    sLine(a.x, a.y, b.x, b.y, b.confirm ? `rgba(255,90,31,${(env * 0.7).toFixed(3)})` : `rgba(255,255,255,${(env * 0.45).toFixed(3)})`, b.confirm ? 2.0 : 1.2);
+  }
+
+  // NOW horizon + live chord arcs + lane labels
+  sLine(geo.wallL - 8, geo.nowY + 0.5, geo.wallR + 8, geo.nowY + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  for (let i = state.liveChordArcs.length - 1; i >= 0; i--) {
+    const arc = state.liveChordArcs[i], p = (nowPerf - arc.born) / arc.life;
+    if (p >= 1) { state.liveChordArcs.splice(i, 1); continue; }
+    const x0 = geo.locusX[arc.lanes[0]], x1 = geo.locusX[arc.lanes[arc.lanes.length - 1]];
+    ctx.strokeStyle = `rgba(255,90,31,${((1 - p) * 0.85).toFixed(3)})`; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(x0, geo.nowY); ctx.quadraticCurveTo((x0 + x1) * 0.5, geo.nowY - 26 * (1 - p * 0.3), x1, geo.nowY); ctx.stroke();
+  }
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], pBot = projFunnel(i - 4, FUTURE_STEPS), g = state.lociGlow[i], h = state.lociHeat[i];
+    fCirc(x, geo.nowY, (i === 0 ? 2.8 : 2.1) + g * 2.4, mixInk(h, 0.55 + g * 0.45));
+    ctx.textBaseline = 'top'; ctx.fillStyle = mixInk(h, 0.28 + g * 0.65); ctx.fillText(`${i + 1} · ${NOTES[i].name}`, pBot.x, pBot.y + 7);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+ensureFuture();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

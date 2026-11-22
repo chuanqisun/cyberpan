@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>57 — Hold &amp; Chord Minimalist Rave Conductor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #phaseHud { color: rgba(255,255,255,0.65); font-size: 10px; letter-spacing: 0.09em; }
+  #phaseHud.hot { color: #ff5a1f; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.09em;
+    height: 22px; padding: 0 9px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 900px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>57</b> · HOLD &amp; CHORD CONDUCTOR · <b>HOLD 1–9</b> bloom + pedal lock · <b>CHORD 2+ keys (e.g. 1+5+8)</b> lock harmony &amp; wash · <b>HOLD W</b> build→release drop · <b>W+A</b> half · <b>W+D</b> fakeout · <b>W+S</b> bass kill · <b>W+1–9</b> pitch-pinned roll</span>
+  <div class="grp">
+    <span id="phaseHud">GROOVE</span>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 57 — HOLD & CHORD MINIMALIST RAVE CONDUCTOR (EVOLVING #49)
+//   Keeps #49's exact minimalist single-axis elegance, making EVERY key hold
+//   and key chord deeply meaningful & tactile:
+//     * TAP 1–9 (<180ms)        → Crisp palm-damped acoustic strike
+//     * HOLD 1–9 (≥180ms)       → Sympathetic Overtone Bloom + Live Pedal Root Lock!
+//     * CHORD 2+ of 1–9         → Strummed Cathedral Chord Wash + locks generator
+//                                 harmony onto your exact held pitches!
+//     * HOLD W                  → Loop-halving tension climb → Release = Drop!
+//     * CHORD W + A             → Half-Time Tension → Heavy Half-Time Drop
+//     * CHORD W + D             → Polyrhythmic Tension → Fakeout Double-Drop
+//     * CHORD W + S             → Live Surgical Bass Kill (melody & Tak dance solo!)
+//     * CHORD W + any 1–9       → Pitch-Pinned Stutter Roll on YOUR held chord/note!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.62 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), subHz: semiHz(-45), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), subHz: semiHz(-43), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 5] },
+];
+
+const BASE_BPM = 120, LOOKAHEAD = 0.09, FREEZE_TH = 0.86, CLOSE_TH = -0.15, SAFE = 0.0002;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.95), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. ACOUSTIC HANDPAN + SUSTAINED BLOOM + RAVE ENGINE ====================
+let actx = null, masterBus = null, warmLP = null, washHP = null, dryGate = null, scDuck = null;
+let hallSend = null, hallOut = null, subOsc = null, subGain = null, noiseBuf = null;
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = actx.sampleRate;
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -8; comp.knee.value = 10; comp.ratio.value = 6; comp.release.value = 0.13; comp.connect(actx.destination);
+  masterBus = actx.createGain(); masterBus.gain.value = 0.88; masterBus.connect(comp);
+  warmLP = actx.createBiquadFilter(); warmLP.type = 'lowpass'; warmLP.frequency.value = 2600; warmLP.Q.value = 0.65; warmLP.connect(masterBus);
+  washHP = actx.createBiquadFilter(); washHP.type = 'highpass'; washHP.frequency.value = 22; washHP.Q.value = 0.7;
+  dryGate = actx.createGain(); dryGate.gain.value = 1.0;
+  scDuck = actx.createGain(); scDuck.gain.value = 1.0;
+  scDuck.connect(washHP); washHP.connect(dryGate); dryGate.connect(warmLP);
+
+  const irLen = Math.floor(sr * 2.9), ir = actx.createBuffer(2, irLen, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < irLen; i++) { lp = lp * 0.60 + (Math.random() * 2 - 1) * 0.40; d[i] = lp * Math.pow(1 - i / irLen, 2.3) * 0.54; }
+  }
+  const conv = actx.createConvolver(); conv.buffer = ir;
+  const revHP = actx.createBiquadFilter(); revHP.type = 'highpass'; revHP.frequency.value = 340;
+  hallSend = actx.createGain(); hallSend.gain.value = 0.30; hallOut = actx.createGain(); hallOut.gain.value = 0.52;
+  hallSend.connect(conv); conv.connect(revHP); revHP.connect(hallOut); hallOut.connect(masterBus);
+
+  subOsc = actx.createOscillator(); subOsc.type = 'sine'; subOsc.frequency.value = PROG[0].subHz;
+  const subLP = actx.createBiquadFilter(); subLP.type = 'lowpass'; subLP.frequency.value = 125;
+  subGain = actx.createGain(); subGain.gain.value = SAFE;
+  subOsc.connect(subLP); subLP.connect(subGain); subGain.connect(scDuck); subOsc.start();
+
+  noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.055), sr);
+  const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  return actx;
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  const ctx = ensureAudio(), n = NOTES[idx]; if (!n) return null;
+  const { isGhost = false, isMuted = false, octUp = false, stereoWide = 1.0, dingHz = null, inFreeze = false } = opts;
+  const isDing = idx === 0, freq = ((isDing && dingHz) ? dingHz : n.hz) * (octUp ? 2 : 1);
+  const t0 = Math.max(ctx.currentTime + 0.002, when), v = clamp(vel, 0.12, 1.05);
+  const sus = isMuted ? 0.13 : clamp(0.40 + dur * 0.28, 0.40, 2.55) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = ctx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.43 : 0.29), t0);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(clamp((isDing ? 0 : n.pan) * stereoWide, -0.94, 0.94), t0);
+  out.connect(pan);
+  if (inFreeze) { pan.connect(masterBus); pan.connect(hallSend); }
+  else { pan.connect(scDuck); pan.connect(hallSend); }
+
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.86], [2, 0.26, 0.68], [3, 0.48, 0.68]]) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = isMuted ? 0.002 : (r === 3 ? 0.020 : 0.005), dec = Math.max(0.055, sus * dm);
+    g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(SAFE, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  return {
+    damp() {
+      const now = ctx.currentTime; out.gain.cancelScheduledValues(now);
+      out.gain.setValueAtTime(Math.max(0.001, out.gain.value), now); out.gain.exponentialRampToValueAtTime(SAFE, now + 0.14);
+    }
+  };
+}
+
+// Sustained Bowed-Steel Overtone Bloom Voice (swells organically as long as a tone key is HELD!)
+function startBloomHold(idx) {
+  const ctx = ensureAudio(), n = NOTES[idx], t0 = ctx.currentTime;
+  const gMaster = ctx.createGain();
+  gMaster.gain.setValueAtTime(SAFE, t0);
+  // Delayed onset (160ms) so quick taps stay crisp while holds bloom into a cathedral halo!
+  gMaster.gain.setValueAtTime(SAFE, t0 + 0.15);
+  gMaster.gain.linearRampToValueAtTime(0.22, t0 + 1.05);
+
+  const pan = ctx.createStereoPanner(); pan.pan.value = n.pan * 1.15;
+  gMaster.connect(pan); pan.connect(hallSend); pan.connect(masterBus);
+
+  const oscs = [[n.hz, 0.55], [n.hz * 2.002, 0.32], [n.hz * 3.0, 0.45]].map(([hz, w]) => {
+    const o = ctx.createOscillator(), og = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = hz; og.gain.value = w;
+    o.connect(og); og.connect(gMaster); o.start(t0); return o;
+  });
+  return {
+    stop() {
+      const now = ctx.currentTime; gMaster.gain.cancelScheduledValues(now);
+      gMaster.gain.setValueAtTime(Math.max(SAFE, gMaster.gain.value), now);
+      gMaster.gain.exponentialRampToValueAtTime(SAFE, now + 0.42);
+      oscs.forEach(o => { try { o.stop(now + 0.46); } catch {} });
+    }
+  };
+}
+
+function playGuKick(when, power = 0.85, heavy = false) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(heavy ? 136 : 118, t0); o.frequency.exponentialRampToValueAtTime(heavy ? 41.2 : 58, t0 + 0.082);
+  g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(power * (heavy ? 0.78 : 0.48), t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(SAFE, t0 + (heavy ? 0.36 : 0.22));
+  o.connect(g); g.connect(washHP); o.start(t0); o.stop(t0 + 0.40);
+  scDuck.gain.cancelScheduledValues(t0); scDuck.gain.setValueAtTime(1.0, t0);
+  scDuck.gain.linearRampToValueAtTime(heavy ? 0.34 : 0.74, t0 + 0.012); scDuck.gain.exponentialRampToValueAtTime(1.0, t0 + 0.28);
+}
+
+function playTak(when, heat = 0.0, vel = 0.72, panVal = 0.18) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when), h = clamp(heat, 0, 1);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(panVal, t0); pan.connect(washHP);
+  const ns = ctx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = lerp(2250, 3650, h); bp.Q.value = lerp(3.2, 5.4, h);
+  const ng = ctx.createGain(); ng.gain.setValueAtTime(vel * 0.35, t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ng.connect(hallSend); ns.start(t0);
+}
+
+// ==================== 2. CONDUCTOR + LIVE KEY HOLD / CHORD STATE ====================
+const state = {
+  playing: false, phase: 'GROOVE',
+  piston: 0.0, peakTension: 0.0, dropFlavor: 'RAVE', dropTick: -999, dropEnergy: 0.0,
+  tick: 0, nextTickTime: 0,
+  motif: [0, 4, 6, 8, 4, 6, 7, 4],
+  // Active held tone keys (1..9 -> Map<idx, { startMs, voice, bloom }>)
+  heldTones: new Map(),
+  // Active conductor keys (w, s, a, d)
+  keys: { w: false, s: false, a: false, d: false },
+  bassKillActive: false,
+  shocks: [], locusGlow: new Float32Array(9), locusHeat: new Float32Array(9), dropFlash: 0,
+};
+
+function currentDropFlavor() {
+  if (state.keys.a) return 'HALF';
+  if (state.keys.d) return 'FAKEOUT';
+  return 'RAVE';
+}
+
+// Returns active harmony pool: if user is HOLDING 1+ tone keys, harmony locks onto their held pedal/chord!
+function activeHarmony(barIdx) {
+  const base = PROG[barIdx % 4];
+  const held = [...state.heldTones.keys()].sort((a, b) => a - b);
+  if (!held.length) return { ...base, lockedChord: false, held };
+  // Lowest held note sets pedal gravity (and sub root!), held chord notes lock the melodic pool!
+  const rootHz = NOTES[held[0]].hz;
+  const subHz = rootHz > 200 ? rootHz * 0.25 : rootHz * 0.5;
+  const pool = held.length >= 2 ? held : [held[0], ...base.pool.filter(p => p !== held[0]).slice(0, 3)];
+  return { sym: held.map(i => NOTES[i].name).join('+'), dingHz: rootHz, subHz, pool, lockedChord: held.length >= 2, held };
+}
+
+function setPiston(val) {
+  state.piston = clamp(val, -0.5, 1.0);
+  if (state.piston >= FREEZE_TH) { state.phase = 'FREEZE'; state.peakTension = 1.0; }
+  else if (state.piston > 0.06) { state.phase = 'TENSION'; state.peakTension = Math.max(state.peakTension, state.piston); }
+  else if (state.piston <= CLOSE_TH) { state.phase = 'CLOSURE'; state.peakTension = 0; state.dropEnergy = 0; }
+  else if (state.phase !== 'CLIMAX') { state.phase = 'GROOVE'; state.peakTension = 0; }
+}
+
+function detonateDrop() {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  state.dropFlavor = currentDropFlavor();
+  state.phase = 'CLIMAX'; state.piston = 0; state.peakTension = 0;
+  state.dropTick = state.tick; state.dropEnergy = 1.0; state.dropFlash = 1.0;
+  const harm = activeHarmony(Math.floor(state.tick / 32));
+  const t0 = actx.currentTime + 0.005;
+  washHP.frequency.cancelScheduledValues(t0); washHP.frequency.setValueAtTime(20, t0);
+  dryGate.gain.cancelScheduledValues(t0); dryGate.gain.setValueAtTime(1.0, t0);
+  playGuKick(t0, 1.0, true);
+  // Drop slams into your HELD CHORD (if holding keys!) or triumphant Ding + 5th + 8va!
+  const hitLanes = harm.held.length ? harm.held : [0, 4, 8];
+  hitLanes.forEach((ln, k) => playPan(ln, t0 + k * 0.012, 0.96, 8, { dingHz: harm.dingHz, stereoWide: 1.35 }));
+  for (let k = 0; k < 3; k++) state.shocks.push({ born: performance.now() + k * 60, life: 1100 + k * 180 });
+}
+
+// ==================== 3. SCHEDULER ====================
+function scheduleTick(tk, t0) {
+  if (state.phase === 'CLIMAX') {
+    const el = tk - state.dropTick;
+    if (el >= 256) { state.dropEnergy = 0; state.phase = 'GROOVE'; }
+    else state.dropEnergy = el > 160 ? clamp(1 - (el - 160) / 96, 0, 1) : 1.0;
+  }
+
+  // Chord W + S -> Live Surgical Bass Kill!
+  state.bassKillActive = state.keys.w && state.keys.s;
+  const inBar32 = tk % 32, is16 = (inBar32 % 2) === 0, step16 = inBar32 >> 1;
+  const isBeat = (inBar32 % 8) === 0, barIdx = Math.floor(tk / 32), harm = activeHarmony(barIdx);
+  const delayMs = Math.max(0, (t0 - actx.currentTime) * 1000);
+
+  if (state.phase === 'FREEZE') {
+    dryGate.gain.setTargetAtTime(SAFE, t0, 0.008);
+    hallSend.gain.setTargetAtTime(SAFE, t0, 0.010); hallOut.gain.setTargetAtTime(0.80, t0, 0.04);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.008);
+    return;
+  }
+
+  dryGate.gain.setTargetAtTime(1.0, t0, 0.014);
+  if (state.bassKillActive) {
+    washHP.frequency.setTargetAtTime(380, t0, 0.018); washHP.Q.setTargetAtTime(1.3, t0, 0.025);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.012);
+  } else if (state.phase === 'TENSION') {
+    const h = clamp(state.piston / FREEZE_TH, 0, 1);
+    const slice = h > 0.76 ? 2 : h > 0.56 ? 4 : h > 0.34 ? 8 : 16;
+    washHP.frequency.setTargetAtTime(28 * Math.pow(1500 / 28, Math.pow(h, 1.2)), t0, 0.025);
+    washHP.Q.setTargetAtTime(lerp(0.8, 3.8, h), t0, 0.03);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.015);
+
+    // W + Tone Key(s) = PITCH-PINNED LOOP ROLL using your exact held pitch/chord!
+    const rollSource = harm.held.length ? harm.held : state.motif;
+    const subPos = tk % slice;
+    if (subPos % Math.max(1, Math.min(2, slice)) === 0) {
+      const mIdx = rollSource[(subPos >> 1) % rollSource.length];
+      playPan(mIdx, t0, lerp(0.58, 0.96, h), 1, { isMuted: h > 0.5 && (subPos % 2 === 1), dingHz: harm.dingHz });
+      setTimeout(() => { state.locusGlow[mIdx] = 1; state.locusHeat[mIdx] = h; }, delayMs);
+    }
+    if (tk % slice === 0) playTak(t0, h, lerp(0.42, 0.96, h), tk % 4 < 2 ? -0.22 : 0.22);
+    return;
+  } else if (state.phase === 'CLOSURE') {
+    const d = clamp(-state.piston / 0.5, 0, 1);
+    washHP.frequency.setTargetAtTime(20, t0, 0.05); warmLP.frequency.setTargetAtTime(lerp(2200, 820, d), t0, 0.07);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.04);
+    if (is16 && step16 === 0) playPan(harm.held[0] ?? 0, t0, 0.76, 6, { dingHz: harm.dingHz });
+    return;
+  } else {
+    washHP.frequency.setTargetAtTime(20, t0, 0.04); washHP.Q.setTargetAtTime(0.7, t0, 0.04);
+    warmLP.frequency.setTargetAtTime(state.phase === 'CLIMAX' ? 3150 : 2500, t0, 0.05);
+    subOsc.frequency.setTargetAtTime(harm.subHz, t0, 0.025);
+    subGain.gain.setTargetAtTime(state.phase === 'CLIMAX' ? 0.30 * state.dropEnergy : 0.14, t0, 0.025);
+  }
+
+  // Kick & Tak
+  const isClimax = state.phase === 'CLIMAX', elBars = isClimax ? Math.floor((tk - state.dropTick) / 32) : 0;
+  const isHalf = isClimax && (state.dropFlavor === 'HALF' || (state.dropFlavor === 'FAKEOUT' && elBars < 2));
+  if (!state.bassKillActive) {
+    if (isClimax && (isHalf ? (inBar32 === 0 || inBar32 === 20) : isBeat)) playGuKick(t0, 0.96, true);
+    else if (!isClimax && (inBar32 === 0 || inBar32 === 16)) playGuKick(t0, 0.68, false);
+  }
+  if (isClimax && (isHalf ? inBar32 === 16 : (inBar32 === 8 || inBar32 === 24))) playTak(t0, 0.22, 0.80, 0.2);
+  else if (is16 && step16 % 4 === 3) playTak(t0, 0.08, 0.42, -0.22);
+
+  // Handpan weave steered by any live HELD CHORD or PEDAL!
+  if (is16) {
+    const stereoWide = harm.lockedChord || isClimax ? 1.32 : 0.95;
+    if (!state.bassKillActive && (step16 === 0 || step16 === 6 || step16 === 12)) {
+      const rootL = harm.held.length ? harm.held[0] : 0;
+      playPan(rootL, t0, step16 === 0 ? 0.92 : 0.74, 4, { dingHz: harm.dingHz, stereoWide });
+      setTimeout(() => { state.locusGlow[rootL] = 0.95; }, delayMs);
+    } else if (step16 === 3 || step16 === 10 || step16 === 14) {
+      const mIdx = harm.pool[(step16 + barIdx) % harm.pool.length];
+      playPan(mIdx, t0, 0.88, 2, { octUp: isClimax && elBars >= 2 && mIdx >= 5, stereoWide });
+      setTimeout(() => { state.locusGlow[mIdx] = 1; }, delayMs);
+    } else if (step16 % 4 !== 1) {
+      const gIdx = harm.pool[(step16 + barIdx) % harm.pool.length];
+      playPan(gIdx, t0 + 0.002, step16 % 4 === 3 ? 0.38 : 0.24, 1, { isGhost: true, stereoWide });
+      setTimeout(() => { state.locusGlow[gIdx] = Math.max(state.locusGlow[gIdx], 0.34); }, delayMs);
+    }
+  }
+}
+
+let schedTimer = null;
+function runSched() {
+  if (!state.playing || !actx) return;
+  const mul = state.phase === 'CLOSURE' ? 0.95 : state.phase === 'CLIMAX' ? 1.02 : 1.0;
+  const tickSec = 60 / (BASE_BPM * mul) / 8;
+  while (state.nextTickTime < actx.currentTime + LOOKAHEAD) {
+    scheduleTick(state.tick++, state.nextTickTime);
+    state.nextTickTime += tickSec;
+  }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl'), phaseHud = document.getElementById('phaseHud');
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  ensureAudio(); state.playing = want;
+  if (want) { state.nextTickTime = actx.currentTime + 0.025; runSched(); schedTimer = setInterval(runSched, 18); }
+  else { clearInterval(schedTimer); schedTimer = null; if (subGain) subGain.gain.setTargetAtTime(SAFE, actx.currentTime, 0.02); }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', () => togglePlay());
+
+// ==================== 4. MEANINGFUL KEY HOLDS & KEY CHORDS ====================
+function pressToneKey(idx) {
+  if (state.heldTones.has(idx)) return;
+  ensureAudio();
+  const inFrz = state.phase === 'FREEZE';
+  const voice = playPan(idx, actx.currentTime, 0.92, 6, { inFreeze: inFrz, stereoWide: 1.25 });
+  const bloom = startBloomHold(idx);
+  state.heldTones.set(idx, { startMs: performance.now(), voice, bloom });
+  state.locusGlow[idx] = 1; state.locusHeat[idx] = 1;
+  state.motif.push(idx); if (state.motif.length > 8) state.motif.shift();
+}
+
+function releaseToneKey(idx) {
+  const h = state.heldTones.get(idx); if (!h) return;
+  state.heldTones.delete(idx);
+  const heldMs = performance.now() - h.startMs;
+  if (heldMs < 180 && h.voice) h.voice.damp(); // Quick tap = crisp palm-damp; Long hold = full cathedral ring!
+  if (h.bloom) h.bloom.stop();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'w' || e.key === 'ArrowUp') { ensureAudio(); if (!state.playing) togglePlay(true); state.keys.w = true; return; }
+  if (k === 's' || e.key === 'ArrowDown') { ensureAudio(); if (!state.playing) togglePlay(true); state.keys.s = true; return; }
+  if (k === 'a' || e.key === 'ArrowLeft') { state.keys.a = true; return; }
+  if (k === 'd' || e.key === 'ArrowRight') { state.keys.d = true; return; }
+  if (e.key >= '1' && e.key <= '9') pressToneKey(Number(e.key) - 1);
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'w' || e.key === 'ArrowUp') {
+    state.keys.w = false;
+    if (!state.keys.s && (state.phase === 'FREEZE' || (state.phase === 'TENSION' && state.peakTension >= 0.25))) detonateDrop();
+    else if (state.phase === 'TENSION') setPiston(0);
+    return;
+  }
+  if (k === 's' || e.key === 'ArrowDown') { state.keys.s = false; return; }
+  if (k === 'a' || e.key === 'ArrowLeft') { state.keys.a = false; return; }
+  if (k === 'd' || e.key === 'ArrowRight') { state.keys.d = false; return; }
+  if (e.key >= '1' && e.key <= '9') releaseToneKey(Number(e.key) - 1);
+});
+
+// ==================== 5. ULTRA-MINIMALIST CONDUCTOR + CHORD ARC RENDERER ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, cx = 0, nowY = 0, upH = 200, downH = 110;
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W * 0.5; nowY = Math.round(H * 0.58);
+  upH = clamp(H * 0.42, 140, 280); downH = clamp(H * 0.22, 84, 150);
+}
+window.addEventListener('resize', layout); layout();
+
+const pToY = (p) => p >= 0 ? nowY - p * upH : nowY + (-p / 0.5) * downH;
+const drag = { active: false };
+canvas.addEventListener('pointerdown', (e) => {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  canvas.setPointerCapture(e.pointerId); drag.active = true;
+  const p = e.clientY <= nowY ? clamp((nowY - e.clientY) / upH, 0, 1) : -clamp((e.clientY - nowY) / downH, 0, 1) * 0.5;
+  setPiston(p);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!drag.active) return;
+  const p = e.clientY <= nowY ? clamp((nowY - e.clientY) / upH, 0, 1) : -clamp((e.clientY - nowY) / downH, 0, 1) * 0.5;
+  setPiston(p);
+});
+canvas.addEventListener('pointerup', () => {
+  if (drag.active) {
+    drag.active = false;
+    if (state.phase === 'FREEZE' || (state.phase === 'TENSION' && state.peakTension >= 0.25)) detonateDrop();
+    else setPiston(0);
+  }
+});
+
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  if (state.keys.w && !state.keys.s && !drag.active) setPiston(state.piston + dt * 0.42);
+  else if (state.keys.s && !state.keys.w && !drag.active) setPiston(state.piston - dt * 0.48);
+
+  state.dropFlash = Math.max(0, state.dropFlash - dt * 1.4);
+  for (let i = 0; i < 9; i++) { state.locusGlow[i] *= Math.exp(-dt * 5.2); state.locusHeat[i] = Math.max(0, state.locusHeat[i] - dt * 2.4); }
+
+  const held = [...state.heldTones.keys()].sort((a, b) => a - b);
+  const chordTag = held.length >= 2 ? ` · CHORD [${held.map(i => NOTES[i].name).join('+')}]` : held.length === 1 ? ` · BLOOM [${NOTES[held[0]].name}]` : '';
+  const modTag = state.bassKillActive ? 'BASS KILL (W+S)' : `${state.phase}${state.keys.w ? ' · ' + currentDropFlavor() : ''}`;
+  phaseHud.textContent = `${modTag}${chordTag}`;
+  phaseHud.classList.toggle('hot', state.bassKillActive || state.phase === 'TENSION' || state.phase === 'FREEZE' || state.phase === 'CLIMAX' || held.length > 0);
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const span = Math.min(W * 0.72, 640), x0 = cx - span * 0.5, x1 = cx + span * 0.5;
+  const locusX = (i) => lerp(x0, x1, i / 8);
+
+  // Drop shockwaves
+  for (let i = state.shocks.length - 1; i >= 0; i--) {
+    const sh = state.shocks[i], p = (nowMs - sh.born) / sh.life;
+    if (p < 0) continue; if (p >= 1) { state.shocks.splice(i, 1); continue; }
+    ctx.strokeStyle = mixInk(1 - p * 0.4, Math.pow(1 - p, 1.5) * 0.85); ctx.lineWidth = 1.8 * (1 - p) + 0.5;
+    ctx.beginPath(); ctx.arc(cx, nowY, 16 + Math.pow(p, 0.7) * Math.min(W, H) * 0.46, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Minimalist Horizontal NOW Horizon + 9 Tone Loci + Held Bloom Rings & Chord Arcs!
+  ctx.strokeStyle = state.bassKillActive ? 'rgba(255,90,31,0.45)' : 'rgba(255,255,255,0.20)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x0, nowY + 0.5); ctx.lineTo(x1, nowY + 0.5); ctx.stroke();
+
+  // Luminous Chord Arcs linking any 2+ simultaneously held tone keys!
+  if (held.length >= 2) {
+    for (let k = 0; k < held.length - 1; k++) {
+      const ax = locusX(held[k]), bx = locusX(held[k + 1]), arch = 24 + (held[k + 1] - held[k]) * 10;
+      ctx.strokeStyle = 'rgba(255,90,31,0.78)'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(ax, nowY); ctx.quadraticCurveTo((ax + bx) * 0.5, nowY - arch, bx, nowY); ctx.stroke();
+    }
+  }
+
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const lx = locusX(i), g = state.locusGlow[i], h = state.locusHeat[i];
+    const hold = state.heldTones.get(i);
+    if (hold) {
+      // Swelling sympathetic bloom ring proportional to how long key is held!
+      const swell = clamp((nowMs - hold.startMs - 140) / 900, 0, 1);
+      ctx.strokeStyle = `rgba(255,90,31,${(0.40 + swell * 0.55).toFixed(3)})`; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.arc(lx, nowY, 9 + swell * 18 + Math.sin(nowMs * 0.015) * 2, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = mixInk(hold ? 1 : h, 0.34 + g * 0.66);
+    ctx.beginPath(); ctx.arc(lx, nowY, (hold ? 4.4 : 2.3) + g * 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = mixInk(hold ? 1 : h, hold ? 0.96 : 0.28 + g * 0.55);
+    ctx.fillText(`${i + 1}`, lx, nowY + 18);
+  }
+
+  // Single Central Conductor Spine (exact #49 minimalism!)
+  const yTop = pToY(1.0), yBot = pToY(-0.5), yKnob = pToY(state.piston);
+  const heat = state.bassKillActive || state.phase === 'FREEZE' ? 1 : state.phase === 'TENSION' ? clamp(state.piston / FREEZE_TH, 0, 1) : state.phase === 'CLIMAX' ? state.dropEnergy : 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx + 0.5, yTop); ctx.lineTo(cx + 0.5, yBot); ctx.stroke();
+  ctx.strokeStyle = mixInk(heat, 0.88); ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.moveTo(cx + 0.5, nowY); ctx.lineTo(cx + 0.5, yKnob); ctx.stroke();
+
+  ctx.fillStyle = heat > 0.2 ? '#ff5a1f' : '#000';
+  ctx.beginPath(); ctx.arc(cx, yKnob, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = mixInk(heat, 0.96); ctx.lineWidth = 1.6; ctx.stroke();
+
+  // Crisp labels for active conductor chords
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.fillText('FREEZE (W)', cx + 18, yTop + 3);
+  ctx.fillText('CLOSURE (S)', cx + 18, yBot + 3);
+  if (state.keys.w && held.length) {
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ff5a1f';
+    ctx.fillText(`PITCH-PINNED ROLL [${held.map(i => NOTES[i].name).join('+')}]`, cx, yTop - 16);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

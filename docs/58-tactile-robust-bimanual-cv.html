@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>58 — Tactile Jitter-Proof Bi-Manual CV (Velocity Strings &amp; Magnetic Detents)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #cv-video { display: none; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button, select {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.72);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.07em;
+    height: 22px; padding: 0 8px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; transition: border-color 140ms, color 140ms, background 140ms;
+  }
+  select { max-width: 150px; text-overflow: ellipsis; }
+  button:hover, select:hover { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button.on { border-color: #fff; background: #fff; color: #000; }
+  button.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  button.sig.on { background: #ff5a1f; color: #000; }
+  @media (max-width: 980px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="cv-video" playsinline muted></video>
+<header>
+  <span class="hint"><b>58</b> · TACTILE BI-MANUAL CV · <b>L HAND</b> snaps 5 magnetic energy detents (haptic click + hysteresis) · <b>R HAND</b> strike DOWN across horizontal air-wire to pluck handpan strings (velocity = loudness!) · <b>1–9 / SPACE</b></span>
+  <div class="grp">
+    <select id="camSel" title="Select Camera Device"><option value="">DEFAULT CAM</option></select>
+    <button id="camBtn" type="button">CAM OFF</button>
+    <button id="simBtn" type="button">SIM HANDS</button>
+    <button id="playBtn" type="button">PLAY</button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 58 — TACTILE, JITTER-PROOF BI-MANUAL CV (FIXING ALL 4 CRITIQUES OF #50)
+//   1. REAL TACTILE FEELING (replaces vague finicky air-pinch!):
+//        * RIGHT HAND = Physical Velocity-Struck Air Wire across 9 magnetic
+//          string lanes! Sweeping downward through the wire plucks the string
+//          with loudness = downward speed + vibrating string wave + stereo click!
+//        * LEFT HAND  = 5-Notch Magnetic Detent Rail (BREATH / GROOVE / BUILD /
+//          FREEZE / SLAM-DROP) with crisp mechanical detent clicks on crossing!
+//   2. CAMERA SELECTOR: enumerates all videoinput devices & switches cleanly.
+//   3. 3-STAGE ANTI-JITTER & ERROR STABILIZER (responsive YET rock-steady!):
+//        Stage A: Outlier / Teleport Gate (rejects >0.22 single-frame jumps)
+//        Stage B: Adaptive 1€ Filter + Stationary Dead-Zone (zero idle tremor,
+//                 instant open bandwidth on fast strikes!)
+//        Stage C: Schmitt-Trigger Hysteresis (±12% guard band) + 350ms occlusion
+//                 coasting (zero boundary chatter or frame-drop flicker!)
+//   4. SIMPLE HAND VISUALS: exact clean thin white skeleton lines, zero bloat.
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.62 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), subHz: semiHz(-45), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), subHz: semiHz(-43), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 5] },
+];
+
+// 5 Magnetic Detent Zones for Left Hand (bottom to top)
+const DETENTS = ['BREATH', 'GROOVE', 'DRIVE', 'BUILD', 'FREEZE'];
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PALM_IDX = [0, 5, 9, 13, 17];
+const BPM = 108, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.095, SAFE = 0.0002;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM HANDPAN + TACTILE DETENT CLICK ENGINE ====================
+let actx = null, masterBus = null, washHP = null, dryGate = null, hallSend = null, hallOut = null, uiBus = null, clickBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    masterBus = actx.createGain(); masterBus.gain.value = 0.86; masterBus.connect(comp);
+    uiBus = actx.createGain(); uiBus.gain.value = 0.30; uiBus.connect(comp);
+
+    const warmLP = actx.createBiquadFilter(); warmLP.type = 'lowpass'; warmLP.frequency.value = 2450; warmLP.connect(masterBus);
+    washHP = actx.createBiquadFilter(); washHP.type = 'highpass'; washHP.frequency.value = 22; washHP.Q.value = 0.7;
+    dryGate = actx.createGain(); dryGate.gain.value = 1.0;
+    washHP.connect(dryGate); dryGate.connect(warmLP);
+
+    const irLen = Math.floor(sr * 2.5), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.65 + (Math.random() * 2 - 1) * 0.35; d[i] = lp * Math.pow(1 - i / irLen, 2.45) * 0.52; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    const rHP = actx.createBiquadFilter(); rHP.type = 'highpass'; rHP.frequency.value = 320;
+    hallSend = actx.createGain(); hallSend.gain.value = 0.34; hallOut = actx.createGain(); hallOut.gain.value = 0.54;
+    hallSend.connect(conv); conv.connect(rHP); rHP.connect(hallOut); hallOut.connect(masterBus);
+
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.025), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.25));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+// Crisp stereo mechanical detent click (gives immediate physical resistance feel in mid-air!)
+function playTactileClick(panVal = -0.45, pitchMul = 1.0, strong = false) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, o = actx.createOscillator(), g = actx.createGain(), p = actx.createStereoPanner();
+  o.type = 'triangle'; o.frequency.setValueAtTime((strong ? 1550 : 1180) * pitchMul, t0);
+  o.frequency.exponentialRampToValueAtTime(340 * pitchMul, t0 + 0.015);
+  g.gain.setValueAtTime(strong ? 0.24 : 0.14, t0); g.gain.exponentialRampToValueAtTime(SAFE, t0 + 0.018);
+  p.pan.value = clamp(panVal, -0.85, 0.85);
+  o.connect(g); g.connect(p); p.connect(uiBus); o.start(t0); o.stop(t0 + 0.022);
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, dingHz = null, direct = false } = opts, isDing = idx === 0;
+  const freq = (isDing && dingHz) ? dingHz : n.hz;
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.12, 1.05);
+  const sus = clamp(0.42 + dur * 0.30, 0.42, 2.50) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.44 : 0.30), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? 0 : n.pan, t0);
+  out.connect(pan);
+  if (direct) { pan.connect(masterBus); pan.connect(hallSend); }
+  else { pan.connect(washHP); pan.connect(hallSend); }
+
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.86], [2, 0.28, 0.70], [3, 0.46, 0.66]]) {
+    const o = actx.createOscillator(), g = ctxNode(actx);
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = r === 3 ? 0.020 : 0.005, dec = Math.max(0.06, sus * dm);
+    g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(SAFE, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+}
+const ctxNode = (c) => c.createGain();
+
+function playGuKick(when, power = 0.85) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.002, when);
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.setValueAtTime(126, t0); o.frequency.exponentialRampToValueAtTime(46, t0 + 0.09);
+  g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(power * 0.64, t0 + 0.004); g.gain.exponentialRampToValueAtTime(SAFE, t0 + 0.28);
+  o.connect(g); g.connect(washHP); o.start(t0); o.stop(t0 + 0.32);
+}
+
+// ==================== 2. 3-STAGE ANTI-JITTER & ERROR STABILIZER ====================
+// Stage A: Outlier / Teleport Gate (drops single-frame tracking spikes > 0.22!)
+// Stage B: Adaptive 1€ Filter + Dead-Zone Suppressor (rock-steady when still, instant on strike!)
+// Stage C: Hysteretic Schmitt-Trigger Quantizer (eliminates boundary chatter completely!)
+class RobustAxis {
+  constructor(minCut = 1.6, beta = 0.22, deadZone = 0.0055) {
+    this.minCut = minCut; this.beta = beta; this.deadZone = deadZone;
+    this.val = null; this.dx = 0; this.t = null; this.outliers = 0;
+  }
+  reset() { this.val = null; this.dx = 0; this.t = null; this.outliers = 0; }
+  _alpha(cut, dt) { return 1 / (1 + (1 / (2 * Math.PI * Math.max(1e-4, cut))) / dt); }
+  update(raw, tSec) {
+    if (this.val === null) { this.val = raw; this.dx = 0; this.t = tSec; return raw; }
+    const dt = clamp(tSec - this.t, 0.004, 0.20);
+    // Stage A: Teleport / Outlier Rejection (up to 3 frames before accepting real jump)
+    if (Math.abs(raw - this.val) > 0.22 && this.outliers < 3) { this.outliers++; return this.val; }
+    this.outliers = 0; this.t = tSec;
+    // Stage B: Micro-Jitter Dead-Zone + Adaptive 1€ Cutoff
+    const delta = raw - this.val;
+    if (Math.abs(delta) < this.deadZone) { this.dx *= 0.7; return this.val; }
+    const edx = delta / dt;
+    const ad = this._alpha(1.2, dt); this.dx = ad * edx + (1 - ad) * this.dx;
+    const ax = this._alpha(this.minCut + this.beta * Math.abs(this.dx), dt);
+    return (this.val = ax * raw + (1 - ax) * this.val);
+  }
+}
+
+// Stage C: Schmitt-Trigger Hysteretic Indexer (must push 12% past midpoint to switch notch/lane!)
+function hystereticBucket(norm01, currentIdx, count, margin = 0.12) {
+  const scaled = clamp(norm01, 0, 0.9999) * count;
+  if (currentIdx < 0 || currentIdx >= count) return Math.floor(scaled);
+  const lo = currentIdx - margin, hi = currentIdx + 1 + margin;
+  if (scaled >= lo && scaled <= hi) return currentIdx;
+  return clamp(Math.floor(scaled), 0, count - 1);
+}
+
+// ==================== 3. MUSICAL STATE & SCHEDULER ====================
+const state = {
+  playing: false, step: 0, bar: 0, nextTime: 0,
+  detentIdx: 1, // 0=BREATH, 1=GROOVE, 2=DRIVE, 3=BUILD, 4=FREEZE
+  dropFlash: 0,
+  // 9 vibrating strings (physical pluck displacement & velocity!)
+  strings: NOTES.map(() => ({ amp: 0, phase: 0, glow: 0, heat: 0 })),
+};
+
+function pluckString(idx, velocity01, fromCv = true) {
+  ensureAudio();
+  const v = clamp(velocity01, 0.35, 1.0), ch = PROG[state.bar % 4];
+  playPan(idx, actx.currentTime, v, 4, { dingHz: ch.dingHz, direct: state.detentIdx === 4 });
+  playTactileClick(NOTES[idx].pan, 1.25 + idx * 0.06, false);
+  const st = state.strings[idx];
+  st.amp = clamp(10 + v * 18, 10, 28); st.phase = 0; st.glow = 1; st.heat = fromCv ? 1 : 0.8;
+}
+
+function setDetent(newIdx, slamDrop = false) {
+  if (slamDrop) {
+    state.detentIdx = 2; state.dropFlash = 1;
+    ensureAudio();
+    const ch = PROG[state.bar % 4];
+    playGuKick(actx.currentTime + 0.004, 1.0);
+    playPan(0, actx.currentTime + 0.004, 1.0, 6, { dingHz: ch.dingHz, direct: true });
+    playPan(4, actx.currentTime + 0.012, 0.82, 5, { direct: true });
+    playTactileClick(-0.5, 0.72, true);
+    return;
+  }
+  if (newIdx === state.detentIdx) return;
+  state.detentIdx = newIdx;
+  playTactileClick(-0.5, 0.85 + newIdx * 0.14, newIdx === 4 || newIdx === 1);
+}
+
+let schedTimer = null;
+function scheduler() {
+  if (!state.playing || !actx) return;
+  while (state.nextTime < actx.currentTime + LOOKAHEAD) {
+    const s = state.step, bar = state.bar, t0 = state.nextTime, ch = PROG[bar % 4], d = state.detentIdx;
+    // Detent audio shaping
+    if (d === 4) { // FREEZE
+      dryGate.gain.setTargetAtTime(SAFE, t0, 0.012); hallSend.gain.setTargetAtTime(SAFE, t0, 0.014); hallOut.gain.setTargetAtTime(0.78, t0, 0.04);
+    } else {
+      dryGate.gain.setTargetAtTime(1.0, t0, 0.015);
+      washHP.frequency.setTargetAtTime(d === 3 ? 680 : 22, t0, 0.03);
+      washHP.Q.setTargetAtTime(d === 3 ? 2.6 : 0.7, t0, 0.03);
+      hallSend.gain.setTargetAtTime(d === 0 ? 0.52 : d === 3 ? 0.62 : 0.32, t0, 0.04);
+
+      if (d === 2 && s % 4 === 0) playGuKick(t0, 0.90);
+      else if (d === 1 && (s === 0 || s === 8)) playGuKick(t0, 0.65);
+
+      if (s === 0 || (s === 6 && d >= 1) || (s === 12 && d >= 1)) {
+        playPan(0, t0, s === 0 ? 0.90 : 0.72, 4, { dingHz: ch.dingHz });
+      } else if (d === 3 && s % 2 === 0) {
+        const idx = ch.pool[1 + (s % 3)]; playPan(idx, t0, 0.80, 1, {});
+      } else if (d >= 1 && (s === 3 || s === 10 || s === 14)) {
+        const idx = ch.pool[1 + ((s + bar) % (ch.pool.length - 1))]; playPan(idx, t0, 0.84, 2, {});
+      } else if (d >= 1 && s % 4 !== 1) {
+        const gIdx = ch.pool[(s + bar) % ch.pool.length]; playPan(gIdx, t0 + 0.002, 0.25, 1, { isGhost: true });
+      }
+    }
+    state.nextTime += TATUM; state.step = (state.step + 1) % 16; if (state.step === 0) state.bar++;
+  }
+}
+
+const playBtn = document.getElementById('playBtn'), camBtn = document.getElementById('camBtn'), simBtn = document.getElementById('simBtn'), camSel = document.getElementById('camSel');
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  ensureAudio(); state.playing = want;
+  if (want) { state.nextTime = actx.currentTime + 0.025; scheduler(); schedTimer = setInterval(scheduler, 18); }
+  else { clearInterval(schedTimer); schedTimer = null; }
+  playBtn.textContent = state.playing ? 'PAUSE' : 'PLAY'; playBtn.classList.toggle('on', state.playing);
+}
+playBtn.addEventListener('click', () => togglePlay());
+
+// ==================== 4. CAMERA SELECTOR + ROBUST BI-MANUAL TRACKING ====================
+const videoEl = document.getElementById('cv-video');
+const mkHand = () => ({ active: false, lastSeen: 0, lms: null, x: 0.5, y: 0.5, prevY: 0.5, fx: new RobustAxis(), fy: new RobustAxis(), lane: 4, strikeArmed: true, lastStrikeMs: 0 });
+const cv = { mode: 'off', loading: false, stream: null, landmarker: null, lastVidT: -1, simStart: 0, hands: { L: mkHand(), R: mkHand() } };
+
+async function populateCameras() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const prev = camSel.value;
+    camSel.innerHTML = '';
+    if (!devs.length) { camSel.innerHTML = '<option value="">NO CAMERA</option>'; return; }
+    devs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `CAMERA ${i + 1}`;
+      camSel.appendChild(opt);
+    });
+    if (devs.some(d => d.deviceId === prev)) camSel.value = prev;
+  } catch {}
+}
+populateCameras();
+
+function stopCv() {
+  cv.mode = 'off'; cv.loading = false;
+  if (cv.stream) { cv.stream.getTracks().forEach(t => t.stop()); cv.stream = null; }
+  videoEl.srcObject = null;
+  cv.hands.L.active = cv.hands.R.active = false;
+  camBtn.textContent = 'CAM OFF'; camBtn.classList.remove('on', 'sig');
+  simBtn.textContent = 'SIM HANDS'; simBtn.classList.remove('on', 'sig');
+}
+
+async function startCamera() {
+  stopCv(); ensureAudio(); cv.loading = true; camBtn.textContent = 'LOADING…'; camBtn.classList.add('sig');
+  if (!navigator.mediaDevices?.getUserMedia) { cv.loading = false; camBtn.textContent = 'NO CAM API'; return; }
+  const devId = camSel.value;
+  const videoConstraint = devId
+    ? { deviceId: { exact: devId }, width: { ideal: 640 }, height: { ideal: 480 } }
+    : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' };
+  try {
+    cv.stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false });
+    await populateCameras(); // now device labels are unlocked!
+    const activeTrack = cv.stream.getVideoTracks()[0];
+    const activeId = activeTrack?.getSettings?.().deviceId;
+    if (activeId) camSel.value = activeId;
+    videoEl.srcObject = cv.stream; await videoEl.play();
+    if (!cv.landmarker) {
+      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+      const mk = (d) => HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: d }, runningMode: 'VIDEO', numHands: 2 });
+      try { cv.landmarker = await mk('GPU'); } catch { cv.landmarker = await mk('CPU'); }
+    }
+    cv.loading = false; cv.mode = 'cam'; camBtn.textContent = 'CAM LIVE'; camBtn.classList.add('on');
+  } catch { stopCv(); camBtn.textContent = 'CAM ERROR'; }
+}
+
+camBtn.addEventListener('click', () => (cv.mode === 'cam' || cv.loading) ? stopCv() : startCamera());
+camSel.addEventListener('change', () => { if (cv.mode === 'cam') startCamera(); });
+simBtn.addEventListener('click', () => {
+  ensureAudio();
+  if (cv.mode === 'sim') { stopCv(); return; }
+  stopCv(); cv.mode = 'sim'; cv.simStart = performance.now();
+  simBtn.textContent = 'STOP SIM'; simBtn.classList.add('sig', 'on');
+  if (!state.playing) togglePlay(true);
+});
+
+const STRIKE_WIRE_Y = 0.56; // horizontal normalized wire Right Hand strikes DOWNWARD through!
+
+function processHands(rawList, nowMs) {
+  const tSec = nowMs / 1000;
+  const parsed = rawList.filter(r => r && r.length >= 21).map(raw => {
+    const lms = raw.map(p => ({ x: 1 - p.x, y: p.y }));
+    let cx = 0, cy = 0; for (const k of PALM_IDX) { cx += lms[k].x; cy += lms[k].y; }
+    return { lms, cx: cx / 5, cy: cy / 5 };
+  });
+
+  let hL = null, hR = null;
+  if (parsed.length === 1) { if (parsed[0].cx < 0.45) hL = parsed[0]; else hR = parsed[0]; }
+  else if (parsed.length >= 2) { parsed.sort((a, b) => a.cx - b.cx); hL = parsed[0]; hR = parsed[1]; }
+
+  for (const [id, src] of [['L', hL], ['R', hR]]) {
+    const slot = cv.hands[id];
+    if (src) {
+      slot.active = true; slot.lastSeen = nowMs; slot.lms = src.lms;
+      slot.prevY = slot.y;
+      slot.x = clamp(slot.fx.update(src.cx, tSec), 0, 1);
+      slot.y = clamp(slot.fy.update(src.cy, tSec), 0, 1);
+
+      if (id === 'L') {
+        // LEFT HAND: 5-Notch Magnetic Detent Rail with Schmitt-Trigger Hysteresis + Fast Slam Drop!
+        const normUp = clamp(1 - (slot.y - 0.14) / 0.70, 0, 0.999);
+        const vyDown = slot.fy.dx; // positive = moving downward fast
+        if (state.detentIdx >= 3 && vyDown > 1.45 && normUp < 0.55) {
+          setDetent(2, true); // Fast downward slam triggers visceral drop!
+        } else {
+          setDetent(hystereticBucket(normUp, state.detentIdx, 5, 0.14), false);
+        }
+      } else {
+        // RIGHT HAND: Velocity-Struck Air Wire across 9 Magnetic Strings!
+        const rNormX = clamp((slot.x - 0.34) / 0.60, 0, 0.999);
+        slot.lane = hystereticBucket(rNormX, slot.lane, 9, 0.14);
+        // Arm strike when hand rises above wire; fire on clean downward crossing!
+        if (slot.y < STRIKE_WIRE_Y - 0.045) slot.strikeArmed = true;
+        if (slot.strikeArmed && slot.prevY <= STRIKE_WIRE_Y && slot.y >= STRIKE_WIRE_Y && (nowMs - slot.lastStrikeMs) > 130) {
+          slot.strikeArmed = false; slot.lastStrikeMs = nowMs;
+          const speedVel = clamp(0.45 + slot.fy.dx * 0.42, 0.42, 1.0);
+          pluckString(slot.lane, speedVel, true);
+        }
+      }
+    } else if (nowMs - slot.lastSeen > 350) {
+      // 350ms occlusion coasting before releasing tracking (prevents momentary glitch dropouts!)
+      slot.active = false; slot.lms = null; slot.fx.reset(); slot.fy.reset();
+    }
+  }
+}
+
+function synthHand(cx, cy, side, t) {
+  // Inject realistic raw webcam jitter (±0.004) to demonstrate our 3-stage stabilizer!
+  const jx = (Math.random() - 0.5) * 0.008, jy = (Math.random() - 0.5) * 0.008;
+  const j = (ox, oy) => ({ x: clamp(1 - (cx + ox + jx), 0, 1), y: clamp(cy + oy + jy, 0, 1) });
+  return [
+    j(0, 0.07), j(-side * 0.03, 0.045), j(-side * 0.055, 0.02), j(-side * 0.07, -0.01), j(-side * 0.08, -0.035),
+    j(-side * 0.03, -0.02), j(-side * 0.042, -0.055), j(-side * 0.048, -0.088), j(-side * 0.052, -0.118),
+    j(-side * 0.008, -0.025), j(-side * 0.01, -0.07), j(-side * 0.01, -0.10), j(-side * 0.01, -0.13),
+    j(side * 0.015, -0.02), j(side * 0.02, -0.06), j(side * 0.022, -0.095), j(side * 0.024, -0.12),
+    j(side * 0.035, -0.01), j(side * 0.042, -0.045), j(side * 0.048, -0.07), j(side * 0.052, -0.09),
+  ];
+}
+
+function tickCv(nowMs) {
+  if (cv.mode === 'cam' && cv.landmarker && videoEl.readyState >= 2 && videoEl.currentTime !== cv.lastVidT) {
+    cv.lastVidT = videoEl.currentTime;
+    try { const r = cv.landmarker.detectForVideo(videoEl, Math.round(nowMs)); processHands(r?.landmarks || [], nowMs); } catch {}
+  } else if (cv.mode === 'sim') {
+    const t = (nowMs - cv.simStart) / 1000;
+    const yL = 0.52 - 0.30 * Math.sin(t * 0.45);
+    const xR = 0.64 + 0.22 * Math.sin(t * 0.65);
+    // Clean periodic downward hand strike crossing STRIKE_WIRE_Y!
+    const strikePh = (t * 0.95) % 1;
+    const yR = strikePh < 0.55 ? lerp(0.42, 0.46, strikePh / 0.55) : strikePh < 0.72 ? lerp(0.46, 0.66, (strikePh - 0.55) / 0.17) : lerp(0.66, 0.42, (strikePh - 0.72) / 0.28);
+    processHands([synthHand(0.18, yL, -1, t), synthHand(xR, yR, 1, t)], nowMs);
+  }
+}
+
+// ==================== 5. KEYBOARD / MOUSE FALLBACK & CLEAN RENDERER ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize); resize();
+
+canvas.addEventListener('pointerdown', (e) => {
+  const mx = e.clientX, my = e.clientY;
+  // Click left detent rail or right string lanes directly with mouse!
+  if (mx < W * 0.28) {
+    const idx = clamp(Math.floor((1 - clamp((my - H * 0.14) / (H * 0.70), 0, 0.999)) * 5), 0, 4);
+    setDetent(idx, false);
+  } else {
+    const lane = clamp(Math.floor(clamp((mx - W * 0.34) / (W * 0.60), 0, 0.999) * 9), 0, 8);
+    pluckString(lane, 0.88, false);
+  }
+});
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (!e.repeat && e.key >= '1' && e.key <= '9') pluckString(Number(e.key) - 1, 0.90, false);
+});
+
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  tickCv(nowMs);
+  state.dropFlash = Math.max(0, state.dropFlash - dt * 1.6);
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // 1. LEFT: 5-Notch Magnetic Detent Rail (tactile snap zones!)
+  const railX = Math.round(W * 0.16), rTop = Math.round(H * 0.16), rBot = Math.round(H * 0.84), notchH = (rBot - rTop) / 5;
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(railX + 0.5, rTop); ctx.lineTo(railX + 0.5, rBot); ctx.stroke();
+
+  ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 5; i++) {
+    const ny = rBot - (i + 0.5) * notchH, active = state.detentIdx === i;
+    ctx.strokeStyle = mixInk(active ? 1 : 0, active ? 0.92 : 0.24); ctx.lineWidth = active ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(railX - (active ? 14 : 7), ny); ctx.lineTo(railX + (active ? 14 : 7), ny); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.fillStyle = mixInk(active ? 1 : 0, active ? 0.96 : 0.34);
+    ctx.fillText(DETENTS[i], railX + 20, ny);
+  }
+
+  // 2. RIGHT: 9 Vibrating Air Strings + Horizontal Strike Wire!
+  const sL = Math.round(W * 0.36), sR = Math.round(W * 0.92), wireY = Math.round(H * STRIKE_WIRE_Y);
+  const sTop = Math.round(H * 0.18), sBot = Math.round(H * 0.84);
+
+  // Horizontal Strike Wire (crossing downward plucks the active string!)
+  ctx.strokeStyle = mixInk(state.dropFlash, 0.45); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(sL - 18, wireY + 0.5); ctx.lineTo(sR + 18, wireY + 0.5); ctx.stroke();
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.fillText('STRIKE WIRE ↓', sR + 18, wireY - 8);
+
+  for (let i = 0; i < 9; i++) {
+    const sx = lerp(sL, sR, i / 8), st = state.strings[i];
+    st.amp *= Math.exp(-dt * 4.2); st.phase += dt * (28 + i * 3.5);
+    st.glow *= Math.exp(-dt * 4.8); st.heat = Math.max(0, st.heat - dt * 2.2);
+    const aimed = cv.hands.R.active && cv.hands.R.lane === i;
+
+    // Vibrating standing-wave string geometry (immediate physical pluck feel!)
+    ctx.strokeStyle = mixInk(aimed ? 1 : st.heat, aimed ? 0.86 : 0.16 + st.glow * 0.74);
+    ctx.lineWidth = aimed || st.amp > 1 ? 1.5 : 0.9;
+    ctx.beginPath();
+    for (let k = 0; k <= 24; k++) {
+      const u = k / 24, y = lerp(sTop, sBot, u);
+      const env = Math.sin(u * Math.PI);
+      const dx = st.amp > 0.2 ? Math.sin(st.phase) * st.amp * env : 0;
+      k ? ctx.lineTo(sx + dx, y) : ctx.moveTo(sx + dx, y);
+    }
+    ctx.stroke();
+
+    // Strike intersection dot on the horizontal wire
+    ctx.fillStyle = mixInk(aimed ? 1 : st.heat, aimed ? 1 : 0.40 + st.glow * 0.60);
+    ctx.beginPath(); ctx.arc(sx, wireY, (aimed ? 5.2 : 2.6) + st.glow * 2.4, 0, Math.PI * 2); ctx.fill();
+
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(aimed ? 1 : st.heat, 0.30 + st.glow * 0.65);
+    ctx.fillText(`${i + 1}·${NOTES[i].name}`, sx, sBot + 16);
+  }
+
+  // 3. Simple Clean Hand Skeleton Lines (no fancy hand styles — pure thin white lines + 1 dot!)
+  for (const id of ['L', 'R']) {
+    const h = cv.hands[id]; if (!h.active || !h.lms) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,0.42)'; ctx.lineWidth = 1;
+    for (const [i0, i1] of HAND_BONES) {
+      const a = h.lms[i0], b = h.lms[i1];
+      ctx.beginPath(); ctx.moveTo(a.x * W, a.y * H); ctx.lineTo(b.x * W, b.y * H); ctx.stroke();
+    }
+    // Filtered stable palm marker
+    ctx.strokeStyle = '#ff5a1f'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(h.x * W, h.y * H, 7, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

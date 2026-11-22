@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>56 — Ergonomic Spline Curve Sculptor (Drag × Scrollwheel 2D + 6 Rave Events)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #phaseHud { color: rgba(255,255,255,0.68); font-size: 10px; letter-spacing: 0.09em; }
+  #phaseHud.hot { color: #ff5a1f; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 880px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>56</b> · ERGONOMIC CURVE · <b>CLICK / DRAG</b> beat-locked spline waypoints (zero hand-tremor!) · <b>SCROLL on node</b> cycle 7 DJ events · <b>SCROLL on curve / while dragging</b> warp 2nd dim (curvature × 3:2 spice) · <b>RMB</b> remove · <b>SPACE</b> play</span>
+  <div class="grp">
+    <span id="phaseHud">FLOW</span>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 56 — ERGONOMIC SPLINE CURVE SCULPTOR (DRAG × SCROLLWHEEL = 2D + 7 DJ EVENTS)
+//   Fixes #48's tremor & moving-tape ergonomics:
+//     1. BEAT-ANCHORED WAYPOINT SPLINE: Waypoints ride WITH the rolling tape &
+//        snap cleanly to beat boundaries — dragging moves smoothly with zero tremor!
+//     2. DRAG × SCROLLWHEEL 2ND DIMENSION:
+//          * Drag waypoint (X = Energy, Y = Beat)
+//          * Scrollwheel ON waypoint → cycles 7 DJ Events (beyond Freeze & Drop!):
+//            FLOW · FREEZE · DROP · FAKEOUT · LOOP-HALVE · TAPE-BRAKE · BASS-KILL
+//          * Scrollwheel ON curve (or WHILE DRAGGING!) → sculpts 2nd dimension:
+//            Curve Tension / Concavity × Polymetric 3:2 Texture Width!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.60 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), subHz: semiHz(-45), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), subHz: semiHz(-43), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 5] },
+];
+
+// 7 distinct Rave DJ Moment Types (scroll on any waypoint to cycle!)
+const EVENTS = ['FLOW', 'FREEZE', 'DROP', 'FAKEOUT', 'LOOP-HALVE', 'TAPE-BRAKE', 'BASS-KILL'];
+
+const BASE_BPM = 120, STEP_S = 60 / BASE_BPM / 4, FUTURE_STEPS = 64, LOOKAHEAD = 0.095, SAFE = 0.0002;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. INSTRUMENT-FIRST AUDIO ENGINE ====================
+let actx = null, masterBus = null, warmLP = null, washHP = null, dryGate = null, scDuck = null;
+let hallSend = null, hallOut = null, subOsc = null, subGain = null, noiseBuf = null, uiBus = null;
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = actx.sampleRate;
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.13; comp.connect(actx.destination);
+  masterBus = actx.createGain(); masterBus.gain.value = 0.86; masterBus.connect(comp);
+  uiBus = actx.createGain(); uiBus.gain.value = 0.22; uiBus.connect(comp);
+
+  warmLP = actx.createBiquadFilter(); warmLP.type = 'lowpass'; warmLP.frequency.value = 2500; warmLP.Q.value = 0.65;
+  warmLP.connect(masterBus);
+  washHP = actx.createBiquadFilter(); washHP.type = 'highpass'; washHP.frequency.value = 22; washHP.Q.value = 0.7;
+  dryGate = actx.createGain(); dryGate.gain.value = 1.0;
+  scDuck = actx.createGain(); scDuck.gain.value = 1.0;
+  scDuck.connect(washHP); washHP.connect(dryGate); dryGate.connect(warmLP);
+
+  const irLen = Math.floor(sr * 2.8), ir = actx.createBuffer(2, irLen, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < irLen; i++) { lp = lp * 0.62 + (Math.random() * 2 - 1) * 0.38; d[i] = lp * Math.pow(1 - i / irLen, 2.35) * 0.52; }
+  }
+  const conv = actx.createConvolver(); conv.buffer = ir;
+  const revHP = actx.createBiquadFilter(); revHP.type = 'highpass'; revHP.frequency.value = 340;
+  hallSend = actx.createGain(); hallSend.gain.value = 0.30; hallOut = actx.createGain(); hallOut.gain.value = 0.52;
+  hallSend.connect(conv); conv.connect(revHP); revHP.connect(hallOut); hallOut.connect(masterBus);
+
+  subOsc = actx.createOscillator(); subOsc.type = 'sine'; subOsc.frequency.value = PROG[0].subHz;
+  const subLP = actx.createBiquadFilter(); subLP.type = 'lowpass'; subLP.frequency.value = 120;
+  subGain = actx.createGain(); subGain.gain.value = SAFE;
+  subOsc.connect(subLP); subLP.connect(subGain); subGain.connect(scDuck); subOsc.start();
+
+  noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.055), sr);
+  const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  return actx;
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  const ctx = ensureAudio(), n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, isMuted = false, pitchMul = 1.0, stereoWide = 1.0, dingHz = null } = opts;
+  const isDing = idx === 0, freq = ((isDing && dingHz) ? dingHz : n.hz) * pitchMul;
+  const t0 = Math.max(ctx.currentTime + 0.002, when), v = clamp(vel, 0.10, 1.05);
+  const sus = isMuted ? 0.14 : clamp(0.40 + dur * 0.28, 0.40, 2.45) * (isDing ? 1.38 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = ctx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.28), t0);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(clamp((isDing ? 0 : n.pan) * stereoWide, -0.92, 0.92), t0);
+  out.connect(pan); pan.connect(scDuck); pan.connect(hallSend);
+  for (const [r, amp, dm] of [[1, 0.92, 1], [1.003, 0.18, 0.86], [2, 0.26, 0.68], [3, 0.46, 0.66]]) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    // Tape-brake pitch droop if pitchMul < 0.95!
+    if (pitchMul < 0.96) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq * r * 0.72), t0 + 0.24);
+    const atk = isMuted ? 0.002 : (r === 3 ? 0.020 : 0.005), dec = Math.max(0.055, sus * dm);
+    g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(SAFE, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+}
+
+function playGuKick(when, power = 0.85, heavy = false) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(heavy ? 132 : 118, t0); o.frequency.exponentialRampToValueAtTime(heavy ? 41.2 : 58, t0 + 0.085);
+  g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(power * (heavy ? 0.74 : 0.48), t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(SAFE, t0 + (heavy ? 0.36 : 0.22));
+  o.connect(g); g.connect(washHP); o.start(t0); o.stop(t0 + 0.40);
+  scDuck.gain.cancelScheduledValues(t0); scDuck.gain.setValueAtTime(1.0, t0);
+  scDuck.gain.linearRampToValueAtTime(heavy ? 0.40 : 0.75, t0 + 0.012); scDuck.gain.exponentialRampToValueAtTime(1.0, t0 + STEP_S * 2.4);
+}
+
+function playTak(when, heat = 0.0, vel = 0.70, panVal = 0.18) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when), h = clamp(heat, 0, 1);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(panVal, t0); pan.connect(washHP);
+  const ns = ctx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = lerp(2250, 3600, h); bp.Q.value = lerp(3.2, 5.2, h);
+  const ng = ctx.createGain(); ng.gain.setValueAtTime(vel * 0.34, t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ng.connect(hallSend); ns.start(t0);
+}
+
+function playDetent(hz = 1320) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'triangle'; o.frequency.setValueAtTime(hz, t0); o.frequency.exponentialRampToValueAtTime(hz * 0.5, t0 + 0.014);
+  g.gain.setValueAtTime(0.08, t0); g.gain.exponentialRampToValueAtTime(SAFE, t0 + 0.016);
+  o.connect(g); g.connect(uiBus); o.start(t0); o.stop(t0 + 0.02);
+}
+
+// ==================== 2. BEAT-LOCKED WAYPOINT SPLINE (2D: ENERGY × CURVATURE/SPICE) ====================
+// Each waypoint: { id, step, E (0..1), bend (-1..+1 = 2nd dimension via scrollwheel!), event ('FLOW'|'FREEZE'|'DROP'|...) }
+const state = {
+  playing: false, playhead: 16, anchorTime: 0, anchorStep: 16, nextStep: 16, nextWpId: 1,
+  waypoints: [],
+  motif: [0, 4, 6, 8, 4, 6, 7, 4],
+  lociGlow: new Float32Array(9), dropFlash: 0, liveLabel: 'FLOW',
+};
+
+function addWaypoint(step, E, event = 'FLOW', bend = 0) {
+  const wp = { id: state.nextWpId++, step: Math.round(step), E: clamp(E, 0.04, 0.96), event, bend: clamp(bend, -1, 1) };
+  state.waypoints.push(wp);
+  state.waypoints.sort((a, b) => a.step - b.step);
+  return wp;
+}
+
+// Evaluate smooth 2D spline (Energy + 2nd-dim Texture/Bend) at any continuous step!
+function sampleCurve(s) {
+  const wps = state.waypoints;
+  if (!wps.length) return { E: 0.46, bend: 0, activeEvent: 'FLOW', eventAge: 999 };
+  if (s <= wps[0].step) return { E: wps[0].E, bend: wps[0].bend, activeEvent: 'FLOW', eventAge: 999 };
+  if (s >= wps[wps.length - 1].step) {
+    const last = wps[wps.length - 1];
+    return { E: last.E, bend: last.bend, activeEvent: last.event, eventAge: s - last.step };
+  }
+
+  let i = 0;
+  while (i < wps.length - 2 && wps[i + 1].step < s) i++;
+  const a = wps[i], b = wps[i + 1];
+  const u = clamp((s - a.step) / Math.max(1, b.step - a.step), 0, 1);
+
+  // Smoothstep bent by 2nd-dimension scrollwheel `bend` (-1 concave slow-cook ↔ +1 convex rapid surge)!
+  const smooth = u * u * (3 - 2 * u);
+  const expPow = Math.pow(2, -a.bend * 1.35);
+  const shaped = Math.pow(smooth, expPow);
+  const E = lerp(a.E, b.E, shaped);
+  const bend = lerp(a.bend, b.bend, u);
+
+  // Determine active DJ event triggered by preceding waypoint `a`!
+  const age = s - a.step;
+  const durMap = { FREEZE: 8, DROP: 24, FAKEOUT: 24, 'LOOP-HALVE': 16, 'TAPE-BRAKE': 8, 'BASS-KILL': 16, FLOW: 0 };
+  const activeEvent = (a.event !== 'FLOW' && age < (durMap[a.event] || 0)) ? a.event : 'FLOW';
+  return { E, bend, activeEvent, eventAge: age, isEventStart: a.event !== 'FLOW' && Math.round(s) === a.step };
+}
+
+function ensureWaypointsAhead() {
+  const cur = state.playhead;
+  // Prune old waypoints far behind past
+  state.waypoints = state.waypoints.filter(w => w.step >= cur - 40);
+  const lastStep = state.waypoints.length ? state.waypoints[state.waypoints.length - 1].step : Math.floor(cur);
+  if (lastStep < cur + FUTURE_STEPS + 16) {
+    addWaypoint(Math.ceil((lastStep + 16) / 16) * 16, 0.46, 'FLOW', 0);
+  }
+}
+
+// ==================== 3. SCHEDULER (7 DISTINCT RAVE EVENTS + 2ND DIM SPICE) ====================
+function scheduleStep(s, t0) {
+  ensureWaypointsAhead();
+  const c = sampleCurve(s), bs = mod16(s), bar = Math.floor(s / 16), ch = PROG[((bar % 4) + 4) % 4];
+  const ev = c.activeEvent, spice = clamp((c.bend + 1) * 0.5, 0, 1); // scrollwheel 2nd dim -> 3:2 spice & brightness!
+  const ms = Math.max(0, (t0 - actx.currentTime) * 1000);
+
+  // 1. Audio Bus Shaping for all 7 DJ Events
+  if (ev === 'FREEZE') {
+    dryGate.gain.setTargetAtTime(SAFE, t0, 0.010);
+    hallSend.gain.setTargetAtTime(SAFE, t0, 0.012); hallOut.gain.setTargetAtTime(0.80, t0, 0.04);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.010);
+    if (c.isEventStart) playPan(8, t0, 0.72, 6, { stereoWide: 1.3 });
+    return;
+  }
+
+  dryGate.gain.setTargetAtTime(1.0, t0, 0.014);
+  if (ev === 'TAPE-BRAKE') {
+    // Progressive pitch droop + LPF darkening into dead breath!
+    const frac = clamp(c.eventAge / 8, 0, 1);
+    warmLP.frequency.setTargetAtTime(lerp(2400, 620, frac), t0, 0.03);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.015);
+    if (bs % 2 === 0 && frac < 0.75) {
+      playPan(state.motif[bs % state.motif.length], t0, 0.78 * (1 - frac * 0.4), 2, { pitchMul: lerp(0.95, 0.68, frac), dingHz: ch.dingHz });
+    }
+    return;
+  }
+
+  if (ev === 'BASS-KILL') {
+    // Surgical low-end kill: HPF @ 320Hz + sub mute while handpan melody & Tak dance solo!
+    washHP.frequency.setTargetAtTime(360, t0, 0.02); washHP.Q.setTargetAtTime(1.2, t0, 0.03);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.012);
+    warmLP.frequency.setTargetAtTime(lerp(2400, 3400, spice), t0, 0.04);
+  } else if (ev === 'LOOP-HALVE') {
+    const prog = clamp(c.eventAge / 16, 0, 1);
+    const slice = prog > 0.75 ? 1 : prog > 0.45 ? 2 : 4;
+    washHP.frequency.setTargetAtTime(lerp(60, 1200, prog), t0, 0.03); washHP.Q.setTargetAtTime(lerp(0.9, 3.4, prog), t0, 0.03);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.015);
+    const mIdx = clamp(state.motif[(s % slice) % state.motif.length] + (prog > 0.5 ? 1 : 0), 1, 8);
+    playPan(mIdx, t0, lerp(0.58, 0.94, prog), 1, { isMuted: prog > 0.5 && (s % 2 === 1), dingHz: ch.dingHz });
+    if (bs % slice === 0) playTak(t0, prog, lerp(0.45, 0.94, prog), s % 2 ? 0.22 : -0.22);
+    setTimeout(() => { state.lociGlow[mIdx] = 1; }, ms);
+    return;
+  } else {
+    // FLOW / DROP / FAKEOUT
+    const isDrop = ev === 'DROP' || (ev === 'FAKEOUT' && c.eventAge >= 12);
+    const isHalf = ev === 'FAKEOUT' && c.eventAge < 12;
+    washHP.frequency.setTargetAtTime(c.E > 0.72 && ev === 'FLOW' ? lerp(28, 720, (c.E - 0.72) / 0.28) : 22, t0, 0.04);
+    washHP.Q.setTargetAtTime(0.75, t0, 0.04);
+    warmLP.frequency.setTargetAtTime(lerp(1200, 3300, clamp(c.E * 0.7 + spice * 0.4, 0, 1)), t0, 0.05);
+    subOsc.frequency.setTargetAtTime(ch.subHz, t0, 0.025);
+    subGain.gain.setTargetAtTime(isDrop ? 0.30 : c.E > 0.32 ? 0.16 * c.E : SAFE, t0, 0.025);
+
+    if (c.isEventStart && (ev === 'DROP' || ev === 'FAKEOUT')) {
+      playGuKick(t0, 1.0, true); playPan(0, t0, 0.98, 7, { dingHz: ch.dingHz, stereoWide: 1.3 });
+      setTimeout(() => { state.dropFlash = 1; }, ms);
+    } else if (isDrop && bs % 4 === 0) playGuKick(t0, 0.95, true);
+    else if (isHalf && (bs === 0 || bs === 10)) playGuKick(t0, 0.92, true);
+    else if (c.E > 0.30 && (bs === 0 || bs === 8)) playGuKick(t0, 0.65, false);
+  }
+
+  // Handpan weave + 2nd-dimension scrollwheel spice (high spice injects 3:2 dotted-8th sparkle!)
+  if (bs === 4 || bs === 12) { if (c.E > 0.35 || ev === 'BASS-KILL') playTak(t0, spice * 0.4, 0.72, 0.2); }
+  else if (bs % 4 === 3) playTak(t0, 0.12, 0.40, -0.22);
+
+  if (bs === 0 || (bs === 6 && c.E > 0.25) || (bs === 12 && c.E > 0.25)) {
+    if (ev !== 'BASS-KILL') {
+      playPan(0, t0, bs === 0 ? 0.92 : 0.74, 4, { dingHz: ch.dingHz });
+      setTimeout(() => { state.lociGlow[0] = 0.95; }, ms);
+    }
+  } else if ((spice > 0.62 && s % 3 === 0) || bs === 3 || bs === 10 || bs === 14) {
+    const idx = ch.pool[1 + ((bs + bar) % (ch.pool.length - 1))];
+    playPan(idx, t0, bs % 4 === 3 ? 0.90 : 0.80, 2, { stereoWide: 0.9 + spice * 0.45 });
+    setTimeout(() => { state.lociGlow[idx] = 1; }, ms);
+  } else if (c.E > 0.20 && bs % 4 !== 1) {
+    const gIdx = ch.pool[(bs + bar) % ch.pool.length];
+    playPan(gIdx, t0 + 0.002, 0.26, 1, { isGhost: true });
+    setTimeout(() => { state.lociGlow[gIdx] = Math.max(state.lociGlow[gIdx], 0.32); }, ms);
+  }
+}
+
+setInterval(() => {
+  if (!state.playing || !actx) return;
+  state.playhead = state.anchorStep + (actx.currentTime - state.anchorTime) / STEP_S;
+  while (state.nextStep <= state.playhead + LOOKAHEAD / STEP_S) {
+    const s = state.nextStep++;
+    scheduleStep(s, Math.max(actx.currentTime + 0.003, state.anchorTime + (s - state.anchorStep) * STEP_S));
+  }
+}, 20);
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl'), phaseHud = document.getElementById('phaseHud');
+function togglePlay() {
+  ensureAudio(); state.playing = !state.playing;
+  if (state.playing) { state.anchorTime = actx.currentTime; state.anchorStep = state.playhead; state.nextStep = Math.ceil(state.playhead); }
+  else if (subGain) subGain.gain.setTargetAtTime(SAFE, actx.currentTime, 0.02);
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+// ==================== 4. TREMOR-PROOF WAYPOINT + SCROLLWHEEL 2D INTERACTION ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, nowY = 0, stepPx = 8, curveX0 = 120, curveW = 500;
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  nowY = Math.round(H * 0.28);
+  stepPx = Math.max(6, (H - nowY - 30) / FUTURE_STEPS);
+  curveW = clamp(W * 0.58, 280, 680);
+  curveX0 = Math.round((W - curveW) * 0.5);
+}
+window.addEventListener('resize', layout); layout();
+
+const yOfStep = (s) => nowY + (s - state.playhead) * stepPx;
+const stepOfY = (y) => state.playhead + (y - nowY) / stepPx;
+const xOfE = (e) => curveX0 + clamp(e, 0, 1) * curveW;
+const eOfX = (x) => clamp((x - curveX0) / curveW, 0.04, 0.96);
+
+function hitWaypoint(mx, my) {
+  for (const w of state.waypoints) {
+    if (w.step < state.playhead - 2) continue;
+    if (Math.hypot(mx - xOfE(w.E), my - yOfStep(w.step)) <= 16) return w;
+  }
+  return null;
+}
+
+const drag = { wp: null, hoverWp: null };
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  ensureAudio();
+  const hit = hitWaypoint(mx, my);
+  if (e.button === 2) {
+    if (hit && state.waypoints.length > 2) { state.waypoints = state.waypoints.filter(w => w.id !== hit.id); playDetent(640); }
+    return;
+  }
+  canvas.setPointerCapture(e.pointerId);
+  if (hit) { drag.wp = hit; playDetent(1320); return; }
+  // Click anywhere in future curve box -> drops a crisp beat-snapped waypoint & lets you drag immediately!
+  if (mx >= curveX0 - 16 && mx <= curveX0 + curveW + 16 && my > nowY + 8) {
+    const snapStep = Math.max(Math.ceil(state.playhead / 4) * 4 + 4, Math.round(stepOfY(my) / 4) * 4);
+    drag.wp = addWaypoint(snapStep, eOfX(mx), 'FLOW', 0);
+    playDetent(1500);
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.wp) {
+    // Beat-snapped drag: completely immune to hand tremor & moving tape!
+    drag.wp.E = eOfX(mx);
+    drag.wp.step = clamp(Math.round(stepOfY(my) / 4) * 4, Math.ceil(state.playhead) + 2, Math.floor(state.playhead) + FUTURE_STEPS);
+    state.waypoints.sort((a, b) => a.step - b.step);
+    return;
+  }
+  drag.hoverWp = hitWaypoint(mx, my);
+  canvas.style.cursor = drag.hoverWp ? 'grab' : (mx >= curveX0 && mx <= curveX0 + curveW && my > nowY + 8 ? 'crosshair' : 'default');
+});
+canvas.addEventListener('pointerup', () => { drag.wp = null; });
+
+// SCROLLWHEEL = 2ND DIMENSION!
+//   * Scrolling WHILE DRAGGING a node (or on a segment): warps 2nd-dim CURVATURE & 3:2 SPICE!
+//   * Scrolling while hovering a waypoint (not dragging): cycles all 7 DJ Events!
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  ensureAudio();
+  const dir = Math.sign(e.deltaY);
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.wp) {
+    // Combined Drag + Scrollwheel -> sculpts 2nd dimension live!
+    drag.wp.bend = clamp(drag.wp.bend - dir * 0.22, -1, 1);
+    playDetent(900 + (drag.wp.bend + 1) * 420);
+    return;
+  }
+  const hit = hitWaypoint(mx, my);
+  if (hit) {
+    const idx = (EVENTS.indexOf(hit.event) + (dir > 0 ? 1 : -1) + EVENTS.length) % EVENTS.length;
+    hit.event = EVENTS[idx];
+    if (hit.event === 'FREEZE' || hit.event === 'TAPE-BRAKE') hit.E = 0.08;
+    else if (hit.event === 'DROP' || hit.event === 'FAKEOUT') hit.E = 0.88;
+    else if (hit.event === 'LOOP-HALVE') hit.E = 0.78;
+    playDetent(hit.event === 'DROP' ? 1680 : hit.event === 'FREEZE' ? 680 : 1180);
+    return;
+  }
+  // Scroll over curve segment -> warps preceding waypoint's 2nd-dim curvature & texture!
+  const s = stepOfY(my);
+  for (let i = state.waypoints.length - 1; i >= 0; i--) {
+    if (state.waypoints[i].step <= s) {
+      state.waypoints[i].bend = clamp(state.waypoints[i].bend - dir * 0.20, -1, 1);
+      playDetent(900 + (state.waypoints[i].bend + 1) * 420);
+      break;
+    }
+  }
+}, { passive: false });
+
+window.addEventListener('keydown', (e) => { if (e.code === 'Space') { e.preventDefault(); togglePlay(); } });
+
+// ==================== 5. ULTRA-CLEAN SPLINE RENDERER ====================
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  if (state.playing && actx) state.playhead = state.anchorStep + (actx.currentTime - state.anchorTime) / STEP_S;
+  ensureWaypointsAhead();
+  const nowC = sampleCurve(state.playhead);
+  state.liveLabel = nowC.activeEvent;
+  phaseHud.textContent = `${nowC.activeEvent} · E ${Math.round(nowC.E * 100)}% · 2D ${nowC.bend >= 0 ? '+' : ''}${Math.round(nowC.bend * 100)}%`;
+  phaseHud.classList.toggle('hot', nowC.activeEvent !== 'FLOW');
+  state.dropFlash = Math.max(0, state.dropFlash - dt * 1.6);
+  for (let i = 0; i < 9; i++) state.lociGlow[i] *= Math.exp(-dt * 5.2);
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // Beat / Bar horizontal ticks
+  const minS = Math.floor(stepOfY(44)), maxS = Math.ceil(stepOfY(H - 20));
+  for (let s = minS; s <= maxS; s++) {
+    if (s % 4 !== 0) continue;
+    const y = Math.round(yOfStep(s)) + 0.5; if (y < 46 || y > H - 20) continue;
+    const isBar = mod16(s) === 0;
+    ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.035)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(curveX0, y); ctx.lineTo(curveX0 + curveW, y); ctx.stroke();
+    if (isBar && s >= 0) {
+      ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      ctx.fillText(`B${Math.floor(s / 16) + 1}`, curveX0 - 10, y + 3);
+    }
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(curveX0 + 0.5, 48.5, curveW, H - 70);
+
+  // Render smooth spline ribbon — line width & subtle tint reflect 2nd-dimension Scrollwheel Bend/Spice!
+  for (let s = Math.max(minS, Math.floor(state.playhead) - 16); s < maxS; s++) {
+    const c0 = sampleCurve(s), c1 = sampleCurve(s + 1);
+    const y0 = yOfStep(s), y1 = yOfStep(s + 1);
+    if (y1 < 48 || y0 > H - 22) continue;
+    const isHot = c0.activeEvent !== 'FLOW' || Math.abs(c0.bend) > 0.35;
+    const lw = clamp(1.6 + (c0.bend + 1) * 1.3, 1.0, 4.2); // 2nd-dim visually thickens/sharpens spline!
+    ctx.strokeStyle = mixInk(c0.activeEvent !== 'FLOW' ? 0.95 : clamp(c0.bend, 0, 1) * 0.75, s < state.playhead ? 0.32 : 0.88);
+    ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.moveTo(xOfE(c0.E), y0); ctx.lineTo(xOfE(c1.E), y1); ctx.stroke();
+  }
+
+  // Render Waypoints (crisp interactive handles + Event Tags + 2nd-Dim Curvature Ticks!)
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textBaseline = 'middle';
+  for (const w of state.waypoints) {
+    const y = yOfStep(w.step); if (y < 48 || y > H - 22) continue;
+    const x = xOfE(w.E), active = drag.wp === w || drag.hoverWp === w;
+    const isEv = w.event !== 'FLOW', past = w.step < state.playhead;
+    const r = active ? 7.5 : isEv ? 6.2 : 4.8;
+
+    ctx.fillStyle = isEv || active ? '#ff5a1f' : '#000';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = mixInk(isEv || active ? 1 : 0, past ? 0.30 : 0.94); ctx.lineWidth = 1.4; ctx.stroke();
+
+    // 2nd-dim scrollwheel indicator ticks flanking the handle
+    if (Math.abs(w.bend) > 0.08) {
+      const span = 10 + Math.abs(w.bend) * 18;
+      ctx.strokeStyle = mixInk(w.bend > 0 ? 0.9 : 0.2, past ? 0.2 : 0.65); ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(x - span, y); ctx.lineTo(x - r - 3, y); ctx.moveTo(x + r + 3, y); ctx.lineTo(x + span, y); ctx.stroke();
+    }
+
+    if (isEv || active) {
+      ctx.textAlign = 'left'; ctx.fillStyle = mixInk(isEv ? 1 : 0, past ? 0.32 : 0.94);
+      ctx.fillText(`${w.event}${Math.abs(w.bend) > 0.08 ? ` (${w.bend > 0 ? '+' : ''}${Math.round(w.bend * 100)}%)` : ''}`, x + 13, y);
+    }
+  }
+
+  // NOW Horizon + Live Playhead Dot + Subtle Handpan Loci Strip
+  ctx.strokeStyle = mixInk(state.dropFlash, 0.75); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(curveX0 - 10, nowY + 0.5); ctx.lineTo(curveX0 + curveW + 10, nowY + 0.5); ctx.stroke();
+  ctx.fillStyle = mixInk(nowC.activeEvent !== 'FLOW' ? 1 : 0, 1);
+  ctx.beginPath(); ctx.arc(xOfE(nowC.E), nowY, 4.5, 0, Math.PI * 2); ctx.fill();
+
+  for (let i = 0; i < 9; i++) {
+    const lx = lerp(curveX0 + 24, curveX0 + curveW - 24, i / 8), g = state.lociGlow[i];
+    ctx.fillStyle = `rgba(255,255,255,${(0.18 + g * 0.80).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(lx, nowY - 16, 1.8 + g * 2.8, 0, Math.PI * 2); ctx.fill();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// Seed an immediately expressive 4-bar spline showing Loop-Halve -> Freeze -> Drop!
+addWaypoint(16, 0.44, 'FLOW', 0.0);
+addWaypoint(32, 0.78, 'LOOP-HALVE', 0.45);
+addWaypoint(48, 0.06, 'FREEZE', -0.4);
+addWaypoint(56, 0.90, 'DROP', 0.55);
+addWaypoint(76, 0.50, 'BASS-KILL', 0.2);
+addWaypoint(92, 0.46, 'FLOW', 0.0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
