@@ -1,0 +1,1734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>43 — Handpan Insights Soundboard (Isolation & Composition Lab)</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #131722;
+    --panel-2: #191f2e;
+    --border: #263046;
+    --text: #e6ecf7;
+    --muted: #8b98b3;
+    --accent: #6ee7b7;
+    --c-ding: #f59e0b;
+    --c-ghost: #38bdf8;
+    --c-perc: #f43f5e;
+    --c-melody: #a78bfa;
+    --c-chord: #34d399;
+    --c-prog: #fb923c;
+    --c-mod: #22d3ee;
+    --c-ctrl: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(11, 13, 18, 0.94);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+  }
+  .top-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .brand h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .brand span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .transport {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  button, select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+  button:hover, select:hover { border-color: #4a5c82; }
+  button.primary {
+    background: #10b981;
+    color: #04130d;
+    border-color: #34d399;
+    font-weight: 700;
+  }
+  button.primary.playing {
+    background: #ef4444;
+    color: #fff;
+    border-color: #f87171;
+  }
+  button.danger { border-color: #7f1d1d; color: #fca5a5; }
+  .pill-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    border-radius: 7px;
+  }
+  .pill-group label { color: var(--muted); font-size: 11px; }
+  .pill-group input[type="range"] { width: 78px; accent-color: var(--accent); }
+
+  /* Live Playhead & Telemetry */
+  .playhead-bar {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+  }
+  .steps-grid {
+    display: grid;
+    grid-template-columns: repeat(16, 1fr);
+    gap: 3px;
+  }
+  .step-cell {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 2px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--muted);
+    position: relative;
+  }
+  .step-cell.downbeat { border-color: #3b4b6b; color: #cbd5e1; font-weight: 700; }
+  .step-cell.pickup { border-bottom: 2px solid rgba(244, 63, 94, 0.45); }
+  .step-cell.now {
+    background: #1e293b;
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 8px rgba(110, 231, 183, 0.35);
+  }
+  .step-dots {
+    display: flex;
+    justify-content: center;
+    gap: 2px;
+    margin-top: 2px;
+    height: 5px;
+  }
+  .sdot { width: 4px; height: 4px; border-radius: 50%; opacity: 0.2; }
+  .sdot.lit { opacity: 1; }
+
+  .telemetry {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 5px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .telemetry b { color: var(--accent); font-weight: 600; }
+
+  /* Active Tray & Arc Bar */
+  .tray-bar {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    justify-content: space-between;
+  }
+  .active-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+  }
+  .chip button {
+    padding: 0 3px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .chip button:hover { color: #fff; }
+
+  .arc-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .arc-btn { font-size: 11px; padding: 4px 8px; }
+  .arc-btn.active { background: #312e81; border-color: #818cf8; color: #e0e7ff; }
+
+  main {
+    padding: 14px 16px 40px;
+    display: grid;
+    gap: 16px;
+  }
+  .bank {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .bank-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .bank-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .bank-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+  .bank-meta {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pad-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+    gap: 8px;
+  }
+  .pad {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--pad-color, var(--border));
+    border-radius: 8px;
+    padding: 8px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.08s ease, border-color 0.12s ease, background 0.12s ease;
+  }
+  .pad:hover {
+    border-color: var(--pad-color, #64748b);
+    background: #1e2638;
+  }
+  .pad.active {
+    background: rgba(110, 231, 183, 0.09);
+    border-color: var(--pad-color, var(--accent));
+    box-shadow: inset 0 0 0 1px var(--pad-color, var(--accent));
+  }
+  .pad.flash {
+    transform: scale(0.99);
+  }
+  .pad-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .pad-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.07);
+    color: var(--pad-color, var(--text));
+    font-weight: 700;
+  }
+  .pad-name {
+    font-weight: 600;
+    font-size: 12.5px;
+    flex: 1;
+  }
+  .pad-desc {
+    font-size: 11px;
+    color: var(--muted);
+    min-height: 28px;
+  }
+  .pad-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .pad-tag {
+    font-size: 10px;
+    color: #94a3b8;
+    background: rgba(0,0,0,0.28);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .pad-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .mini-btn {
+    padding: 2px 6px;
+    font-size: 10px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #cbd5e1;
+  }
+  .mini-btn:hover { background: #334155; color: #fff; }
+  .mini-btn.solo-on { background: #f59e0b; color: #111; border-color: #fbbf24; font-weight: 700; }
+
+  .mod-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
+    gap: 8px;
+  }
+  .mod-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    cursor: pointer;
+  }
+  .mod-card.on {
+    border-color: var(--c-mod);
+    background: rgba(34, 211, 238, 0.09);
+  }
+  .mod-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .badge-on {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(34, 211, 238, 0.2);
+    color: #67e8f9;
+    font-weight: 700;
+  }
+  .badge-off {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.15);
+    color: #94a3b8;
+  }
+  .mini-vis {
+    display: flex;
+    gap: 2px;
+    height: 6px;
+    align-items: flex-end;
+  }
+  .mini-bar {
+    flex: 1;
+    background: rgba(255,255,255,0.15);
+    border-radius: 1px;
+  }
+  .pad.active .mini-bar { background: var(--pad-color, var(--accent)); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top-row">
+    <div class="brand">
+      <h1>43 — Handpan Insights Soundboard</h1>
+      <span>57 Playable Elements · Click to Stack/Compose · SOLO for Isolation</span>
+    </div>
+    <div class="transport">
+      <button id="btn-play" class="primary">▶ Play Clock</button>
+      <button id="btn-random">🎲 Random Compatible Stack</button>
+      <button id="btn-clear" class="danger">✕ Clear Layers</button>
+      <div class="pill-group">
+        <label for="sel-scale">Scale</label>
+        <select id="sel-scale">
+          <option value="E_AMARA">E Amara / Kurd (SPRITES)</option>
+          <option value="B_KURD">B Kurd / D Maj (Duet)</option>
+          <option value="FS_KURD">F# Kurd / A Maj (Malte)</option>
+          <option value="D_KURD">D Kurd (Classic)</option>
+        </select>
+      </div>
+      <div class="pill-group">
+        <label for="rng-bpm">BPM</label>
+        <input id="rng-bpm" type="range" min="72" max="168" value="105" />
+        <span id="out-bpm" style="min-width:28px;text-align:right;font-variant-numeric:tabular-nums;">105</span>
+      </div>
+      <div class="pill-group">
+        <label for="rng-vol">Vol</label>
+        <input id="rng-vol" type="range" min="0" max="1" step="0.02" value="0.78" />
+      </div>
+    </div>
+  </div>
+
+  <div class="playhead-bar">
+    <div class="steps-grid" id="steps-grid"></div>
+    <div class="telemetry">
+      <span>Chord: <b id="tel-chord">i</b></span>
+      <span>Bar: <b id="tel-bar">1</b></span>
+      <span>Stereo: <b id="tel-stereo">25%</b></span>
+      <span>Arc: <b id="tel-arc">Groove</b></span>
+    </div>
+  </div>
+
+  <div class="tray-bar">
+    <div class="active-chips" id="active-chips">
+      <span style="color:var(--muted);font-size:11px;">No layers active — click any pad or preset below.</span>
+    </div>
+    <div class="arc-controls">
+      <span style="color:var(--muted);font-size:11px;">Emotional Arc:</span>
+      <button class="arc-btn active" data-arc="normal">Groove Lock</button>
+      <button class="arc-btn" data-arc="hook">⚡ Instant Hook</button>
+      <button class="arc-btn" data-arc="climax">🔥 Climax (+3dB / +8va)</button>
+      <button class="arc-btn" data-arc="breath">🌬 Breath Dip (-35%)</button>
+      <button class="arc-btn" data-arc="outro">🌙 Warm Outro</button>
+    </div>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<script>
+(() => {
+  // =========================================================================
+  // 1. SCALES & PITCH UTILITIES (Empirically matched to 41-social-media-analysis)
+  // =========================================================================
+  const NOTE_OFFSET = { C:-9,'C#':-8,Db:-8,D:-7,'D#':-6,Eb:-6,E:-5,F:-4,'F#':-3,Gb:-3,G:-2,'G#':-1,Ab:-1,A:0,'A#':1,Bb:1,B:2 };
+  function n2f(note, a4 = 440.5) {
+    const m = /^([A-G][#b]?)(\d)$/.exec(note);
+    if (!m) return 440;
+    const semi = NOTE_OFFSET[m[1]] + (parseInt(m[2], 10) - 4) * 12;
+    return a4 * Math.pow(2, semi / 12);
+  }
+
+  // Each scale provides: ding (low root), bassPool (low roots for progressions),
+  // body (mid 250-700Hz), high (700Hz+ singing melody)
+  const SCALES = {
+    E_AMARA: {
+      name: 'E Amara / Kurd (SPRITES)',
+      bpm: 105,
+      a4: 440.5,
+      // Degrees 0..7 in E minor: E, F#, G, A, B, C, D, E
+      notes: ['E3','F#3','G3','A3','B3','C4','D4','E4','F#4','G4','A4','B4','C5','D5','E5'],
+      lowRoots: { i:'E3', II:'F#3', III:'G3', iv:'A3', v:'B2', VI:'C3', VII:'D3', I:'E3', IV:'A2', V:'B2', vi:'C3' }
+    },
+    B_KURD: {
+      name: 'B Kurd / D Major (Duet)',
+      bpm: 105,
+      a4: 441.3,
+      notes: ['B2','C#3','D3','E3','F#3','G3','A3','B3','C#4','D4','E4','F#4','G4','A4','B4'],
+      lowRoots: { i:'B2', II:'C#3', III:'D3', iv:'E3', v:'F#3', VI:'G3', VII:'A3', I:'D3', IV:'G3', V:'A3', vi:'B2' }
+    },
+    FS_KURD: {
+      name: 'F# Kurd / A Major (Malte)',
+      bpm: 101,
+      a4: 442.0,
+      notes: ['F#3','G#3','A3','B3','C#4','D4','E4','F#4','G#4','A4','B4','C#5','D5','E5','F#5'],
+      lowRoots: { i:'F#3', II:'G#3', III:'A3', iv:'B2', v:'C#3', VI:'D3', VII:'E3', I:'A3', IV:'D3', V:'E3', vi:'F#3' }
+    },
+    D_KURD: {
+      name: 'D Kurd (Classic)',
+      bpm: 104,
+      a4: 440.0,
+      notes: ['D3','E3','F3','G3','A3','Bb3','C4','D4','E4','F4','G4','A4','Bb4','C5','D5'],
+      lowRoots: { i:'D3', II:'E3', III:'F3', iv:'G3', v:'A2', VI:'Bb2', VII:'C3', I:'D3', IV:'G2', V:'A2', vi:'Bb2' }
+    }
+  };
+
+  // Degree shift offsets for each chord symbol (relative to scale index)
+  const CHORD_OFFSET = { i:0, II:1, III:2, iv:3, v:4, VI:5, VII:6, I:2, IV:5, V:6, vi:0 };
+
+  // =========================================================================
+  // 2. WEB AUDIO ENGINE (Handpan 1:2:3 Resonator + Percussive + Stereo Hall)
+  // =========================================================================
+  let ctx = null;
+  let masterGain, masterFilter, dryGain, wetGain, convolver, limiter;
+
+  function ensureAudio() {
+    if (ctx) {
+      if (ctx.state === 'suspended') ctx.resume();
+      return;
+    }
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = ctx.createGain();
+    masterGain.gain.value = parseFloat(document.getElementById('rng-vol').value);
+
+    masterFilter = ctx.createBiquadFilter();
+    masterFilter.type = 'lowpass';
+    masterFilter.frequency.value = 2400;
+    masterFilter.Q.value = 0.7;
+
+    limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -8;
+    limiter.knee.value = 12;
+    limiter.ratio.value = 6;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.12;
+
+    dryGain = ctx.createGain();
+    dryGain.gain.value = 0.78;
+    wetGain = ctx.createGain();
+    wetGain.gain.value = 0.42;
+
+    convolver = ctx.createConvolver();
+    convolver.buffer = makeHallIR(ctx, 2.8, 2.4);
+
+    masterFilter.connect(dryGain);
+    masterFilter.connect(convolver);
+    convolver.connect(wetGain);
+    dryGain.connect(limiter);
+    wetGain.connect(limiter);
+    limiter.connect(masterGain);
+    masterGain.connect(ctx.destination);
+    applyAudioModifiers();
+  }
+
+  function makeHallIR(audioCtx, duration, decay) {
+    const len = Math.floor(audioCtx.sampleRate * duration);
+    const buf = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < len; i++) {
+        const t = i / len;
+        const env = Math.pow(1 - t, decay) * (i < 600 ? i / 600 : 1);
+        const white = (Math.random() * 2 - 1);
+        lp = lp * 0.65 + white * 0.35; // warm reverb tail
+        data[i] = lp * env * 0.5;
+      }
+    }
+    return buf;
+  }
+
+  // Synthesize a single handpan strike with 1:2:3 harmonic partials + attack click
+  function playPanNote(freq, time, opts = {}) {
+    if (!ctx) return;
+    const {
+      vel = 0.7,
+      pan = 0,
+      sustainMul = 1.0,
+      isDing = false,
+      isMuted = false,
+      isHarmonic = false,
+      isClock = false,
+      cutoffOverride = null
+    } = opts;
+
+    const arcGain = state.arc === 'climax' ? 1.28 : state.arc === 'breath' ? 0.72 : state.arc === 'outro' ? 0.68 : 1.0;
+    const finalVel = Math.min(1.15, Math.max(0.05, vel * arcGain));
+
+    // Stereo width scaling (Mono=0, Solo=0.55, Duet=1.0)
+    const widthMul = state.mods.stereoMode === 0 ? 0 : state.mods.stereoMode === 1 ? 0.55 : 1.0;
+    const panner = ctx.createStereoPanner();
+    panner.pan.setValueAtTime(Math.max(-0.95, Math.min(0.95, pan * widthMul)), time);
+
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(finalVel * (isDing ? 0.42 : 0.28), time);
+
+    if (cutoffOverride) {
+      const f = ctx.createBiquadFilter();
+      f.type = cutoffOverride.type || 'lowpass';
+      f.frequency.setValueAtTime(cutoffOverride.freq, time);
+      out.connect(f);
+      f.connect(panner);
+    } else {
+      out.connect(panner);
+    }
+    panner.connect(masterFilter);
+
+    const baseSus = (state.mods.lushSustain ? 1.85 : 0.55) * sustainMul * (isDing ? 1.45 : 1.0) * (isMuted ? 0.16 : 1.0);
+    const fifthBoost = state.mods.compoundFifth ? 1.0 : 0.22;
+
+    // Partials: [ratio, amp, decayMul]
+    let partials;
+    if (isClock) {
+      // Dd8JlG2ziyn high chime/clock partial profile
+      partials = [
+        [1.0, 0.7, 0.35],
+        [2.76, 0.45, 0.22],
+        [5.4, 0.25, 0.12]
+      ];
+    } else if (isHarmonic) {
+      partials = [
+        [1.0, 0.25, 0.8],
+        [2.0, 0.45, 0.9],
+        [3.0, 0.85 * fifthBoost, 1.05] // Compound 5th (+19st)
+      ];
+    } else if (isDing) {
+      partials = [
+        [1.0, 1.0, 1.0],
+        [2.0, 0.32, 0.72],
+        [3.0, 0.38 * fifthBoost, 0.58],
+        [1.003, 0.22, 0.9] // warm beating bloom
+      ];
+    } else {
+      partials = [
+        [1.0, 0.92, 1.0],
+        [2.0, 0.26, 0.68],
+        [3.0, 0.44 * fifthBoost, 0.62], // Strong 3rd partial = glassy halo!
+        [1.0025, 0.18, 0.85]
+      ];
+    }
+
+    partials.forEach(([ratio, amp, dMul]) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq * ratio, time);
+      const g = ctx.createGain();
+      const atk = isMuted ? 0.002 : (isDing ? 0.008 : 0.005);
+      const dec = Math.max(0.06, baseSus * dMul);
+      g.gain.setValueAtTime(0.0001, time);
+      g.gain.linearRampToValueAtTime(amp, time + atk);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + atk + dec);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(time);
+      osc.stop(time + atk + dec + 0.05);
+    });
+
+    // Subtle skin-on-steel transient click (Demucs drums 3.7kHz signature)
+    if (!isClock) {
+      const clickDur = 0.018;
+      const nBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * clickDur), ctx.sampleRate);
+      const d = nBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (d.length * 0.28));
+      const ns = ctx.createBufferSource();
+      ns.buffer = nBuf;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(isMuted ? 1900 : 3700, time);
+      bp.Q.value = 2.2;
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(finalVel * (isMuted ? 0.18 : 0.07), time);
+      ns.connect(bp);
+      bp.connect(ng);
+      ng.connect(panner);
+      ns.start(time);
+    }
+  }
+
+  // Synthesize percussive handpan hits: tak (rim), click (3.8kHz finger), gu (shell bass), knock
+  function playPerc(kind, time, vel = 0.6, pan = 0) {
+    if (!ctx) return;
+    const widthMul = state.mods.stereoMode === 0 ? 0 : state.mods.stereoMode === 1 ? 0.55 : 1.0;
+    const panner = ctx.createStereoPanner();
+    panner.pan.setValueAtTime(pan * widthMul, time);
+    panner.connect(masterFilter);
+
+    if (kind === 'gu') {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(118, time);
+      osc.frequency.exponentialRampToValueAtTime(64, time + 0.14);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, time);
+      g.gain.linearRampToValueAtTime(vel * 0.45, time + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
+      osc.connect(g);
+      g.connect(panner);
+      osc.start(time);
+      osc.stop(time + 0.25);
+      return;
+    }
+
+    const dur = kind === 'tak' ? 0.045 : kind === 'knock' ? 0.032 : 0.022;
+    const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (data.length * 0.24));
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(
+      kind === 'tak' ? 2400 : kind === 'knock' ? 980 : 3850,
+      time
+    );
+    bp.Q.value = kind === 'tak' ? 3.5 : kind === 'knock' ? 5.0 : 2.8;
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vel * (kind === 'click' ? 0.22 : 0.34), time);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(panner);
+    src.start(time);
+  }
+
+  function applyAudioModifiers() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    let cutoff = state.mods.warmthFilter ? 2100 : 12000;
+    if (state.arc === 'outro') cutoff = Math.min(cutoff, 1150);
+    if (state.arc === 'climax') cutoff = Math.max(cutoff, 3100);
+    masterFilter.frequency.setTargetAtTime(cutoff, now, 0.08);
+    wetGain.gain.setTargetAtTime(state.mods.lushSustain ? 0.46 : 0.06, now, 0.08);
+  }
+
+  // =========================================================================
+  // 3. STATE & COMPATIBILITY ARCHITECTURE
+  // =========================================================================
+  const state = {
+    playing: false,
+    scaleId: 'E_AMARA',
+    bpm: 105,
+    step: 0,      // 0..15 (16th grid)
+    bar: 0,       // increments every 16 steps
+    tripletTick: 0,
+    activePads: new Set(),
+    activeProg: 'F1',
+    arc: 'normal',
+    mods: {
+      ghostContrast: true,   // G1: 50% ghost-note 3.2x dynamic contrast
+      humanTiming: true,     // G2: 6-9ms jitter + -5ms push
+      warmthFilter: true,    // G3: <2.2kHz warmth
+      compoundFifth: true,   // G4: +19st overtone halo
+      stereoMode: 1,         // G5: 0=Mono, 1=Solo 25%, 2=Duet 31%
+      rubatoBreath: false,   // G6: +/- 4% BPM swell
+      lushSustain: true,     // G7: 84% sustain hall
+      pickupBoost: true      // G8: "a"-16th pickup accent boost
+    }
+  };
+
+  const PROGRESSIONS = {
+    F1: { name: 'SPRITES i–VI–VII', chords: ['i', 'VI', 'VII', 'i'], desc: 'Andalusian/epic minor loop (Em–C–D–Em), 1 bar/chord (~2.3s)' },
+    F2: { name: 'Duet VI–i–v–III–VII', chords: ['VI', 'i', 'v', 'III', 'VII'], desc: '5-bar emotional journey from Malte + SPRITES duet' },
+    F3: { name: 'Malte E-Pedal vi–I–IV–V', chords: ['vi', 'VII', 'I', 'VII', 'IV', 'VII'], desc: 'Alternating chordal orbit anchored by a gravitational pedal' },
+    F4: { name: 'Cinematic i–VII–VI–VII', chords: ['i', 'VII', 'VI', 'VII'], desc: 'Classic viral handpan swell loop' },
+    F5: { name: 'Static Root (Drone)', chords: ['i'], desc: '0 root changes/10s — pure modal meditation (or control baseline)' }
+  };
+
+  function currentChord() {
+    const prog = PROGRESSIONS[state.activeProg] || PROGRESSIONS.F1;
+    return prog.chords[state.bar % prog.chords.length];
+  }
+
+  function scaleNoteFreq(idx, octaveShift = 0) {
+    const sc = SCALES[state.scaleId];
+    const clamped = Math.max(0, Math.min(sc.notes.length - 1, idx));
+    return n2f(sc.notes[clamped], sc.a4) * Math.pow(2, octaveShift);
+  }
+
+  function chordRootFreq(octaveShift = 0) {
+    const sc = SCALES[state.scaleId];
+    const ch = currentChord();
+    const note = sc.lowRoots[ch] || sc.notes[0];
+    return n2f(note, sc.a4) * Math.pow(2, octaveShift);
+  }
+
+  function chordDegree(relStep = 0, baseOctaveIdx = 0) {
+    const off = CHORD_OFFSET[currentChord()] || 0;
+    return (off + relStep) % 7 + baseOctaveIdx;
+  }
+
+  // Helper: apply G1 (Ghost contrast) and G8 (a-16th pickup boost)
+  function shapeVel(baseVel, isGhost, step) {
+    let v = baseVel;
+    if (!state.mods.ghostContrast && isGhost) {
+      v = 0.78; // flatten ghost notes to show robotic loss of hierarchy!
+    }
+    if (state.mods.pickupBoost && (step % 4 === 3)) {
+      v = Math.min(1.05, v * 1.25);
+    }
+    if (state.mods.pickupBoost && (step % 4 === 1) && isGhost) {
+      v *= 0.72; // deepen "e" dip
+    }
+    return v;
+  }
+
+  // Helper: human microtiming offset (G2)
+  function jitterTime(t, isAccent = false) {
+    if (!state.mods.humanTiming) return t;
+    const j = (Math.random() * 2 - 1) * 0.008; // ±8ms
+    const push = isAccent ? -0.005 : 0;        // -5ms forward propulsion
+    return Math.max(ctx.currentTime + 0.005, t + j + push);
+  }
+
+  // =========================================================================
+  // 4. ALL 57 PLAYABLE PADS & MODIFIERS
+  // =========================================================================
+  const BANKS = [
+    {
+      id: 'ding',
+      title: 'Bank A — Ding & Bass Foundations (65–250 Hz)',
+      meta: '40–47% of total track energy · Compatible with all Beds, Perc, Melodies & Chords',
+      color: 'var(--c-ding)',
+      dotIdx: 0,
+      pads: [
+        {
+          id: 'A1', name: 'Steady 1 & 3 Ding', tag: 'Anchor',
+          desc: 'Warm low Ding on beats 1 and 3 following the active chord root.',
+          pattern: [1,0,0,0, 0,0,0,0, .85,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 8) playPanNote(chordRootFreq(), jitterTime(t, true), { vel: s===0?0.95:0.78, isDing:true, pan:-0.08 });
+          }
+        },
+        {
+          id: 'A2', name: 'Malte "a"-16th Pickup Ding', tag: 'Step 15→0',
+          desc: 'Malte Solo signature: strong bass anticipation on step 15 pulling into beat 1.',
+          pattern: [1,0,0,0, 0,0,0,0, .65,0,0,0, 0,0,0,.72],
+          onStep(s, t) {
+            if (s === 0) playPanNote(chordRootFreq(), jitterTime(t, true), { vel: 0.96, isDing:true, pan:-0.05 });
+            else if (s === 8) playPanNote(chordRootFreq(), jitterTime(t), { vel: 0.68, isDing:true, pan:0.05 });
+            else if (s === 15) playPanNote(chordRootFreq(), jitterTime(t, true), { vel: shapeVel(0.74, false, s), isDing:true, pan:-0.1 });
+          }
+        },
+        {
+          id: 'A3', name: 'SPRITES 3+3+2 Tresillo Ding', tag: 'Syncopated',
+          desc: 'Steps 0, 6, 12 — infectious forward-rolling handpan bass pulse.',
+          pattern: [1,0,0,0, 0,0,.85,0, 0,0,0,0, .9,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 6 || s === 12) {
+              playPanNote(chordRootFreq(), jitterTime(t, true), { vel: s===0?0.95:0.82, isDing:true, pan: s===6?0.12:-0.08 });
+            }
+          }
+        },
+        {
+          id: 'A4', name: 'Root–5th Rolling Bass', tag: 'Alternating',
+          desc: 'Alternates chord root (steps 0, 8) with resonant low 5th (steps 4, 12).',
+          pattern: [1,0,0,0, .65,0,0,0, .9,0,0,0, .7,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 8) playPanNote(chordRootFreq(), jitterTime(t, true), { vel: 0.9, isDing:true, pan:-0.12 });
+            else if (s === 4 || s === 12) playPanNote(scaleNoteFreq(chordDegree(4, 0)), jitterTime(t), { vel: 0.65, isDing:true, pan:0.12 });
+          }
+        },
+        {
+          id: 'A5', name: 'Duet 3:2 Cross-Pulse Bass', tag: 'Polyrhythm',
+          desc: 'Hits every 3 sixteenths (0, 3, 6, 9, 12) creating a 4:3 tension over the bar.',
+          pattern: [1,0,0,.8, 0,0,.85,0, 0,.75,0,0, .9,0,0,0],
+          onStep(s, t) {
+            if (s===0||s===3||s===6||s===9||s===12) {
+              playPanNote(chordRootFreq(), jitterTime(t, s===0), { vel: s===0?0.92:0.72, isDing:true, pan: (s%6===0?-0.2:0.2) });
+            }
+          }
+        },
+        {
+          id: 'A6', name: 'Hypnotic Tonic Pedal Drone', tag: 'Malte Pedal',
+          desc: 'Locks onto the scale tonic Ding regardless of chord changes — creates bittersweet tension.',
+          pattern: [.9,0,0,0, 0,0,.4,0, .8,0,0,0, 0,0,.45,0],
+          onStep(s, t) {
+            const sc = SCALES[state.scaleId];
+            const tonicF = n2f(sc.notes[0], sc.a4);
+            if (s===0||s===8) playPanNote(tonicF, jitterTime(t, true), { vel: 0.85, isDing:true, sustainMul:1.4 });
+            else if (s===6||s===14) playPanNote(tonicF, jitterTime(t), { vel: shapeVel(0.36, true, s), isDing:true });
+          }
+        },
+        {
+          id: 'A7', name: 'Syncopated Heartbeat', tag: 'Double-Thump',
+          desc: 'Heartbeat bass pairs on 0–3 and 8–10 for an intimate cinematic groove.',
+          pattern: [1,0,0,.7, 0,0,0,0, .9,0,.65,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s===0||s===8) playPanNote(chordRootFreq(), jitterTime(t, true), { vel: 0.95, isDing:true });
+            else if (s===3||s===10) playPanNote(chordRootFreq(), jitterTime(t), { vel: 0.64, isDing:true, sustainMul:0.7 });
+          }
+        },
+        {
+          id: 'A8', name: 'Deep Gu Shell Thump', tag: 'Acoustic Sub',
+          desc: 'Bottom-shell Helmholtz cavity resonance (65–118 Hz) on steps 0, 7, 10.',
+          pattern: [1,0,0,0, 0,0,0,.7, 0,0,.8,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s===0||s===7||s===10) playPerc('gu', jitterTime(t, s===0), s===0?0.95:0.72, 0);
+          }
+        }
+      ]
+    },
+    {
+      id: 'ghost',
+      title: 'Bank B — Ghost-Note Tactile Beds (The 50% Rule)',
+      meta: '50–54% of notes sit ~10 dB below accents · Toggle Mod G1 to hear flat vs. ghost hierarchy',
+      color: 'var(--c-ghost)',
+      dotIdx: 1,
+      pads: [
+        {
+          id: 'B1', name: 'SPRITES 16th Motor (68% 16ths)', tag: '105 BPM Bed',
+          desc: 'Continuous soft 16th-note pulse with deep "e" dips and warm body resonance.',
+          pattern: [.4,.2,.45,.55, .4,.18,.4,.52, .42,.22,.38,.55, .4,.15,.4,.5],
+          onStep(s, t) {
+            if (state.arc === 'breath' && s % 2 === 1) return;
+            const degs = [0,2,4,2, 0,4,2,5, 0,2,4,6, 4,2,4,2];
+            const isDip = (s % 4 === 1);
+            const v = shapeVel(isDip ? 0.20 : 0.34, true, s);
+            playPanNote(scaleNoteFreq(chordDegree(degs[s], 2)), jitterTime(t), { vel: v, pan: (s%2?-0.38:0.38), sustainMul: 0.7 });
+          }
+        },
+        {
+          id: 'B2', name: 'Malte Laser 16th Flow (79% 16ths)', tag: 'Hypnotic',
+          desc: 'Ultra-steady 16th-note arpeggiated bed (Malte Solo signature: 79% 16th IOIs).',
+          pattern: [.45,.3,.35,.48, .42,.28,.36,.45, .44,.3,.35,.48, .42,.28,.36,.46],
+          onStep(s, t) {
+            if (state.arc === 'breath' && s % 4 === 1) return;
+            const degs = [0,4,2,4, 0,4,5,4, 0,4,2,4, 6,4,2,4];
+            const v = shapeVel(s%4===0 ? 0.42 : 0.27, true, s);
+            playPanNote(scaleNoteFreq(chordDegree(degs[s], 3)), jitterTime(t), { vel: v, pan: ((s%4)-1.5)*0.24, sustainMul: 0.85 });
+          }
+        },
+        {
+          id: 'B3', name: 'a-16th Suction Bed', tag: 'Forward Pull',
+          desc: 'Exaggerated "a" (3,7,11,15) ghost pickups + silent "e" (1,5,9,13) pockets.',
+          pattern: [.5,0,.35,.7, .5,0,.35,.7, .5,0,.35,.7, .5,0,.35,.7],
+          onStep(s, t) {
+            if (s % 4 === 1) return;
+            const deg = s%4===0 ? 0 : s%4===2 ? 2 : 4;
+            const v = shapeVel(s%4===3 ? 0.48 : 0.28, true, s);
+            playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t, s%4===3), { vel: v, pan: s%4===3?0.45:-0.35, sustainMul: 0.65 });
+          }
+        },
+        {
+          id: 'B4', name: 'Duet Triplet Roll (3:2 Flow)', tag: 'Triplets',
+          desc: '48% triplet-8th flow inspired by Malte + SPRITES duet — floats over straight beats.',
+          pattern: [.5,0,.35,0, .45,0,.5,0, .35,0,.45,0, .5,0,.35,0],
+          isTriplet: true,
+          onTriplet(triStep, t) {
+            if (state.arc === 'breath' && triStep % 3 === 1) return;
+            const degs = [0,2,4, 2,4,6, 4,2,0, 2,4,5];
+            const isAcc = (triStep % 3 === 0);
+            const v = shapeVel(isAcc ? 0.48 : 0.26, !isAcc, 0);
+            playPanNote(scaleNoteFreq(chordDegree(degs[triStep % 12], 3)), jitterTime(t, isAcc), {
+              vel: v, pan: (triStep % 2 ? 0.55 : -0.55), sustainMul: 0.9
+            });
+          }
+        },
+        {
+          id: 'B5', name: 'Harp Arpeggio 1–3–5–7', tag: 'Body Pad',
+          desc: 'Rising and falling broken chord bed in the warm 250–700 Hz body register.',
+          pattern: [.4,.3,.35,.3, .4,.3,.35,.3, .4,.3,.35,.3, .4,.3,.35,.3],
+          onStep(s, t) {
+            const degs = [0,2,4,6, 4,2,0,2, 0,2,4,7, 6,4,2,4];
+            const v = shapeVel(0.30, true, s);
+            playPanNote(scaleNoteFreq(chordDegree(degs[s], 2)), jitterTime(t), { vel: v, pan: -0.5 + (s%8)*0.14, sustainMul: 1.05 });
+          }
+        },
+        {
+          id: 'B6', name: 'Whispering Pendulum (2nd↔5th)', tag: 'Minimal',
+          desc: 'Soft alternating 8th-note pendulum creating calm breathing space for melodies.',
+          pattern: [.35,0,.3,0, .35,0,.3,0, .35,0,.3,0, .35,0,.3,0],
+          onStep(s, t) {
+            if (s % 2 !== 0) return;
+            const deg = (s % 4 === 0) ? 1 : 4;
+            playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t), { vel: shapeVel(0.28, true, s), pan: s%4===0?-0.4:0.4 });
+          }
+        },
+        {
+          id: 'B7', name: 'Dotted-8th Cascade', tag: 'Polyrhythmic',
+          desc: 'Every 3rd 16th-note (0, 3, 6, 9, 12, 15) — creates shimmering 3-over-4 drift.',
+          pattern: [.45,0,0,.4, 0,0,.45,0, 0,.4,0,0, .45,0,0,.4],
+          onStep(s, t) {
+            if (s % 3 !== 0) return;
+            const degs = [0, 4, 2, 5, 4, 6];
+            playPanNote(scaleNoteFreq(chordDegree(degs[(s/3)|0], 4)), jitterTime(t), { vel: shapeVel(0.35, true, s), pan: (s%2?0.5:-0.5) });
+          }
+        },
+        {
+          id: 'B8', name: 'Muted Palm-Damp Texture', tag: 'Short Decay',
+          desc: 'Percussive palm-muted tone fields on off-beats for tight, woody groove glue.',
+          pattern: [0,.3,.45,.3, 0,.3,.45,.3, 0,.3,.45,.3, 0,.3,.45,.3],
+          onStep(s, t) {
+            if (s % 4 === 0) return;
+            const deg = s % 2 === 0 ? 4 : 2;
+            playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t), { vel: shapeVel(0.36, true, s), isMuted: true, pan: (s%2?-0.3:0.3) });
+          }
+        }
+      ]
+    },
+    {
+      id: 'perc',
+      title: 'Bank C — Percussive Attacks & Slaps (Demucs `drums` 3.7–4.1 kHz)',
+      meta: 'Only 1.5–3.1% of energy, yet drives 5–6 onsets/sec of crisp tactile groove',
+      color: 'var(--c-perc)',
+      dotIdx: 2,
+      pads: [
+        {
+          id: 'C1', name: 'a-16th Rim Pickup', tag: 'Steps 3,7,11,15',
+          desc: 'The #1 rhythmic discovery: crisp percussive pickups right before every beat.',
+          pattern: [0,0,0,.85, 0,0,0,.85, 0,0,0,1, 0,0,0,.8],
+          onStep(s, t) {
+            if (s % 4 === 3) playPerc('click', jitterTime(t, true), shapeVel(s===11?0.88:0.70, false, s), s%8===3?-0.3:0.3);
+          }
+        },
+        {
+          id: 'C2', name: 'Backbeat Tak (2 & 4)', tag: 'Rim Slap',
+          desc: 'Classic dry steel shoulder slap on beats 2 and 4.',
+          pattern: [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],
+          onStep(s, t) {
+            if (s === 4 || s === 12) playPerc('tak', jitterTime(t, true), 0.72, 0.15);
+          }
+        },
+        {
+          id: 'C3', name: 'Finger-Skin Ghost Ticks', tag: '3.8 kHz Clicks',
+          desc: 'Isolated Demucs drums stem feel: whisper-quiet skin clicks on every 16th.',
+          pattern: [.3,.15,.25,.4, .3,.15,.25,.4, .3,.15,.25,.4, .3,.15,.25,.4],
+          onStep(s, t) {
+            const v = s%4===3 ? 0.36 : s%4===0 ? 0.28 : 0.14;
+            playPerc('click', jitterTime(t), shapeVel(v, true, s), (s%2?-0.25:0.25));
+          }
+        },
+        {
+          id: 'C4', name: 'Syncopated Knuckle Knock', tag: 'Woody',
+          desc: 'Resonant 980 Hz shell knocks on steps 2, 7, 10, 15.',
+          pattern: [0,0,.6,0, 0,0,0,.75, 0,0,.6,0, 0,0,0,.8],
+          onStep(s, t) {
+            if (s===2||s===7||s===10||s===15) playPerc('knock', jitterTime(t), 0.62, s<8?-0.2:0.2);
+          }
+        },
+        {
+          id: 'C5', name: 'Triplet Rim Brush', tag: '12-Step',
+          desc: 'Soft triplet finger-ticks matching Bank B4 duet roll.',
+          pattern: [.5,0,.3,0, .5,0,.3,0, .5,0,.3,0, .5,0,.3,0],
+          isTriplet: true,
+          onTriplet(tri, t) {
+            if (tri % 3 === 0 || tri % 3 === 2) playPerc('click', jitterTime(t), tri%3===0?0.42:0.26, tri%2?-0.35:0.35);
+          }
+        },
+        {
+          id: 'C6', name: 'Double-Tap Anacrusis', tag: 'Turnaround',
+          desc: 'Crisp double-tap pickup (steps 14 & 15) launching into every new bar.',
+          pattern: [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,.65,.95],
+          onStep(s, t) {
+            if (s === 14) playPerc('click', jitterTime(t), 0.55, -0.2);
+            if (s === 15) playPerc('tak', jitterTime(t, true), 0.78, 0.2);
+          }
+        },
+        {
+          id: 'C7', name: 'Afro 3:2 Rim Clave', tag: 'Duet Groove',
+          desc: 'Steps 0, 3, 6, 10, 12 — interlocks with Duet Bass A5 and Triplet Roll B4.',
+          pattern: [.7,0,0,.65, 0,0,.75,0, 0,0,.65,0, .8,0,0,0],
+          onStep(s, t) {
+            if (s===0||s===3||s===6||s===10||s===12) playPerc(s===12?'tak':'click', jitterTime(t), 0.58, s%2?0.4:-0.4);
+          }
+        },
+        {
+          id: 'C8', name: 'Breakdown Sparse Clicks', tag: 'Duet 36–48s',
+          desc: 'Minimalist clicks that shine during Breath Breakdowns when sustain clears out.',
+          pattern: [0,0,0,.6, 0,0,0,0, 0,0,.45,0, 0,0,0,.7],
+          onStep(s, t) {
+            if (s===3||s===10||s===15) playPerc('click', jitterTime(t), 0.52, s===10?0:0.4);
+          }
+        }
+      ]
+    },
+    {
+      id: 'melody',
+      title: 'Bank D — Singing Foreground Melodies (700–2500 Hz Accents)',
+      meta: '3x louder than ghost bed · Carves clear figure-ground vocal-like phrasing',
+      color: 'var(--c-melody)',
+      dotIdx: 3,
+      pads: [
+        {
+          id: 'D1', name: 'SPRITES Morning Motif', tag: 'Lyrical',
+          desc: 'Stepwise minor ascent climbing to the singing 5th/octave peak (B4/E5).',
+          pattern: [.9,0,0,.7, 0,0,.85,0, 0,0,.8,0, .95,0,0,0],
+          onStep(s, t) {
+            const oct = state.arc === 'climax' ? 1 : 0;
+            const map = { 0:4, 3:5, 6:6, 10:7, 12:4 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], 4), oct), jitterTime(t, true), { vel: 0.92, pan: 0.25, sustainMul: 1.2 });
+            }
+          }
+        },
+        {
+          id: 'D2', name: 'Malte Yearning Leap', tag: 'Emotional',
+          desc: 'Expressive 5th → b7 → octave sigh resolving gently downward.',
+          pattern: [1,0,0,0, 0,0,.9,0, 0,0,0,.8, 0,0,.75,0],
+          onStep(s, t) {
+            const oct = state.arc === 'climax' ? 1 : 0;
+            const phrase = state.bar % 2 === 0 ? { 0:4, 6:6, 11:7, 14:6 } : { 0:5, 6:4, 11:2, 14:4 };
+            if (phrase[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(phrase[s], 5), oct), jitterTime(t, true), { vel: 0.95, pan: -0.22, sustainMul: 1.35 });
+            }
+          }
+        },
+        {
+          id: 'D3', name: 'Duet Call & Response (L↔R)', tag: 'Stereo Dialog',
+          desc: 'Player 1 calls on Left (bars 1,3), Player 2 answers brighter on Right (bars 2,4).',
+          pattern: [.9,0,.7,0, 0,0,.85,0, .9,0,0,.75, 0,0,.8,0],
+          onStep(s, t) {
+            const isRight = (state.bar % 2 === 1);
+            const map = isRight ? { 2:6, 6:7, 11:9, 14:7 } : { 0:4, 6:5, 8:4, 14:2 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], isRight?5:4)), jitterTime(t, true), {
+                vel: 0.88, pan: isRight ? 0.72 : -0.72, sustainMul: 1.15
+              });
+            }
+          }
+        },
+        {
+          id: 'D4', name: 'Upper-Register Climax Bloom', tag: 'C#5 / D5 Lift',
+          desc: 'High crystalline melodic peaks like Malte 8–12s and SPRITES 48–66s climaxes.',
+          pattern: [0,0,0,0, .95,0,0,.8, 0,0,.9,0, 0,0,0,.75],
+          onStep(s, t) {
+            const map = { 4:7, 7:8, 10:9, 15:7 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], 6)), jitterTime(t, true), { vel: 0.86, pan: s%2?0.45:-0.45, sustainMul: 1.3 });
+            }
+          }
+        },
+        {
+          id: 'D5', name: 'Pentatonic Waterfall', tag: 'Ornament',
+          desc: 'Fast descending 16th-note cascade at the end of every 2nd bar.',
+          pattern: [0,0,0,0, 0,0,0,0, .8,.75,.7,.65, .8,0,0,0],
+          onStep(s, t) {
+            if (state.bar % 2 !== 1) return;
+            const map = { 8:9, 9:7, 10:6, 11:4, 12:2 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], 5)), jitterTime(t), { vel: 0.78, pan: 0.6 - (s-8)*0.28, sustainMul: 0.9 });
+            }
+          }
+        },
+        {
+          id: 'D6', name: 'Floating Cantabile', tag: 'Slow Voice',
+          desc: 'Unhurried half-note singing tones that glide serenely over fast 16th beds.',
+          pattern: [1,0,0,0, 0,0,0,0, .85,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            const seq = [4, 6, 7, 5];
+            if (s === 0) playPanNote(scaleNoteFreq(chordDegree(seq[state.bar % 4], 5)), jitterTime(t, true), { vel: 0.92, pan: 0.1, sustainMul: 1.8 });
+            if (s === 8) playPanNote(scaleNoteFreq(chordDegree(seq[(state.bar+1) % 4], 4)), jitterTime(t), { vel: 0.78, pan: -0.15, sustainMul: 1.6 });
+          }
+        },
+        {
+          id: 'D7', name: '0–4s Instant Hook Riff', tag: 'Social Hook',
+          desc: 'Immediate memorable 1-bar earworm designed to grab listeners in the first 2 seconds.',
+          pattern: [1,0,0,.85, 0,0,.9,0, 0,.7,0,0, .95,0,.8,0],
+          onStep(s, t) {
+            const map = { 0:7, 3:6, 6:4, 9:2, 12:4, 14:6 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], 4)), jitterTime(t, true), { vel: 0.94, pan: (s%4===0?-0.2:0.3) });
+            }
+          }
+        },
+        {
+          id: 'D8', name: 'Compound-5th Harmonic Bells', tag: '+19st Halo',
+          desc: 'Pure isolated harmonic overtone pings (strong 3rd partial) sparkling overhead.',
+          pattern: [0,0,.7,0, 0,0,0,0, 0,0,.75,0, 0,0,0,.6],
+          onStep(s, t) {
+            const map = { 2:4, 10:7, 15:6 };
+            if (map[s] !== undefined) {
+              playPanNote(scaleNoteFreq(chordDegree(map[s], 4)), jitterTime(t), { vel: 0.75, isHarmonic: true, pan: s===2?-0.6:0.6, sustainMul: 1.5 });
+            }
+          }
+        }
+      ]
+    },
+    {
+      id: 'chord',
+      title: 'Bank E — Polyphonic Chords & Sustain Wash (2–4 Pitch Classes)',
+      meta: '84% sustain retention @ 150ms blends strikes into warm harp-like chords',
+      color: 'var(--c-chord)',
+      dotIdx: 3,
+      pads: [
+        {
+          id: 'E1', name: 'Open 5th Power Dyad', tag: '2 PCs',
+          desc: 'Simultaneous root + 5th strike on beat 1 — wide, open, resonant foundation.',
+          pattern: [1,0,0,0, 0,0,0,0, .7,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 8) {
+              const v = s===0 ? 0.75 : 0.52;
+              playPanNote(scaleNoteFreq(chordDegree(0, 3)), jitterTime(t), { vel: v, pan: -0.35, sustainMul: 1.6 });
+              playPanNote(scaleNoteFreq(chordDegree(4, 3)), jitterTime(t), { vel: v, pan: 0.35, sustainMul: 1.6 });
+            }
+          }
+        },
+        {
+          id: 'E2', name: '3-Note Minor Triad Wash', tag: '3 PCs',
+          desc: 'Softly strummed 1–3–5 triad blooming across the stereo field every bar.',
+          pattern: [.9,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0) {
+              [0, 2, 4].forEach((deg, i) => {
+                playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t) + i * 0.022, {
+                  vel: 0.62, pan: -0.45 + i * 0.45, sustainMul: 1.9
+                });
+              });
+            }
+          }
+        },
+        {
+          id: 'E3', name: '4-Note Duet Polyphony Swell', tag: 'P90 = 4 PCs',
+          desc: 'Lush 4-voice chordal bloom (1–3–5–7) matching the Duet polyphony peak.',
+          pattern: [.9,0,0,0, 0,0,0,0, .75,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 8) {
+              const degs = s === 0 ? [0, 2, 4, 6] : [0, 4, 6, 7];
+              degs.forEach((deg, i) => {
+                playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t) + i * 0.018, {
+                  vel: 0.52, pan: -0.6 + i * 0.4, sustainMul: 1.85
+                });
+              });
+            }
+          }
+        },
+        {
+          id: 'E4', name: 'Sus2 Floating Tension', tag: '1–2–5',
+          desc: 'Bittersweet suspended 2nd voicing on beat 3 — never fully settles, deeply hypnotic.',
+          pattern: [0,0,0,0, 0,0,0,0, .85,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 8) {
+              [0, 1, 4].forEach((deg, i) => {
+                playPanNote(scaleNoteFreq(chordDegree(deg, 4)), jitterTime(t) + i * 0.02, {
+                  vel: 0.56, pan: -0.4 + i * 0.4, sustainMul: 1.7
+                });
+              });
+            }
+          }
+        },
+        {
+          id: 'E5', name: 'Add9 Cathedral Roll', tag: 'Wide Halo',
+          desc: 'Arpeggiated 1–5–8–9 harp flourish every 2 bars.',
+          pattern: [.8,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0 && state.bar % 2 === 0) {
+              [0, 4, 7, 8].forEach((deg, i) => {
+                playPanNote(scaleNoteFreq(chordDegree(deg, 3)), jitterTime(t) + i * 0.045, {
+                  vel: 0.58, pan: -0.7 + i * 0.46, sustainMul: 2.0
+                });
+              });
+            }
+          }
+        },
+        {
+          id: 'E6', name: 'High-Octave Shimmer Pad', tag: 'Air Layer',
+          desc: 'Ultra-soft upper-register harmonic pair sustaining smoothly in the background.',
+          pattern: [.6,0,0,0, 0,0,0,0, .6,0,0,0, 0,0,0,0],
+          onStep(s, t) {
+            if (s === 0 || s === 8) {
+              playPanNote(scaleNoteFreq(chordDegree(4, 6)), jitterTime(t), { vel: 0.34, isHarmonic: true, pan: -0.5, sustainMul: 2.1 });
+              playPanNote(scaleNoteFreq(chordDegree(7, 6)), jitterTime(t), { vel: 0.30, isHarmonic: true, pan: 0.5, sustainMul: 2.1 });
+            }
+          }
+        }
+      ]
+    },
+    {
+      id: 'prog',
+      title: 'Bank F — Harmonic Progressions (2.5s Root Cycle · Select 1)',
+      meta: '3.8–4.0 root changes per 10 seconds · Steers Banks A, B, D, E simultaneously',
+      color: 'var(--c-prog)',
+      exclusive: true,
+      pads: Object.entries(PROGRESSIONS).map(([id, p]) => ({
+        id, name: p.name, tag: `${p.chords.length} chords`, desc: p.desc, isProg: true
+      }))
+    },
+    {
+      id: 'ctrl',
+      title: 'Bank H — Contrast / Anti-Patterns & Curated Presets',
+      meta: 'A/B test why the insights work (H1–H4) or launch full multi-layer stacks (P1–P4)',
+      color: 'var(--c-ctrl)',
+      pads: [
+        {
+          id: 'H1', name: 'Control: Clock Ostinato (Dd8JlG2ziyn)', tag: 'No Bass / 0ms',
+          desc: 'Simulates Track 4: 0% bass, 1.9 kHz metallic chime, static C#4/D4 tick, 0ms jitter.',
+          pattern: [.9,0,0,0, .9,0,0,0, .75,0,0,0, .4,0,0,0],
+          onStep(s, t) {
+            if (s===0||s===4||s===8||s===12) {
+              const f = s===4 ? n2f('D4') : n2f('C#4');
+              playPanNote(f, t, { vel: s===12?0.45:0.85, isClock:true, pan:0, cutoffOverride:{type:'highpass', freq:500} });
+            }
+          }
+        },
+        {
+          id: 'H2', name: 'Anti-Pattern: Flat Robotic 8ths', tag: 'No Ghost / No "a"',
+          desc: 'Uniform velocity on even 8ths, 0ms jitter — hear how lifeless it feels vs. B1/B3!',
+          pattern: [.8,0,.8,0, .8,0,.8,0, .8,0,.8,0, .8,0,.8,0],
+          onStep(s, t) {
+            if (s % 2 !== 0) return;
+            const degs = [0, 2, 4, 2, 0, 2, 4, 2];
+            playPanNote(scaleNoteFreq(chordDegree(degs[s/2], 3)), t, { vel: 0.80, pan: 0, sustainMul: 0.45 });
+          }
+        },
+        {
+          id: 'H3', name: 'Anti-Pattern: Harsh No-Bass Plink', tag: '> 900 Hz Dry',
+          desc: 'Strips away the 100–700 Hz warmth band — piercing, fatiguing, zero body.',
+          pattern: [.8,0,.7,0, .8,0,.7,0, .8,0,.7,0, .8,0,.7,0],
+          onStep(s, t) {
+            if (s % 2 !== 0) return;
+            playPanNote(scaleNoteFreq(chordDegree((s/2)%7, 6)), t, {
+              vel: 0.78, pan: 0, sustainMul: 0.35, cutoffOverride: { type: 'highpass', freq: 950 }
+            });
+          }
+        },
+        {
+          id: 'H4', name: 'Anti-Pattern: Muddy Over-Busy 16ths', tag: 'Zero Hierarchy',
+          desc: 'All 16th notes played at 95% velocity — destroys figure-ground separation.',
+          pattern: [.95,.95,.95,.95, .95,.95,.95,.95, .95,.95,.95,.95, .95,.95,.95,.95],
+          onStep(s, t) {
+            playPanNote(scaleNoteFreq(chordDegree(s % 7, 3)), t, { vel: 0.94, pan: 0, sustainMul: 1.5 });
+          }
+        },
+        {
+          id: 'P1', name: 'Preset: SPRITES Morning Routine', tag: 'Full Stack',
+          desc: 'E Amara @ 105 BPM · i–VI–VII · Tresillo Ding + 16th Motor + a-Pickup + Motif + Triad.',
+          isPreset: true,
+          preset: { scale: 'E_AMARA', bpm: 105, prog: 'F1', stereo: 1, pads: ['A3','B1','C1','D1','E2'] }
+        },
+        {
+          id: 'P2', name: 'Preset: Malte + SPRITES Duet', tag: '3:2 + 31% Stereo',
+          desc: 'B Kurd @ 105 BPM · VI–i–v–III–VII · 3:2 Bass + Triplet Roll + Clave + L↔R Dialog + 4-PC Swell.',
+          isPreset: true,
+          preset: { scale: 'B_KURD', bpm: 105, prog: 'F2', stereo: 2, pads: ['A5','B4','C7','D3','E3'] }
+        },
+        {
+          id: 'P3', name: 'Preset: Malte Meditative Solo', tag: '101 BPM Pocket',
+          desc: 'F# Kurd @ 101 BPM · E-Pedal · Pickup Ding + Laser 16ths + Ghost Ticks + Yearning Leap + 5ths.',
+          isPreset: true,
+          preset: { scale: 'FS_KURD', bpm: 101, prog: 'F3', stereo: 1, pads: ['A2','B2','C3','D2','E1'] }
+        },
+        {
+          id: 'P4', name: 'Preset: Cathedral Swell Showcase', tag: 'Lush Ambient',
+          desc: 'D Kurd @ 96 BPM · i–VII–VI–VII · Heartbeat + Harp Bed + Cantabile + Add9 Roll + Halo Bells.',
+          isPreset: true,
+          preset: { scale: 'D_KURD', bpm: 96, prog: 'F4', stereo: 2, pads: ['A7','B5','C8','D6','D8','E5'] }
+        }
+      ]
+    }
+  ];
+
+  const MODIFIERS = [
+    { key: 'ghostContrast', code: 'G1', name: '50% Ghost Contrast (3.2x)', desc: 'ON: soft 30% ghost bed + loud accents · OFF: flat uniform velocity' },
+    { key: 'humanTiming',   code: 'G2', name: 'Human Pocket (7ms / -5ms)', desc: 'ON: ±8ms organic jitter + -5ms accent push · OFF: 0ms robotic grid' },
+    { key: 'warmthFilter',  code: 'G3', name: 'Warmth Filter (< 2.2 kHz)', desc: 'ON: 90% energy < 700Hz warm steel · OFF: bright unrolled highs' },
+    { key: 'compoundFifth', code: 'G4', name: 'Compound-5th (+19st) Halo', desc: 'ON: glassy 3rd harmonic bloom · OFF: dull fundamental-only tone' },
+    { key: 'stereoMode',    code: 'G5', name: 'Stereo Width (Click Cycle)', desc: 'Cycles Mono (0%) → Solo (25%) → Duet Wide (31%) spatial spread', isCycle: true },
+    { key: 'rubatoBreath',  code: 'G6', name: 'Rubato Breath (±4% BPM)', desc: 'ON: gentle sinusoidal tempo breathing across every 4-bar phrase' },
+    { key: 'lushSustain',   code: 'G7', name: 'Hall Sustain (84% @ 150ms)', desc: 'ON: warm stereo hall + long ring · OFF: dry short percussive' },
+    { key: 'pickupBoost',   code: 'G8', name: 'a-16th Suction Boost', desc: 'ON: emphasizes steps 3,7,11,15 pickups & dips steps 1,5,9,13' }
+  ];
+
+  // Flatten lookup
+  const PAD_MAP = {};
+  BANKS.forEach(b => b.pads.forEach(p => { p.bank = b; PAD_MAP[p.id] = p; }));
+
+  // =========================================================================
+  // 5. LOOKAHEAD SCHEDULER (16th-note + Triplet-8th Dual Clock)
+  // =========================================================================
+  let timerId = null;
+  let next16Time = 0;
+  let nextTriTime = 0;
+  let lastVisualStep = -1;
+
+  function effectiveBpm() {
+    let b = state.bpm;
+    if (state.mods.rubatoBreath) {
+      b *= (1 + 0.045 * Math.sin(state.bar * 0.75 + state.step * 0.04));
+    }
+    if (state.arc === 'climax') b *= 1.03;
+    if (state.arc === 'outro') b *= 0.94;
+    return b;
+  }
+
+  function startClock() {
+    ensureAudio();
+    if (state.playing) return;
+    state.playing = true;
+    state.step = 0;
+    state.tripletTick = 0;
+    const now = ctx.currentTime + 0.05;
+    next16Time = now;
+    nextTriTime = now;
+    timerId = setInterval(scheduler, 25);
+    updateTransportUI();
+  }
+
+  function stopClock() {
+    state.playing = false;
+    if (timerId) { clearInterval(timerId); timerId = null; }
+    updateTransportUI();
+  }
+
+  function scheduler() {
+    if (!ctx || !state.playing) return;
+    const lookahead = 0.12;
+    const bpm = effectiveBpm();
+    const secPer16 = 60 / bpm / 4;
+    const secPerTri = 60 / bpm / 3; // triplet-8th = 1/3 beat (12 per bar)
+
+    while (next16Time < ctx.currentTime + lookahead) {
+      const s = state.step;
+      const t = next16Time;
+      state.activePads.forEach(id => {
+        const p = PAD_MAP[id];
+        if (p && p.onStep) p.onStep(s, t);
+      });
+      // Schedule UI playhead highlight
+      const delayMs = Math.max(0, (t - ctx.currentTime) * 1000);
+      const barSnap = state.bar;
+      const chordSnap = currentChord();
+      setTimeout(() => highlightStep(s, barSnap, chordSnap), delayMs);
+
+      next16Time += secPer16;
+      state.step = (state.step + 1) % 16;
+      if (state.step === 0) state.bar++;
+    }
+
+    while (nextTriTime < ctx.currentTime + lookahead) {
+      const tri = state.tripletTick;
+      const t = nextTriTime;
+      state.activePads.forEach(id => {
+        const p = PAD_MAP[id];
+        if (p && p.onTriplet) p.onTriplet(tri, t);
+      });
+      nextTriTime += secPerTri;
+      state.tripletTick = (state.tripletTick + 1) % 12;
+    }
+  }
+
+  // =========================================================================
+  // 6. UI RENDERING & INTERACTIONS
+  // =========================================================================
+  function buildPlayhead() {
+    const grid = document.getElementById('steps-grid');
+    const labels = ['1','e','&','a','2','e','&','a','3','e','&','a','4','e','&','a'];
+    const colors = ['var(--c-ding)','var(--c-ghost)','var(--c-perc)','var(--c-melody)'];
+    grid.innerHTML = '';
+    for (let i = 0; i < 16; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'step-cell' + (i%4===0?' downbeat':'') + (i%4===3?' pickup':'');
+      cell.id = 'step-' + i;
+      cell.innerHTML = `<div>${labels[i]}</div><div class="step-dots">${
+        colors.map((c, idx) => `<span class="sdot" data-dot="${idx}" style="background:${c}"></span>`).join('')
+      }</div>`;
+      grid.appendChild(cell);
+    }
+  }
+
+  function highlightStep(s, bar, chord) {
+    if (lastVisualStep >= 0) {
+      const prev = document.getElementById('step-' + lastVisualStep);
+      if (prev) prev.classList.remove('now');
+    }
+    const cur = document.getElementById('step-' + s);
+    if (cur) cur.classList.add('now');
+    lastVisualStep = s;
+    document.getElementById('tel-bar').textContent = (bar % 16) + 1;
+    document.getElementById('tel-chord').textContent = chord;
+  }
+
+  function updateStepDots() {
+    for (let i = 0; i < 16; i++) {
+      const cell = document.getElementById('step-' + i);
+      if (!cell) continue;
+      const lit = [false, false, false, false];
+      state.activePads.forEach(id => {
+        const p = PAD_MAP[id];
+        if (p && p.pattern && p.pattern[i] > 0.1 && p.bank.dotIdx !== undefined) {
+          lit[p.bank.dotIdx] = true;
+        }
+      });
+      cell.querySelectorAll('.sdot').forEach((d, idx) => d.classList.toggle('lit', lit[idx]));
+    }
+  }
+
+  function renderBanks() {
+    const app = document.getElementById('app');
+    app.innerHTML = '';
+
+    // Insert Modifiers Bank (Bank G) right before Bank H
+    BANKS.forEach(bank => {
+      if (bank.id === 'ctrl') app.appendChild(renderModifiersBank());
+
+      const sec = document.createElement('section');
+      sec.className = 'bank';
+      sec.innerHTML = `
+        <div class="bank-head">
+          <div class="bank-title">
+            <span class="bank-swatch" style="background:${bank.color}"></span>
+            <span>${bank.title}</span>
+          </div>
+          <div class="bank-meta">${bank.meta}</div>
+        </div>
+        <div class="pad-grid"></div>
+      `;
+      const grid = sec.querySelector('.pad-grid');
+
+      bank.pads.forEach(pad => {
+        const el = document.createElement('div');
+        el.className = 'pad';
+        el.id = 'pad-' + pad.id;
+        el.style.setProperty('--pad-color', bank.color);
+
+        const barsHtml = pad.pattern
+          ? `<div class="mini-vis">${pad.pattern.map(v => `<div class="mini-bar" style="height:${Math.max(15, Math.round(v*100))}%"></div>`).join('')}</div>`
+          : '';
+
+        const soloBtn = (!pad.isProg && !pad.isPreset)
+          ? `<button class="mini-btn" data-solo="${pad.id}" title="Play ONLY this element in isolation">SOLO</button>`
+          : '';
+
+        el.innerHTML = `
+          <div class="pad-top">
+            <span class="pad-code">${pad.id}</span>
+            <span class="pad-name">${pad.name}</span>
+          </div>
+          <div class="pad-desc">${pad.desc}</div>
+          ${barsHtml}
+          <div class="pad-foot">
+            <span class="pad-tag">${pad.tag}</span>
+            <div class="pad-actions">${soloBtn}</div>
+          </div>
+        `;
+
+        el.addEventListener('click', (e) => {
+          const soloId = e.target.getAttribute && e.target.getAttribute('data-solo');
+          if (soloId) {
+            e.stopPropagation();
+            soloPad(soloId);
+            return;
+          }
+          togglePad(pad.id);
+        });
+
+        grid.appendChild(el);
+      });
+
+      app.appendChild(sec);
+    });
+  }
+
+  function renderModifiersBank() {
+    const sec = document.createElement('section');
+    sec.className = 'bank';
+    sec.innerHTML = `
+      <div class="bank-head">
+        <div class="bank-title">
+          <span class="bank-swatch" style="background:var(--c-mod)"></span>
+          <span>Bank G — Real-Time Sound &amp; Groove Modifiers (A/B Insights Live)</span>
+        </div>
+        <div class="bank-meta">Toggle any insight OFF while playing to hear the difference immediately</div>
+      </div>
+      <div class="mod-grid" id="mod-grid"></div>
+    `;
+    const grid = sec.querySelector('#mod-grid');
+    MODIFIERS.forEach(m => {
+      const card = document.createElement('div');
+      card.className = 'mod-card';
+      card.id = 'mod-' + m.key;
+      card.innerHTML = `
+        <div class="mod-top">
+          <span><span class="pad-code" style="color:var(--c-mod);margin-right:5px;">${m.code}</span>${m.name}</span>
+          <span class="mod-badge"></span>
+        </div>
+        <div class="pad-desc" style="min-height:auto">${m.desc}</div>
+      `;
+      card.addEventListener('click', () => {
+        ensureAudio();
+        if (m.isCycle) {
+          state.mods.stereoMode = (state.mods.stereoMode + 1) % 3;
+        } else {
+          state.mods[m.key] = !state.mods[m.key];
+        }
+        applyAudioModifiers();
+        syncUI();
+      });
+      grid.appendChild(card);
+    });
+    return sec;
+  }
+
+  function togglePad(id) {
+    ensureAudio();
+    const pad = PAD_MAP[id];
+    if (!pad) return;
+
+    if (pad.isProg) {
+      state.activeProg = id;
+      state.bar = 0;
+      syncUI();
+      return;
+    }
+
+    if (pad.isPreset) {
+      loadPreset(pad.preset);
+      return;
+    }
+
+    if (state.activePads.has(id)) {
+      state.activePads.delete(id);
+    } else {
+      state.activePads.add(id);
+      if (!state.playing) startClock();
+    }
+    syncUI();
+  }
+
+  function soloPad(id) {
+    ensureAudio();
+    const isAlreadySolo = state.activePads.size === 1 && state.activePads.has(id);
+    state.activePads.clear();
+    if (!isAlreadySolo) {
+      state.activePads.add(id);
+      if (!state.playing) startClock();
+    }
+    syncUI();
+  }
+
+  function loadPreset(preset) {
+    ensureAudio();
+    state.scaleId = preset.scale;
+    state.bpm = preset.bpm;
+    state.activeProg = preset.prog;
+    state.mods.stereoMode = preset.stereo;
+    state.activePads = new Set(preset.pads);
+    state.bar = 0;
+    document.getElementById('sel-scale').value = state.scaleId;
+    document.getElementById('rng-bpm').value = state.bpm;
+    document.getElementById('out-bpm').textContent = state.bpm;
+    applyAudioModifiers();
+    if (!state.playing) startClock();
+    syncUI();
+  }
+
+  function randomCompatibleStack() {
+    ensureAudio();
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)].id;
+    state.activePads = new Set([
+      pick(BANKS[0].pads), // Ding
+      pick(BANKS[1].pads), // Ghost Bed
+      pick(BANKS[2].pads), // Perc
+      pick(BANKS[3].pads), // Melody
+      pick(BANKS[4].pads)  // Chord
+    ]);
+    state.activeProg = pick(BANKS[5].pads.slice(0, 4));
+    if (!state.playing) startClock();
+    syncUI();
+  }
+
+  function updateTransportUI() {
+    const btn = document.getElementById('btn-play');
+    btn.textContent = state.playing ? '■ Stop Clock' : '▶ Play Clock';
+    btn.classList.toggle('playing', state.playing);
+  }
+
+  function syncUI() {
+    // Pads
+    Object.keys(PAD_MAP).forEach(id => {
+      const el = document.getElementById('pad-' + id);
+      if (!el) return;
+      const p = PAD_MAP[id];
+      const on = p.isProg ? (state.activeProg === id) : state.activePads.has(id);
+      el.classList.toggle('active', on);
+      const sBtn = el.querySelector('[data-solo]');
+      if (sBtn) sBtn.classList.toggle('solo-on', state.activePads.size === 1 && state.activePads.has(id));
+    });
+
+    // Modifiers
+    const stereoLabels = ['Mono 0%', 'Solo 25%', 'Duet 31%'];
+    MODIFIERS.forEach(m => {
+      const card = document.getElementById('mod-' + m.key);
+      if (!card) return;
+      const badge = card.querySelector('.mod-badge');
+      if (m.isCycle) {
+        const mode = state.mods.stereoMode;
+        card.classList.toggle('on', mode > 0);
+        badge.className = mode > 0 ? 'mod-badge badge-on' : 'mod-badge badge-off';
+        badge.textContent = stereoLabels[mode];
+      } else {
+        const on = !!state.mods[m.key];
+        card.classList.toggle('on', on);
+        badge.className = on ? 'mod-badge badge-on' : 'mod-badge badge-off';
+        badge.textContent = on ? 'ON' : 'OFF';
+      }
+    });
+
+    document.getElementById('tel-stereo').textContent = stereoLabels[state.mods.stereoMode];
+
+    // Active chips tray
+    const tray = document.getElementById('active-chips');
+    if (state.activePads.size === 0) {
+      tray.innerHTML = `<span style="color:var(--muted);font-size:11px;">No layers active — click any pad or preset (P1–P4) below.</span>`;
+    } else {
+      tray.innerHTML = Array.from(state.activePads).map(id => {
+        const p = PAD_MAP[id];
+        return `<span class="chip" style="border-color:${p.bank.color}"><b style="color:${p.bank.color}">${id}</b> ${p.name}<button data-rm="${id}">✕</button></span>`;
+      }).join('');
+      tray.querySelectorAll('[data-rm]').forEach(b => {
+        b.addEventListener('click', () => { state.activePads.delete(b.getAttribute('data-rm')); syncUI(); });
+      });
+    }
+
+    updateStepDots();
+  }
+
+  // Wire header controls
+  document.getElementById('btn-play').addEventListener('click', () => state.playing ? stopClock() : startClock());
+  document.getElementById('btn-random').addEventListener('click', randomCompatibleStack);
+  document.getElementById('btn-clear').addEventListener('click', () => { state.activePads.clear(); syncUI(); });
+
+  document.getElementById('sel-scale').addEventListener('change', (e) => {
+    state.scaleId = e.target.value;
+    state.bpm = SCALES[state.scaleId].bpm;
+    document.getElementById('rng-bpm').value = state.bpm;
+    document.getElementById('out-bpm').textContent = state.bpm;
+  });
+  document.getElementById('rng-bpm').addEventListener('input', (e) => {
+    state.bpm = parseInt(e.target.value, 10);
+    document.getElementById('out-bpm').textContent = state.bpm;
+  });
+  document.getElementById('rng-vol').addEventListener('input', (e) => {
+    if (masterGain && ctx) masterGain.gain.setTargetAtTime(parseFloat(e.target.value), ctx.currentTime, 0.03);
+  });
+
+  document.querySelectorAll('.arc-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.arc = btn.getAttribute('data-arc');
+      document.querySelectorAll('.arc-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.getElementById('tel-arc').textContent = btn.textContent.replace(/^[^\w]+/, '');
+      applyAudioModifiers();
+    });
+  });
+
+  // Init
+  buildPlayhead();
+  renderBanks();
+  syncUI();
+})();
+</script>
+</body>
+</html>
