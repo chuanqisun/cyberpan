@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>50 — Auto-Switch Mouse/Keyboard → Raise Hand for Bi-Manual CV</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #cv-video { display: none; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #modeBadge {
+    font-size: 10px; letter-spacing: 0.09em; padding: 0 8px; height: 22px;
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 99px;
+    display: inline-flex; align-items: center; color: rgba(255,255,255,0.60);
+  }
+  #modeBadge.cv { border-color: #ff5a1f; color: #ff5a1f; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.08em;
+    height: 22px; padding: 0 9px; border-radius: 99px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; transition: border-color 140ms, color 140ms, background 140ms;
+  }
+  button:hover { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button.on { border-color: #fff; background: #fff; color: #000; }
+  button.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  button.sig.on { background: #ff5a1f; color: #000; }
+  @media (max-width: 900px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="cv-video" playsinline muted></video>
+<header>
+  <span class="hint"><b>50</b> · DEFAULT: <b>1–9 / click</b> play &amp; drag groove · <b>RAISE HAND</b> auto-switches to <b>BI-MANUAL CV</b> (L energy/pinch lock · R aim/pinch strike) · lower hand → back to mouse</span>
+  <div class="grp">
+    <span id="modeBadge">MODE: MOUSE / KEYS</span>
+    <button id="camBtn" type="button">ARM HAND CAM</button>
+    <button id="simBtn" type="button">SIM RAISE HAND</button>
+    <button id="playBtn" type="button">PLAY</button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 50 — SEAMLESS AUTO-SWITCH: MOUSE/KEYBOARD DEFAULT → RAISE HAND FOR BI-MANUAL CV
+//   1 Core Interaction:
+//     - Zero-clutter Mouse + Keyboard mode by default (no giant CV boxes on screen!)
+//     - Passive camera watcher (or SIM RAISE HAND demo) monitors upper-frame hand presence.
+//     - Raise hand(s) above chest threshold for ~240ms → smoothly morphs into
+//       BI-MANUAL MODE (L hand steers energy/density + pinch holds motif;
+//       R hand aims 9 tone fields + pinch strikes live handpan).
+//     - Lower hands for ~1.1s OR use mouse/keys → smoothly returns to MOUSE/KEYS
+//       without dropping a single beat!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, hz, idx, pan: ((idx / 8) - 0.5) * 0.58 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 5] },
+];
+
+const BPM = 105, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.10;
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PALM_IDX = [0, 5, 9, 13, 17];
+const RAISE_Y_TH = 0.72; // palm above lower 28% of camera frame counts as "hand raised"
+const RAISE_HOLD_MS = 240, LOWER_HOLD_MS = 1150;
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM #41/#42 HANDPAN AUDIO ENGINE ====================
+let actx = null, masterLP = null, clickBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.84; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2350; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.44;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.55) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.020), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, dingHz = null, bright = 0.5 } = opts, isDing = idx === 0;
+  const freq = (isDing && dingHz) ? dingHz : n.hz;
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.12, 1.05);
+  const sus = clamp(0.42 + dur * 0.30, 0.42, 2.45) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? -0.04 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const br = lerp(0.7, 1.35, clamp(bright, 0, 1));
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.22, 0.90], [2.0, 0.30 * br, 0.72], [3.0, 0.38 * br, 0.62]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.85], [2.0, 0.26 * br, 0.68], [3.0, 0.46 * br, 0.66]];
+  for (const [r, amp, dm] of partials) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = isDing ? 0.007 : (r === 3 ? 0.020 : 0.005), dec = Math.max(0.08, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isGhost ? 0.035 : 0.07), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+}
+
+// ==================== 2. MUSICAL STATE & SEAMLESS MODE MACHINE ====================
+const state = {
+  playing: false, step: 0, bar: 0, nextTime: 0,
+  // Shared continuous musical controls (driven by Mouse/Keys OR Bi-Manual CV identically!)
+  energy: 0.50,    // 0=sparse breath -> 0.5=groove -> 1.0=dense bright peak
+  warmth: 0.55,    // controls LPF brightness & compound-5th halo
+  motifLocked: false,
+  lockedMotif: [0, 4, 6, 8, 4, 6, 7, 4],
+  // Input Mode State Machine: 'mouse' <-> 'bimanual'
+  inputMode: 'mouse',
+  cvBlend: 0.0, // smooth 0..1 visual cross-fade into Bi-Manual overlay!
+  modeToast: '', modeToastPerf: -9999,
+  pastNotes: [], lociGlow: new Float32Array(9), lociHeat: new Float32Array(9),
+};
+
+function switchInputMode(nextMode, reason) {
+  if (state.inputMode === nextMode) return;
+  state.inputMode = nextMode;
+  state.modeToast = reason;
+  state.modeToastPerf = performance.now();
+  const badge = document.getElementById('modeBadge');
+  badge.textContent = nextMode === 'bimanual' ? 'MODE: BI-MANUAL CV' : 'MODE: MOUSE / KEYS';
+  badge.classList.toggle('cv', nextMode === 'bimanual');
+}
+
+// ==================== 3. SCHEDULER ====================
+let schedTimer = null;
+function scheduler() {
+  if (!state.playing || !actx) return;
+  while (state.nextTime < actx.currentTime + LOOKAHEAD) {
+    const s = state.step, bar = state.bar, t0 = state.nextTime, ch = PROG[bar % 4];
+    const jitter = (Math.random() * 2 - 1) * 0.007;
+    if (masterLP) masterLP.frequency.setTargetAtTime(lerp(1300, 3200, state.warmth), t0, 0.04);
+
+    // 1. Ding Bass anchor (Tresillo + step 15 pickup)
+    if (s === 0 || (s === 6 && state.energy > 0.25) || (s === 12 && state.energy > 0.2) || (s === 15 && state.energy > 0.55)) {
+      playPan(0, t0 + jitter - 0.005, s === 0 ? 0.94 : 0.78, 4, { dingHz: ch.dingHz, bright: state.warmth });
+      visAt(t0, 0, 0.92, false);
+    }
+    // 2. Foreground Melody (follows locked motif if L-hand pinched!)
+    if (s === 3 || s === 10 || (s === 14 && state.energy > 0.35) || (s === 7 && state.energy > 0.72)) {
+      const mIdx = state.motifLocked
+        ? state.lockedMotif[(s + bar) % state.lockedMotif.length]
+        : ch.pool[1 + ((s + bar) % (ch.pool.length - 1))];
+      playPan(mIdx, t0 + jitter - 0.005, s % 4 === 3 ? 0.92 : 0.84, 2, { bright: state.warmth });
+      visAt(t0, mIdx, 0.90, false);
+    } else if (state.energy > 0.18 && (s % 4 !== 1 || state.energy > 0.65)) {
+      // 3. 50% Ghost-Note Tactile Bed
+      const gIdx = ch.pool[(s + bar) % ch.pool.length];
+      playPan(gIdx, t0 + jitter + 0.003, s % 4 === 3 ? 0.38 : 0.24, 1, { isGhost: true, bright: state.warmth });
+      visAt(t0, gIdx, 0.30, true);
+    }
+
+    state.nextTime += TATUM;
+    state.step = (state.step + 1) % 16;
+    if (state.step === 0) state.bar++;
+  }
+}
+
+function visAt(when, noteIdx, vel, isGhost) {
+  const ms = Math.max(0, (when - actx.currentTime) * 1000);
+  setTimeout(() => {
+    if (!state.playing) return;
+    state.lociGlow[noteIdx] = Math.max(state.lociGlow[noteIdx], isGhost ? 0.36 : 0.95);
+    state.pastNotes.push({ noteIdx, vel, isGhost, hot: false, born: performance.now() });
+    if (state.pastNotes.length > 90) state.pastNotes.shift();
+  }, ms);
+}
+
+function strikeLive(idx, bright = state.warmth) {
+  ensureAudio();
+  const ch = PROG[state.bar % 4];
+  playPan(idx, actx.currentTime, 0.94, 4, { dingHz: ch.dingHz, bright });
+  state.lociGlow[idx] = 1; state.lociHeat[idx] = 1;
+  state.pastNotes.push({ noteIdx: idx, vel: 0.95, isGhost: false, hot: true, born: performance.now() });
+  state.lockedMotif.push(idx); if (state.lockedMotif.length > 8) state.lockedMotif.shift();
+}
+
+const playBtn = document.getElementById('playBtn'), camBtn = document.getElementById('camBtn'), simBtn = document.getElementById('simBtn');
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  ensureAudio(); state.playing = want;
+  if (want) { state.nextTime = actx.currentTime + 0.025; scheduler(); schedTimer = setInterval(scheduler, 20); }
+  else { clearInterval(schedTimer); schedTimer = null; }
+  playBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
+  playBtn.classList.toggle('on', state.playing);
+}
+playBtn.addEventListener('click', () => togglePlay());
+
+// ==================== 4. PASSIVE MEDIAPIPE WATCHER + HAND-RAISE AUTO-SWITCH ====================
+class OneEuro {
+  constructor(fc = 1.5, beta = 0.08) { this.fc = fc; this.beta = beta; this.x = null; this.dx = 0; this.t = null; }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  _a(c, dt) { return 1 / (1 + (1 / (2 * Math.PI * Math.max(1e-4, c))) / dt); }
+  filter(v, t) {
+    if (this.x === null) { this.x = v; this.t = t; return v; }
+    const dt = clamp(t - this.t, 0.001, 0.25); this.t = t;
+    const ad = this._a(1.0, dt); this.dx = ad * ((v - this.x) / dt) + (1 - ad) * this.dx;
+    const ax = this._a(this.fc + this.beta * Math.abs(this.dx), dt);
+    return (this.x = ax * v + (1 - ax) * this.x);
+  }
+}
+
+const videoEl = document.getElementById('cv-video');
+const mkHand = () => ({ active: false, lms: null, x: 0.5, y: 0.5, fx: new OneEuro(), fy: new OneEuro(), pinched: false, lastPinch: 0, aimedLocus: 4 });
+const cv = {
+  source: 'off', // 'off' | 'cam' | 'sim'
+  loading: false, stream: null, landmarker: null, lastVidT: -1,
+  raisedSince: 0, loweredSince: 0, simStart: 0,
+  hands: { L: mkHand(), R: mkHand() },
+};
+
+function stopCv() {
+  cv.source = 'off'; cv.loading = false;
+  if (cv.stream) { cv.stream.getTracks().forEach(t => t.stop()); cv.stream = null; }
+  videoEl.srcObject = null;
+  cv.hands.L.active = cv.hands.R.active = false;
+  camBtn.textContent = 'ARM HAND CAM'; camBtn.classList.remove('on', 'sig');
+  simBtn.textContent = 'SIM RAISE HAND'; simBtn.classList.remove('on', 'sig');
+  switchInputMode('mouse', 'MOUSE / KEYS');
+}
+
+camBtn.addEventListener('click', async () => {
+  if (cv.source === 'cam' || cv.loading) { stopCv(); return; }
+  stopCv(); ensureAudio(); cv.loading = true; camBtn.textContent = 'LOADING CV…'; camBtn.classList.add('sig');
+  if (!navigator.mediaDevices?.getUserMedia) { cv.loading = false; camBtn.textContent = 'NO CAM API'; return; }
+  try {
+    cv.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
+    videoEl.srcObject = cv.stream; await videoEl.play();
+    if (!cv.landmarker) {
+      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+      const opts = (d) => ({ baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: d }, runningMode: 'VIDEO', numHands: 2 });
+      try { cv.landmarker = await HandLandmarker.createFromOptions(vision, opts('GPU')); }
+      catch { cv.landmarker = await HandLandmarker.createFromOptions(vision, opts('CPU')); }
+    }
+    cv.loading = false; cv.source = 'cam'; camBtn.textContent = 'CAM WATCHING'; camBtn.classList.add('on');
+  } catch { stopCv(); camBtn.textContent = 'CAM BLOCKED'; }
+});
+
+// Simulated Raise-Hand Cycle: lets anyone experience Mouse → Raise Hands → Bi-Manual → Lower Hands → Mouse!
+simBtn.addEventListener('click', () => {
+  ensureAudio();
+  if (cv.source === 'sim') { stopCv(); return; }
+  stopCv(); cv.source = 'sim'; cv.simStart = performance.now();
+  simBtn.textContent = 'STOP SIM HAND'; simBtn.classList.add('sig', 'on');
+  if (!state.playing) togglePlay(true);
+});
+
+function synthHand(cx, cy, side, pinch, t) {
+  const p = clamp(pinch, 0, 1);
+  const j = (ox, oy) => ({ x: clamp(1 - (cx + ox), 0, 1), y: clamp(cy + oy, 0, 1) });
+  return [
+    j(0, 0.07), j(-side * 0.03, 0.045), j(-side * 0.055, 0.02), j(-side * 0.068, -0.01),
+    j(lerp(-side * 0.082, -side * 0.05, p), lerp(-0.03, -0.065, p)),
+    j(-side * 0.03, -0.02), j(-side * 0.042, -0.055), j(-side * 0.048, -0.085),
+    j(lerp(-side * 0.052, -side * 0.05, p), lerp(-0.115, -0.070, p)),
+    j(-side * 0.008, -0.025), j(-side * 0.01, -0.07), j(-side * 0.01, -0.10), j(-side * 0.01, -0.13),
+    j(side * 0.015, -0.02), j(side * 0.02, -0.06), j(side * 0.022, -0.095), j(side * 0.024, -0.12),
+    j(side * 0.035, -0.01), j(side * 0.042, -0.045), j(side * 0.048, -0.07), j(side * 0.052, -0.09),
+  ];
+}
+
+function ingestHands(rawList, nowMs) {
+  const tSec = nowMs / 1000;
+  const parsed = rawList.filter(r => r && r.length >= 21).map(raw => {
+    const lms = raw.map(p => ({ x: 1 - p.x, y: p.y })); // mirrored
+    let cx = 0, cy = 0; for (const k of PALM_IDX) { cx += lms[k].x; cy += lms[k].y; }
+    return { lms, cx: cx / 5, cy: cy / 5 };
+  });
+
+  // Check whether ANY hand is raised above RAISE_Y_TH!
+  const anyRaised = parsed.some(h => h.cy < RAISE_Y_TH);
+  if (anyRaised) {
+    cv.loweredSince = 0;
+    if (!cv.raisedSince) cv.raisedSince = nowMs;
+    if (state.inputMode !== 'bimanual' && (nowMs - cv.raisedSince) >= RAISE_HOLD_MS) {
+      switchInputMode('bimanual', 'HAND RAISED → BI-MANUAL CV');
+    }
+  } else {
+    cv.raisedSince = 0;
+    if (!cv.loweredSince) cv.loweredSince = nowMs;
+    if (state.inputMode === 'bimanual' && (nowMs - cv.loweredSince) >= LOWER_HOLD_MS) {
+      switchInputMode('mouse', 'HANDS LOWERED → MOUSE / KEYS');
+    }
+  }
+
+  // Assign L / R hands by horizontal side
+  let hL = null, hR = null;
+  if (parsed.length === 1) { if (parsed[0].cx < 0.5) hL = parsed[0]; else hR = parsed[0]; }
+  else if (parsed.length >= 2) { parsed.sort((a, b) => a.cx - b.cx); hL = parsed[0]; hR = parsed[1]; }
+
+  for (const [id, src] of [['L', hL], ['R', hR]]) {
+    const slot = cv.hands[id];
+    if (src && src.cy < RAISE_Y_TH + 0.06) {
+      slot.active = true; slot.lms = src.lms;
+      slot.x = clamp(slot.fx.filter(src.cx, tSec), 0, 1);
+      slot.y = clamp(slot.fy.filter(src.cy, tSec), 0, 1);
+      if (state.inputMode === 'bimanual') {
+        const pinchD = Math.hypot(src.lms[4].x - src.lms[8].x, src.lms[4].y - src.lms[8].y);
+        if (id === 'L') {
+          state.energy = clamp(1 - (slot.y - 0.14) / 0.58, 0, 1);
+          if (!slot.pinched && pinchD < 0.055 && nowMs - slot.lastPinch > 320) {
+            slot.pinched = true; slot.lastPinch = nowMs; state.motifLocked = !state.motifLocked;
+          } else if (slot.pinched && pinchD > 0.078) slot.pinched = false;
+        } else {
+          state.warmth = clamp(1 - (slot.y - 0.14) / 0.58, 0, 1);
+          slot.aimedLocus = clamp(Math.round(((slot.x - 0.45) / 0.48) * 8), 0, 8);
+          if (!slot.pinched && pinchD < 0.055 && nowMs - slot.lastPinch > 240) {
+            slot.pinched = true; slot.lastPinch = nowMs; strikeLive(slot.aimedLocus, state.warmth);
+          } else if (slot.pinched && pinchD > 0.078) slot.pinched = false;
+        }
+      }
+    } else {
+      slot.active = false; slot.lms = null; slot.fx.reset(); slot.fy.reset();
+    }
+  }
+}
+
+function tickCv(nowMs) {
+  if (cv.source === 'cam' && cv.landmarker && videoEl.readyState >= 2 && videoEl.currentTime !== cv.lastVidT) {
+    cv.lastVidT = videoEl.currentTime;
+    try { const r = cv.landmarker.detectForVideo(videoEl, Math.round(nowMs)); ingestHands(r?.landmarks || [], nowMs); } catch {}
+  } else if (cv.source === 'sim') {
+    const t = (nowMs - cv.simStart) / 1000;
+    // 14s cycle: 0–1.5s hands down (Mouse) → 1.5–10.5s hands raised (Bi-Manual) → 10.5–14s hands lowered (back to Mouse!)
+    const cyc = t % 14;
+    if (cyc < 1.5 || cyc > 10.5) {
+      ingestHands([], nowMs);
+    } else {
+      const lift = clamp(Math.min((cyc - 1.5) / 0.6, (10.5 - cyc) / 0.6), 0, 1);
+      const yL = lerp(0.84, 0.42 + 0.18 * Math.sin(t * 0.7), lift);
+      const yR = lerp(0.84, 0.40 + 0.15 * Math.cos(t * 0.6), lift);
+      const xR = 0.72 + 0.16 * Math.sin(t * 0.9);
+      const pinchR = ((t % 1.4) < 0.25) ? 1 : 0;
+      const pinchL = (cyc > 5.0 && cyc < 5.3) ? 1 : 0;
+      ingestHands([synthHand(0.26, yL, -1, pinchL, t), synthHand(xR, yR, 1, pinchR, t)], nowMs);
+    }
+  }
+}
+
+// ==================== 5. DEFAULT MOUSE / KEYBOARD INTERACTION ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, nowY = 0, fieldL = 0, fieldR = 0, gap = 46;
+const locusX = (i) => fieldL + i * gap;
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  nowY = Math.round(H * 0.56);
+  gap = clamp(W * 0.055, 28, 60);
+  fieldL = Math.round(W * 0.5 - gap * 4);
+  fieldR = fieldL + gap * 8;
+}
+window.addEventListener('resize', layout); layout();
+
+let draggingMouse = false;
+canvas.addEventListener('pointerdown', (e) => {
+  if (state.inputMode === 'bimanual') switchInputMode('mouse', 'MOUSE TOUCH → MOUSE / KEYS');
+  const mx = e.clientX, my = e.clientY;
+  const idx = (mx >= fieldL - gap * 0.5 && mx <= fieldR + gap * 0.5) ? clamp(Math.round((mx - fieldL) / gap), 0, 8) : -1;
+  if (idx >= 0 && Math.abs(my - nowY) <= 32) { strikeLive(idx); return; }
+  draggingMouse = true;
+  state.energy = clamp(1 - my / H, 0, 1); state.warmth = clamp(mx / W, 0, 1);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!draggingMouse) return;
+  state.energy = clamp(1 - e.clientY / H, 0, 1);
+  state.warmth = clamp(e.clientX / W, 0, 1);
+});
+canvas.addEventListener('pointerup', () => { draggingMouse = false; });
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (!e.repeat && e.key >= '1' && e.key <= '9') {
+    if (state.inputMode === 'bimanual') switchInputMode('mouse', 'KEYBOARD → MOUSE / KEYS');
+    strikeLive(Number(e.key) - 1);
+  }
+});
+
+// ==================== 6. CLEAN MORPHING RENDERER ====================
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  tickCv(nowMs);
+  state.cvBlend = lerp(state.cvBlend, state.inputMode === 'bimanual' ? 1 : 0, 1 - Math.exp(-dt * 7.5));
+  for (let i = 0; i < 9; i++) { state.lociGlow[i] *= Math.exp(-dt * 5.2); state.lociHeat[i] = Math.max(0, state.lociHeat[i] - dt * 2.5); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // 1. Minimal Center Handpan Horizon + Rising Past Echoes (present cleanly in BOTH modes!)
+  sLine(fieldL - 24, nowY + 0.5, fieldR + 24, nowY + 0.5, 'rgba(255,255,255,0.52)', 1.1);
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = locusX(i), g = state.lociGlow[i], h = state.lociHeat[i];
+    const aimed = state.cvBlend > 0.3 && cv.hands.R.active && cv.hands.R.aimedLocus === i;
+    sLine(x, 56, x, nowY, `rgba(255,255,255,${aimed ? 0.22 : i === 0 || i === 4 ? 0.06 : 0.025})`);
+    fCirc(x, nowY, (i === 0 ? 3.2 : 2.3) + g * 2.8 + (aimed ? 1.8 : 0), mixInk(aimed ? 1 : h, 0.55 + g * 0.45));
+    if (aimed) sCirc(x, nowY, 10, '#ff5a1f', 1.1);
+    ctx.fillStyle = mixInk(aimed ? 1 : h, 0.28 + g * 0.68);
+    ctx.fillText(NOTES[i].name, x, nowY + 18);
+  }
+  for (let i = state.pastNotes.length - 1; i >= 0; i--) {
+    const n = state.pastNotes[i], age = (nowMs - n.born) / 1000;
+    const y = nowY - age * 76; if (y < 52) { state.pastNotes.splice(i, 1); continue; }
+    const f = clamp((y - 52) / 50, 0, 1);
+    fCirc(locusX(n.noteIdx), y, n.isGhost ? 1.5 : 3.0, mixInk(n.hot ? 1 : 0, (n.isGhost ? 0.26 : 0.78) * f));
+  }
+
+  // Minimal live Energy / Warmth hairline readout below NOW
+  const barW = fieldR - fieldL;
+  sLine(fieldL, nowY + 46, fieldL + barW, nowY + 46, 'rgba(255,255,255,0.12)');
+  sLine(fieldL, nowY + 46, fieldL + barW * state.energy, nowY + 46, mixInk(state.cvBlend * 0.8, 0.72), 1.6);
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.textAlign = 'left'; ctx.fillText(`ENERGY ${Math.round(state.energy * 100)}%${state.motifLocked ? ' · MOTIF LOCKED' : ''}`, fieldL, nowY + 60);
+  ctx.textAlign = 'right'; ctx.fillText(`WARMTH ${Math.round(state.warmth * 100)}%`, fieldR, nowY + 60);
+
+  // 2. BI-MANUAL SPATIAL OVERLAY — ONLY materializes when hand(s) are raised! (Zero clutter by default!)
+  if (state.cvBlend > 0.02) {
+    const b = state.cvBlend;
+    // Left / Right minimalist spatial guide frames
+    ctx.strokeStyle = `rgba(255,90,31,${(0.22 * b).toFixed(3)})`; ctx.lineWidth = 1;
+    ctx.strokeRect(24, 62, W * 0.44, H - 96);
+    ctx.strokeRect(W * 0.56 - 24, 62, W * 0.44, H - 96);
+
+    ctx.font = '9px ui-monospace, monospace'; ctx.fillStyle = `rgba(255,90,31,${(0.70 * b).toFixed(3)})`;
+    ctx.textAlign = 'left';  ctx.fillText('L HAND · HEIGHT = ENERGY · PINCH = LOCK MOTIF', 34, 78);
+    ctx.textAlign = 'right'; ctx.fillText('R HAND · X = AIM · Y = WARMTH · PINCH = STRIKE', W - 34, 78);
+
+    // Draw clean white 21-point hand wireframes + pinch signal
+    for (const id of ['L', 'R']) {
+      const h = cv.hands[id]; if (!h.active || !h.lms) continue;
+      ctx.strokeStyle = `rgba(255,255,255,${(0.45 * b).toFixed(3)})`; ctx.lineWidth = 1.1;
+      for (const [i0, i1] of HAND_BONES) {
+        const a = h.lms[i0], c = h.lms[i1];
+        ctx.beginPath(); ctx.moveTo(a.x * W, a.y * H); ctx.lineTo(c.x * W, c.y * H); ctx.stroke();
+      }
+      const px = h.x * W, py = h.y * H;
+      sCirc(px, py, h.pinched ? 16 : 10, mixInk(h.pinched ? 1 : 0.6, 0.90 * b), 1.4);
+      fCirc(h.lms[8].x * W, h.lms[8].y * H, 3.2, '#ff5a1f');
+      fCirc(h.lms[4].x * W, h.lms[4].y * H, 3.2, '#ff5a1f');
+    }
+  }
+
+  // Subtle transition toast when switching modes
+  const toastA = clamp(1 - (nowMs - state.modeToastPerf) / 1400, 0, 1);
+  if (toastA > 0.02) {
+    ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = mixInk(state.inputMode === 'bimanual' ? 1 : 0, toastA * 0.88);
+    ctx.fillText(state.modeToast, W * 0.5, 44);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

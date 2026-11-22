@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>45 — Clean 3D Funnel Stage & Direct Manipulation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none;
+  }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.76); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>45</b> · CLEAN 3D FUNNEL · <b>1–9 / click NOW</b> strike · <b>click/drag FUNNEL</b> place &amp; sculpt future · <b>right-click</b> erase · <b>SPACE</b> play</span>
+  <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 45 — CLEAN 3D FUNNEL STAGE × DIRECT MANIPULATION (1 CORE INTERACTION)
+//   - Pure #000 void (zero white/grey floor or wall fill bands!)
+//   - Straight-up parallel vertical PAST wall + 1-point perspective FUTURE funnel
+//   - 1 core interaction: Strike NOW (live) + Click/Drag/Erase on FUTURE funnel
+//   - Audio & Groove from #41/#42: E Amara/Kurd @ 105 BPM, i–VI–VII 2.3s cycle,
+//     50% ghost-note rule (3:1 velocity), "a"-16th suction, 1:2:3 compound-5th halo
+// ============================================================================
+
+const A4 = 440.5;
+const semiHz = (st) => A4 * Math.pow(2, st / 12);
+// 9-tone E Kurd / Amara layout (SPRITES #41 scale): E3, B3, C4, D4, E4, F#4, G4, A4, B4
+const NOTES = [
+  ['E3', '^1',  semiHz(-17)], ['B3', '^5',  semiHz(-10)], ['C4', '^b6', semiHz(-9)],
+  ['D4', '^b7', semiHz(-7)],  ['E4', '^1',  semiHz(-5)],  ['F#4','^2',  semiHz(-3)],
+  ['G4', '^b3', semiHz(-2)],  ['A4', '^4',  semiHz(0)],   ['B4', '^5',  semiHz(2)],
+].map(([name, deg, freq], idx) => ({ name, deg, freq, idx, pan: ((idx / 8) - 0.5) * 0.56 }));
+
+// 1-bar (~2.3s) i–VI–VII–i chord roots (E3, C3, D3, E3) + scale degree pools
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 5] },
+];
+
+const BPM = 105, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.11, FLASH_MS = 420;
+const FUTURE_STEPS = 32, FLARE = 1.56, WALL_PAD = 4.55, PAST_K = 0.055;
+const QUANT_DURS = [1, 2, 3, 4, 6];
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const snapDur = (raw) => QUANT_DURS.reduce((q, d) => Math.abs(d - raw) <= Math.abs(q - raw) ? d : q, 2);
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.92), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM #41/#42 ACOUSTIC HANDPAN ENGINE ====================
+let actx = null, masterLP = null, dryGain = null, wetGain = null, clickBuf = null;
+
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.knee.value = 12; comp.ratio.value = 5;
+    comp.attack.value = 0.003; comp.release.value = 0.14; comp.connect(actx.destination);
+
+    const master = actx.createGain(); master.gain.value = 0.84; master.connect(comp);
+    // Warmth filter (< 2.3 kHz keeps 90% energy warm below 700Hz, zero ear fatigue)
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2350; masterLP.Q.value = 0.65;
+
+    dryGain = actx.createGain(); dryGain.gain.value = 0.80;
+    wetGain = actx.createGain(); wetGain.gain.value = 0.44;
+
+    const irLen = Math.floor(sr * 2.5), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) {
+        lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34;
+        d[i] = lp * Math.pow(1 - i / irLen, 2.55) * (i < 550 ? i / 550 : 1) * 0.52;
+      }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dryGain); dryGain.connect(master);
+    masterLP.connect(conv); conv.connect(wetGain); wetGain.connect(master);
+
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.022), sr);
+    const cd = clickBuf.getChannelData(0);
+    for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(noteIdx, when, vel = 0.78, durSteps = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[noteIdx]; if (!n) return null;
+  const { isGhost = false, dingHzOverride = null } = opts;
+  const isDing = noteIdx === 0;
+  const freq = (isDing && dingHzOverride) ? dingHzOverride : n.freq;
+  const t0 = Math.max(actx.currentTime + 0.002, when);
+  const v = clamp(vel, 0.12, 1.05);
+
+  // 84% sustain retention & rich 1:2:3 compound-5th (+19st) shimmer halo from #41/#42
+  const baseSus = clamp(0.45 + durSteps * 0.32, 0.45, 2.55) * (isDing ? 1.42 : 1.0) * (isGhost ? 0.68 : 1.0);
+  const out = actx.createGain();
+  out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.30), t0);
+  const pan = actx.createStereoPanner();
+  pan.pan.setValueAtTime(isDing ? -0.05 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.24, 0.92], [2.0, 0.30, 0.74], [3.0, 0.40, 0.62]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.86], [2.0, 0.26, 0.70], [3.0, 0.46, 0.66]];
+
+  for (const [ratio, amp, dMul] of partials) {
+    const osc = actx.createOscillator(), g = actx.createGain();
+    osc.type = 'sine'; osc.frequency.setValueAtTime(freq * ratio, t0);
+    const atk = isDing ? 0.007 : (ratio === 3.0 ? 0.022 : 0.005);
+    const dec = Math.max(0.08, baseSus * dMul);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(amp, t0 + atk);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    osc.connect(g); g.connect(out); osc.start(t0); osc.stop(t0 + atk + dec + 0.04);
+  }
+
+  // Subtle 3.7 kHz skin-on-steel finger transient click (Demucs drums signature)
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isGhost ? 0.04 : 0.075), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+
+  return {
+    damp() {
+      const now = actx.currentTime;
+      out.gain.cancelScheduledValues(now);
+      out.gain.setValueAtTime(Math.max(0.001, out.gain.value), now);
+      out.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    }
+  };
+}
+
+function playRimClick(when, vel = 0.55, panVal = 0.18) {
+  if (!actx) return;
+  const t0 = Math.max(actx.currentTime + 0.002, when);
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2850; bp.Q.value = 3.4;
+  const g = actx.createGain(); g.gain.setValueAtTime(vel * 0.22, t0);
+  const p = actx.createStereoPanner(); p.pan.setValueAtTime(panVal, t0);
+  ns.connect(bp); bp.connect(g); g.connect(p); p.connect(masterLP); ns.start(t0);
+}
+
+// ==================== 2. STATE & #41/#42 GROOVE GENERATOR ====================
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1, nextPinId: 1, pastNotes: [], futureNotes: [], pinnedFuture: [], mutedSteps: new Set(),
+  activeHolds: new Map(),
+};
+const loci = NOTES.map(() => ({ glow: 0, heat: 0, damp: 2.0 }));
+const blooms = [];
+
+const getCurrentStep = () => (!state.playing || !actx)
+  ? state.playheadStep
+  : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+const chordAtBar = (b) => PROG[((b % PROG.length) + PROG.length) % PROG.length];
+
+// Generates an immediately hypnotic #41/#42 groove:
+//   - Ding anchor on 0, 6, 12 (Tresillo) + occasional step 15 "a" pickup into 0
+//   - 50% soft ghost-note tactile bed (~0.27 vel) with deep "e" dips (steps 1,5,9,13)
+//   - Loud singing foreground accents (~0.88 vel) on "a" pickups & strong metric slots
+function generateBar(barIdx, pinnedInBar) {
+  const barStart = barIdx * 16, ch = chordAtBar(barIdx);
+  const out = [], pinnedByStep = new Map();
+  for (const p of pinnedInBar) {
+    if (!pinnedByStep.has(p.step)) pinnedByStep.set(p.step, []);
+    pinnedByStep.get(p.step).push(p);
+  }
+
+  // Singing melody motif positions (foreground ~3x louder than ghost bed)
+  const melPos = (barIdx % 2 === 0) ? [0, 3, 6, 10, 12] : [0, 3, 6, 11, 14];
+  const melSet = new Set(melPos);
+
+  for (let pos = 0; pos < 16; pos++) {
+    const step = barStart + pos;
+    if (state.mutedSteps.has(step)) continue;
+
+    // Include any user-placed future notes on this step
+    if (pinnedByStep.has(step)) {
+      for (const p of pinnedByStep.get(step)) {
+        out.push({ id: 0, pinId: p.pinId, step: p.step, dur: p.dur, noteIdx: p.noteIdx, vel: p.vel, isGhost: false, userPinned: true, dingHz: ch.dingHz, flashPerf: p.flashPerf });
+      }
+      continue;
+    }
+
+    // 1. Ding / Bass root anchor (Tresillo 0, 6, 12 + Malte step-15 pickup)
+    if (pos === 0 || pos === 6 || pos === 12 || (pos === 15 && barIdx % 2 === 1)) {
+      const vel = pos === 0 ? 0.94 : pos === 15 ? 0.72 : 0.80;
+      out.push({ id: 0, step, dur: pos === 15 ? 1 : 4, noteIdx: 0, vel, isGhost: false, userPinned: false, dingHz: ch.dingHz, flashPerf: -9999 });
+      if (pos === 0) continue;
+    }
+
+    // 2. Singing Foreground Melody (3x louder than ghost bed!)
+    if (melSet.has(pos) && pos !== 0) {
+      const pool = ch.pool.filter(i => i >= 2);
+      const pick = pool[Math.floor(hash01(barIdx * 17 + pos, 45, 7) * pool.length)];
+      const vel = pos % 4 === 3 ? 0.92 : 0.84; // "a"-16th pickup boost
+      out.push({ id: 0, step, dur: pos === 12 || pos === 14 ? 3 : 2, noteIdx: pick, vel, isGhost: false, userPinned: false, dingHz: ch.dingHz, flashPerf: -9999 });
+      continue;
+    }
+
+    // 3. 50% Ghost-Note Tactile Bed (deep "e" dip on 1,5,9,13; crisp "a" pickup on 3,7,11,15)
+    if (pos % 4 === 1 && hash01(barIdx, pos, 13) < 0.58) continue; // breathing pocket on "e"
+    const bodyPool = ch.pool.filter(i => i >= 1 && i <= 6);
+    const gIdx = bodyPool[(pos + barIdx) % bodyPool.length];
+    const baseV = pos % 4 === 3 ? 0.40 : pos % 4 === 1 ? 0.19 : 0.28;
+    out.push({ id: 0, step, dur: 1, noteIdx: gIdx, vel: baseV, isGhost: true, userPinned: false, dingHz: ch.dingHz, flashPerf: -9999 });
+  }
+
+  out.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  return out;
+}
+
+function recomputeFuture(flash = false) {
+  const nowPerf = performance.now();
+  const prevMap = new Map(state.futureNotes.map(n => [`${n.step}:${n.noteIdx}`, n]));
+  const curStep = getCurrentStep(), minStep = Math.ceil(Math.max(state.nextSchedStep, curStep + 0.01));
+  const curBar = Math.floor(minStep / 16);
+  state.pinnedFuture = state.pinnedFuture.filter(p => p.step >= minStep);
+  for (const s of state.mutedSteps) if (s < minStep) state.mutedSteps.delete(s);
+
+  const next = [];
+  for (let b = curBar; b <= curBar + 2; b++) {
+    const bStart = b * 16;
+    const barPins = state.pinnedFuture.filter(p => p.step >= bStart && p.step < bStart + 16);
+    for (const ev of generateBar(b, barPins)) {
+      if (ev.step < minStep) continue;
+      if (!ev.userPinned) {
+        const old = prevMap.get(`${ev.step}:${ev.noteIdx}`);
+        if (old) ev.flashPerf = old.flashPerf;
+        else if (flash && prevMap.size) ev.flashPerf = nowPerf;
+      }
+      next.push(ev);
+    }
+  }
+  state.futureNotes = next;
+}
+
+function seedPast() {
+  for (let b = -4; b < 0; b++) {
+    for (const ev of generateBar(b, [])) {
+      ev.id = state.nextId++; ev.firedVisual = true; state.pastNotes.push(ev);
+    }
+  }
+}
+
+function triggerResonator(idx, vel, durSteps, hot = false, nowPerf = performance.now()) {
+  const loc = loci[idx];
+  loc.glow = clamp(Math.max(loc.glow * 0.4, 0.35 + vel * 0.65), 0, 1);
+  loc.damp = clamp(3.8 / (0.65 + durSteps * 0.45), 0.7, 3.8);
+  if (hot) loc.heat = 1.0;
+  if (vel >= 0.45 || hot) {
+    blooms.push({ idx, vel, dur: durSteps, bornPerf: nowPerf, lifeMs: clamp(320 + durSteps * 240, 360, 2100), hot });
+    if (blooms.length > 22) blooms.shift();
+  }
+}
+
+// ==================== 3. SCHEDULER & TRANSPORT ====================
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const ev = state.futureNotes.shift();
+    if (ev.step < state.nextSchedStep - 0.001) continue;
+    // Human pocket: ±7ms jitter + -5ms forward accent propulsion (#41 Secret 3)
+    const jitter = (Math.random() * 2 - 1) * 0.007 + (ev.isGhost ? 0.002 : -0.005);
+    const when = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (ev.step - state.anchorStep) * TATUM + jitter);
+    playPan(ev.noteIdx, when, ev.vel, ev.dur, { isGhost: ev.isGhost, dingHzOverride: ev.dingHz });
+
+    // Subtle "a"-16th rim pickup tick on steps 3, 7, 11, 15 (once per step)
+    if (mod16(ev.step) % 4 === 3 && !ev.isGhost) {
+      playRimClick(when, mod16(ev.step) === 11 ? 0.65 : 0.45, mod16(ev.step) % 8 === 3 ? -0.25 : 0.25);
+    }
+
+    if (ev.userPinned && ev.pinId) state.pinnedFuture = state.pinnedFuture.filter(p => p.pinId !== ev.pinId);
+    ev.id = state.nextId++; ev.firedVisual = false; state.pastNotes.push(ev);
+    if (!state.futureNotes.length || state.futureNotes[0].step > ev.step + 0.001) {
+      state.nextSchedStep = Math.max(state.nextSchedStep, ev.step + 0.5);
+    }
+  }
+  const curBar = Math.floor(getCurrentStep() / 16);
+  if ((state.futureNotes.length ? state.futureNotes[state.futureNotes.length - 1].step : -1) < (curBar + 2) * 16 + 12) recomputeFuture(false);
+  if (state.pastNotes.length > 360) {
+    const cur = getCurrentStep();
+    state.pastNotes = state.pastNotes.filter(n => cur - n.step < 140);
+  }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001); state.playing = true;
+    recomputeFuture(false); schedulerTick(); schedTimer = setInterval(schedulerTick, 22);
+  } else {
+    state.playheadStep = getCurrentStep(); state.playing = false;
+    clearInterval(schedTimer); schedTimer = null;
+  }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+function strikeLive(noteIdx, holdKey) {
+  ensureAudio(); if (state.activeHolds.has(holdKey)) return;
+  const nowPerf = performance.now(), cur = getCurrentStep();
+  const ch = chordAtBar(Math.floor(cur / 16));
+  const voice = playPan(noteIdx, actx.currentTime, 0.94, 4, { dingHzOverride: ch.dingHz });
+  triggerResonator(noteIdx, 0.96, 4, true, nowPerf);
+  const noteObj = state.playing
+    ? { id: state.nextId++, step: cur, dur: 2, noteIdx, vel: 0.94, isGhost: false, userPinned: true, firedVisual: true, holding: true, flashPerf: nowPerf }
+    : null;
+  if (noteObj) state.pastNotes.push(noteObj);
+  state.activeHolds.set(holdKey, { noteIdx, startPerf: nowPerf, voice, noteObj });
+}
+function releaseLive(holdKey) {
+  const h = state.activeHolds.get(holdKey); if (!h) return;
+  state.activeHolds.delete(holdKey);
+  const holdMs = performance.now() - h.startPerf;
+  if (holdMs < 140 && h.voice) { h.voice.damp(); loci[h.noteIdx].damp = 3.2; }
+  if (h.noteObj) { h.noteObj.dur = snapDur((holdMs / 1000) / TATUM); h.noteObj.holding = false; }
+}
+
+// ==================== 4. CLEAN 3D FUNNEL GEOMETRY (ZERO WHITE BANDS!) ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { cx: 0, nowY: 0, padTop: 52, padBot: 30, wallH: 200, frontH: 240, wallGap: 44, wallHalfW: 200, wallL: 0, wallR: 0, s0: 6, locusX: new Float32Array(9) };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  geo.cx = Math.round(W * 0.5);
+  geo.nowY = Math.round(H * 0.48);
+  geo.wallH = Math.max(120, geo.nowY - geo.padTop);
+  geo.frontH = Math.max(140, H - geo.nowY - geo.padBot);
+
+  const maxBottomHalf = Math.min(W * 0.42, 460);
+  geo.wallGap = clamp((maxBottomHalf / FLARE) / WALL_PAD, 24, 58);
+  geo.wallHalfW = geo.wallGap * WALL_PAD;
+  geo.wallL = geo.cx - geo.wallHalfW;
+  geo.wallR = geo.cx + geo.wallHalfW;
+  for (let i = 0; i < 9; i++) geo.locusX[i] = geo.cx + (i - 4) * geo.wallGap;
+  geo.s0 = geo.frontH / (FLARE * FUTURE_STEPS); // exact C¹ velocity continuity across NOW!
+}
+window.addEventListener('resize', layout); layout();
+
+const wallX = (wx) => geo.cx + wx * geo.wallGap;
+const wallY = (age) => geo.nowY - (geo.s0 / PAST_K) * Math.log(1 + PAST_K * Math.max(0, age));
+function projFunnel(wx, off) {
+  const gamma = (FLARE - 1) / FLARE, u = clamp(off / FUTURE_STEPS, 0, 1.06);
+  const S = 1 / Math.max(0.25, 1 - gamma * u), q = (S - 1) / (FLARE - 1);
+  return { x: geo.cx + wx * geo.wallGap * S, y: geo.nowY + q * geo.frontH, scale: S, u };
+}
+function unprojFunnel(sx, sy) {
+  if (sy < geo.nowY) return null;
+  const q = (sy - geo.nowY) / geo.frontH, S = 1 + (FLARE - 1) * q, u = (FLARE * q) / S;
+  return { wx: (sx - geo.cx) / (geo.wallGap * S), off: u * FUTURE_STEPS, scale: S };
+}
+
+// ==================== 5. SINGLE CORE INTERACTION: STRIKE NOW + SCULPT FUTURE ====================
+const drag = { mode: null, locus: -1, activePin: null };
+const hover = { locusIdx: -1, futKey: '', ghostLocus: -1, ghostStep: -1 };
+const minFutureStep = (cur = getCurrentStep()) => Math.max(Math.ceil(state.nextSchedStep), Math.ceil(cur + 1));
+
+function inFunnel(mx, my) {
+  if (my <= geo.nowY + 14 || my > H - geo.padBot + 10) return false;
+  const f = unprojFunnel(mx, my);
+  return Boolean(f && Math.abs(f.wx) <= WALL_PAD + 0.3 && f.off <= FUTURE_STEPS + 0.8);
+}
+function nearestNowLocus(mx) {
+  return (mx < geo.wallL - 12 || mx > geo.wallR + 12) ? -1 : clamp(Math.round((mx - geo.cx) / geo.wallGap + 4), 0, 8);
+}
+function hitFutureNote(mx, my) {
+  if (!inFunnel(mx, my)) return null;
+  const cur = getCurrentStep(); let best = null, bestSc = Infinity;
+  for (const n of state.futureNotes) {
+    const off0 = n.step - cur, off1 = n.step + n.dur - cur;
+    if (off0 > FUTURE_STEPS + 0.5 || off1 < 0) continue;
+    const p0 = projFunnel(n.noteIdx - 4, Math.max(0, off0)), p1 = projFunnel(n.noteIdx - 4, Math.min(FUTURE_STEPS, off1));
+    const hw = Math.min(26, geo.wallGap * p0.scale * 0.48);
+    const tY = p1.y > p0.y ? clamp((my - p0.y) / (p1.y - p0.y), 0, 1) : 0;
+    const dx = Math.abs(mx - lerp(p0.x, p1.x, tY));
+    if (dx > hw) continue;
+    const dy = my < p0.y ? p0.y - my : (my > Math.max(p0.y + 10, p1.y) ? my - Math.max(p0.y + 10, p1.y) : 0);
+    const sc = dy + dx * 0.42 - (n.userPinned ? 3 : 0);
+    if (dy <= 14 && sc < bestSc) { bestSc = sc; best = n; }
+  }
+  return best;
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, nowPerf = performance.now();
+  canvas.setPointerCapture(e.pointerId);
+
+  // Right-click in funnel: erase future note
+  if (e.button === 2) {
+    const hit = hitFutureNote(mx, my);
+    if (hit) {
+      if (hit.userPinned && hit.pinId) state.pinnedFuture = state.pinnedFuture.filter(p => p.pinId !== hit.pinId);
+      else state.mutedSteps.add(hit.step);
+      recomputeFuture(true);
+    }
+    return;
+  }
+
+  // Strike live on NOW fold
+  const nl = nearestNowLocus(mx);
+  if (nl >= 0 && Math.abs(my - geo.nowY) <= 24) {
+    drag.mode = 'strike'; drag.locus = nl; strikeLive(nl, 'ptr'); return;
+  }
+
+  // Place or move/stretch note directly on 3D FUTURE funnel floor
+  if (inFunnel(mx, my)) {
+    ensureAudio();
+    const cur = getCurrentStep(), hit = hitFutureNote(mx, my);
+    if (hit) {
+      let pin = hit.userPinned ? state.pinnedFuture.find(p => p.pinId === hit.pinId) : null;
+      if (!pin) {
+        pin = { pinId: state.nextPinId++, step: hit.step, noteIdx: hit.noteIdx, dur: hit.dur, vel: 0.92, flashPerf: nowPerf };
+        state.pinnedFuture.push(pin); state.mutedSteps.delete(pin.step);
+      }
+      drag.mode = 'editFuture'; drag.activePin = pin;
+      recomputeFuture(true);
+    } else {
+      const f = unprojFunnel(mx, my);
+      const noteIdx = clamp(Math.round(f.wx + 4), 0, 8);
+      const step = clamp(Math.round(cur + f.off), minFutureStep(cur), Math.floor(cur) + FUTURE_STEPS);
+      state.mutedSteps.delete(step);
+      const pin = { pinId: state.nextPinId++, step, noteIdx, dur: 2, vel: 0.92, flashPerf: nowPerf };
+      state.pinnedFuture.push(pin);
+      drag.mode = 'placeFuture'; drag.activePin = pin;
+      recomputeFuture(true);
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, cur = getCurrentStep();
+  if (drag.mode === 'strike') {
+    const nl = nearestNowLocus(mx);
+    if (nl >= 0 && nl !== drag.locus) { releaseLive('ptr'); drag.locus = nl; strikeLive(nl, 'ptr'); }
+    return;
+  }
+  if ((drag.mode === 'placeFuture' || drag.mode === 'editFuture') && drag.activePin) {
+    const f = unprojFunnel(mx, Math.max(geo.nowY + 6, my)); if (!f) return;
+    const p = drag.activePin;
+    const nextIdx = clamp(Math.round(f.wx + 4), 0, 8);
+    if (drag.mode === 'placeFuture') {
+      const targetStep = cur + f.off;
+      const nextDur = snapDur(clamp(targetStep - p.step + 1, 1, 6));
+      if (nextIdx !== p.noteIdx || nextDur !== p.dur) { p.noteIdx = nextIdx; p.dur = nextDur; p.flashPerf = performance.now(); recomputeFuture(true); }
+    } else {
+      const nextStep = clamp(Math.round(cur + f.off), minFutureStep(cur), Math.floor(cur) + FUTURE_STEPS);
+      if (nextIdx !== p.noteIdx || nextStep !== p.step) { p.noteIdx = nextIdx; p.step = nextStep; p.flashPerf = performance.now(); recomputeFuture(true); }
+    }
+    return;
+  }
+
+  hover.locusIdx = -1; hover.futKey = ''; hover.ghostLocus = -1; hover.ghostStep = -1;
+  const nl = nearestNowLocus(mx);
+  if (nl >= 0 && Math.abs(my - geo.nowY) <= 24) { hover.locusIdx = nl; canvas.style.cursor = 'pointer'; }
+  else if (inFunnel(mx, my)) {
+    const hit = hitFutureNote(mx, my);
+    if (hit) { hover.futKey = `${hit.step}:${hit.noteIdx}`; canvas.style.cursor = 'grab'; }
+    else {
+      const f = unprojFunnel(mx, my);
+      hover.ghostLocus = clamp(Math.round(f.wx + 4), 0, 8);
+      hover.ghostStep = clamp(Math.round(cur + f.off), minFutureStep(cur), Math.floor(cur) + FUTURE_STEPS);
+      canvas.style.cursor = 'crosshair';
+    }
+  } else canvas.style.cursor = 'default';
+});
+
+const endPtr = () => { if (drag.mode === 'strike') releaseLive('ptr'); drag.mode = null; drag.locus = -1; drag.activePin = null; };
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (!e.repeat && e.key >= '1' && e.key <= '9') strikeLive(Number(e.key) - 1, `k:${e.key}`);
+});
+window.addEventListener('keyup', (e) => { if (e.key >= '1' && e.key <= '9') releaseLive(`k:${e.key}`); });
+
+// ==================== 6. PURE DARK MINIMALIST RENDERER ====================
+const edgeTop = (y) => clamp((y - geo.padTop) / 26, 0, 1);
+const edgeBot = (y) => clamp((H - geo.padBot - y) / 24, 0, 1);
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+const drawGrad = (ax, ay, bx, by, c0, c1, lw) => {
+  const g = ctx.createLinearGradient(ax, ay, bx, by); g.addColorStop(0, c0); g.addColorStop(1, c1);
+  ctx.strokeStyle = g; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+};
+
+function drawStage(curStep) {
+  const fBL = projFunnel(-WALL_PAD, FUTURE_STEPS), fBR = projFunnel(WALL_PAD, FUTURE_STEPS);
+
+  // Pure #000 void — NO white/grey fill bands anywhere! Only razor-thin architectural rails.
+  drawGrad(geo.wallL, geo.nowY, geo.wallL, geo.padTop, 'rgba(255,255,255,0.20)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallR, geo.nowY, geo.wallR, geo.padTop, 'rgba(255,255,255,0.20)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallL, geo.nowY, fBL.x, fBL.y, 'rgba(255,255,255,0.24)', 'rgba(255,255,255,0.08)', 1);
+  drawGrad(geo.wallR, geo.nowY, fBR.x, fBR.y, 'rgba(255,255,255,0.24)', 'rgba(255,255,255,0.08)', 1);
+
+  for (let i = 0; i < 9; i++) {
+    const wx = i - 4, xW = wallX(wx), pBot = projFunnel(wx, FUTURE_STEPS), loc = loci[i];
+    const hov = hover.locusIdx === i || hover.ghostLocus === i, isRoot = i === 0 || i === 4;
+    const baseA = hov ? 0.24 : isRoot ? 0.10 : 0.055;
+    drawGrad(xW, geo.nowY, xW, geo.padTop, mixInk(loc.heat, baseA + loc.glow * 0.16), 'rgba(255,255,255,0)', hov ? 1.1 : 0.85);
+    drawGrad(xW, geo.nowY, pBot.x, pBot.y, mixInk(loc.heat, baseA * 1.15 + loc.glow * 0.18), mixInk(loc.heat, baseA * 0.55), hov ? 1.15 : 0.85);
+  }
+
+  // Subtle bar lines on straight vertical PAST wall
+  const curBar = Math.floor(curStep / 16);
+  for (let b = curBar; b >= curBar - 16; b--) {
+    const g = b * 16; if (g > curStep) continue;
+    const y = Math.round(wallY(curStep - g)) + 0.5; if (y < geo.padTop + 4 || y >= geo.nowY) continue;
+    sLine(geo.wallL, y, geo.wallR, y, `rgba(255,255,255,${(0.09 * edgeTop(y)).toFixed(3)})`);
+  }
+
+  // Foreshortened bar/beat grid lines on 3D FUTURE funnel
+  ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+  for (let s = Math.ceil(curStep), sEnd = Math.floor(curStep) + FUTURE_STEPS; s <= sEnd; s++) {
+    const off = s - curStep; if (off <= 0.1 || off > FUTURE_STEPS) continue;
+    const isBar = mod16(s) === 0, isBeat = (s & 3) === 0;
+    if (!isBar && !isBeat) continue;
+    const pL = projFunnel(-WALL_PAD, off), pR = projFunnel(WALL_PAD, off), fade = edgeBot(pL.y);
+    sLine(pL.x, pL.y, pR.x, pR.y, `rgba(255,255,255,${((isBar ? 0.15 : 0.045) * fade).toFixed(3)})`, isBar ? 1 : 0.75);
+    if (isBar) {
+      const ch = chordAtBar(Math.floor(s / 16));
+      ctx.fillStyle = `rgba(255,255,255,${(0.30 * fade).toFixed(3)})`;
+      ctx.fillText(ch.sym, pL.x - 8, pL.y);
+    }
+  }
+
+  // Minimal lane labels at top & foreground bottom
+  ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const loc = loci[i], xTop = wallX(i - 4), pBot = projFunnel(i - 4, FUTURE_STEPS);
+    const hi = hover.locusIdx === i || hover.ghostLocus === i ? 0.30 : 0;
+    ctx.font = '9.5px ui-monospace, monospace';
+    ctx.textBaseline = 'bottom'; ctx.fillStyle = mixInk(loc.heat, 0.24 + loc.glow * 0.72 + hi); ctx.fillText(NOTES[i].name, xTop, geo.padTop - 8);
+    ctx.textBaseline = 'top';    ctx.fillStyle = mixInk(loc.heat, 0.24 + loc.glow * 0.56 + hi); ctx.fillText(`${i + 1} · ${NOTES[i].name}`, pBot.x, pBot.y + 7);
+  }
+}
+
+function drawNotes(curStep, nowPerf) {
+  // PAST notes rising straight up the wall
+  for (const n of state.pastNotes) {
+    if (n.step >= curStep) continue;
+    const dur = n.holding ? Math.max(0.6, curStep - n.step) : n.dur;
+    const y0 = wallY(curStep - n.step), y1 = Math.min(geo.nowY, wallY(Math.max(0, curStep - (n.step + dur))));
+    if (y1 < geo.padTop) continue;
+    const x = geo.locusX[n.noteIdx], f = edgeTop((y0 + y1) * 0.5);
+    const heat = n.userPinned ? clamp(1 - (nowPerf - n.flashPerf) / (FLASH_MS * 2.2), 0.28, 1) : 0;
+    const w = n.isGhost ? 1.8 : (3.2 + n.vel * 3.4) * (n.noteIdx === 0 ? 1.25 : 1);
+    const alpha = n.isGhost ? 0.26 * f : (0.55 + n.vel * 0.40) * f;
+    sLine(x, y0, x, y1, mixInk(heat, alpha * 0.55), n.isGhost ? 1 : 1.5);
+    fCirc(x, y0, n.isGhost ? 1.5 : w * 0.52, mixInk(heat, alpha));
+  }
+
+  // FUTURE notes approaching along the 3D funnel rails
+  for (const n of state.futureNotes) {
+    const off0 = n.step - curStep, off1 = n.step + n.dur - curStep;
+    if (off0 > FUTURE_STEPS + 0.4 || off1 < 0) continue;
+    const wx = n.noteIdx - 4, p0 = projFunnel(wx, Math.max(0, off0)), p1 = projFunnel(wx, Math.min(FUTURE_STEPS, off1));
+    const f = edgeBot((p0.y + p1.y) * 0.5), isHov = hover.futKey === `${n.step}:${n.noteIdx}`;
+    const heat = n.userPinned ? Math.max(0.75, clamp(1 - (nowPerf - n.flashPerf) / FLASH_MS, 0, 1)) : clamp(1 - (nowPerf - n.flashPerf) / FLASH_MS, 0, 1);
+    const r = (n.isGhost ? 1.6 : (2.6 + n.vel * 2.2) * (n.noteIdx === 0 ? 1.22 : 1)) * p0.scale * (isHov ? 1.25 : 1);
+    const alpha = n.isGhost ? 0.28 * f : (n.userPinned ? 0.92 : 0.45 + n.vel * 0.36) * f;
+
+    // Perspective tail tracking the exact rail
+    sLine(p0.x, p0.y, p1.x, p1.y, mixInk(heat, alpha * 0.52), (n.isGhost ? 0.9 : 1.6) * p0.scale);
+    if (off0 >= 0) {
+      fCirc(p0.x, p0.y, r, '#000');
+      sCirc(p0.x, p0.y, r, mixInk(heat, alpha), (n.userPinned || isHov ? 1.45 : 1.0) * Math.min(1.4, p0.scale));
+      if (n.userPinned) fCirc(p0.x, p0.y, r * 0.42, mixInk(heat, 0.95 * f));
+    }
+  }
+
+  // Placement ghost cursor on funnel floor
+  if (hover.ghostLocus >= 0 && !drag.mode) {
+    const off = hover.ghostStep - curStep;
+    if (off > 0.2 && off <= FUTURE_STEPS) {
+      const pt = projFunnel(hover.ghostLocus - 4, off), f = edgeBot(pt.y);
+      sCirc(pt.x, pt.y, 4.6 * pt.scale, `rgba(255,90,31,${(0.72 * f).toFixed(3)})`, 1.1);
+    }
+  }
+}
+
+function drawNowFold(dt, nowPerf) {
+  const y = geo.nowY;
+  for (const loc of loci) { loc.glow = Math.max(0, loc.glow * Math.exp(-dt * loc.damp)); loc.heat = Math.max(0, loc.heat - dt * 2.4); }
+  for (let i = blooms.length - 1; i >= 0; i--) if (nowPerf - blooms[i].bornPerf >= blooms[i].lifeMs) blooms.splice(i, 1);
+
+  for (const b of blooms) {
+    const p = clamp((nowPerf - b.bornPerf) / b.lifeMs, 0, 1), e = Math.pow(1 - p, 1.85);
+    const rx = 5 + Math.pow(p, 0.72) * (24 + b.dur * 10) * (0.65 + b.vel * 0.45);
+    ctx.strokeStyle = mixInk(b.hot ? (1 - p) : 0, e * 0.58); ctx.lineWidth = 0.8 + e * 0.8;
+    ctx.beginPath(); ctx.ellipse(geo.locusX[b.idx], y, rx, rx * 0.46, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Crisp NOW fold horizon
+  sLine(geo.wallL - 8, y + 0.5, geo.wallR + 8, y + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locusIdx === i;
+    fCirc(x, y, (i === 0 ? 2.8 : 2.1) + loc.glow * 2.2 + (hov ? 1.0 : 0), mixInk(loc.heat, 0.58 + loc.glow * 0.42));
+    if (i === 0 || loc.glow > 0.1 || hov) sCirc(x, y, (i === 0 ? 6.5 : 5) + loc.glow * 3.6, mixInk(loc.heat, 0.28 + loc.glow * 0.68), 0.9);
+  }
+}
+
+let lastPerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastPerf) / 1000)); lastPerf = nowPerf;
+  const curStep = getCurrentStep();
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; triggerResonator(n.noteIdx, n.vel, n.dur, n.userPinned, nowPerf); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  drawStage(curStep);
+  drawNotes(curStep, nowPerf);
+  drawNowFold(dt, nowPerf);
+  requestAnimationFrame(frame);
+}
+
+seedPast();
+recomputeFuture(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

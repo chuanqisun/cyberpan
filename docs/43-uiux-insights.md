@@ -15,6 +15,7 @@ Missing features:
 
 Next steps:
 
+- Focus on best features and fill missing features.
 - Consider the key elements:
   - Track visualization (3D waterfall)
   - Direct manipulation (strike note, future placement)

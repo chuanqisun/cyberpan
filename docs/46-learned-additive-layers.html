@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>46 — Learned Additive Layers (Perform → Hold Forever → Explicit Drop)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none;
+  }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  .grp { display: flex; align-items: center; gap: 8px; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.76); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>46</b> · LEARNED ADDITIVE LAYERS · <b>1–9 / click NOW</b> perform phrase → auto-learns layer · <b>drag PAST</b> marquee capture · <b>click ribbon</b> mute · <b>× / RMB</b> drop · <b>SPACE</b> play</span>
+  <div class="grp">
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 46 — LEARNED ADDITIVE LAYERS (1 CORE INTERACTION)
+//   - Perform notes (1–9 / click NOW) or marquee-select PAST notes (#19)
+//   - Pattern Recognizer crystallizes each performed phrase into a persistent
+//     ADDITIVE LAYER (L1, L2, L3...) that NEVER forgets until explicitly dropped!
+//   - Living Variation: each learned layer breathes with subtle chord adaptation,
+//     ghost-note pickups, and human microtiming instead of dead robotic looping
+//   - Visual Representation of "Learned": Left-rail geometric Layer Ribbons
+//     (16-step rhythm ticks + pitch contour polyline + live playhead + variation
+//     aura) with luminous Attention Threads wired directly onto future notes!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const NOTES = [
+  ['E3', '^1',  semiHz(-17)], ['B3', '^5',  semiHz(-10)], ['C4', '^b6', semiHz(-9)],
+  ['D4', '^b7', semiHz(-7)],  ['E4', '^1',  semiHz(-5)],  ['F#4','^2',  semiHz(-3)],
+  ['G4', '^b3', semiHz(-2)],  ['A4', '^4',  semiHz(0)],   ['B4', '^5',  semiHz(2)],
+].map(([name, deg, freq], idx) => ({ name, deg, freq, idx, pan: ((idx / 8) - 0.5) * 0.56 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), shift: 0,  pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), shift: -1, pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), shift: 1,  pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), shift: 0,  pool: [0, 1, 4, 6, 5] },
+];
+
+const BPM = 105, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.11, FLASH_MS = 450, FUTURE_STEPS = 32;
+const PHRASE_SETTLE_MS = 1050; // pause after performing -> crystallizes into a Learned Layer!
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM ACOUSTIC HANDPAN ENGINE ====================
+let actx = null, masterLP = null, clickBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.84; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2350; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.44;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.55) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.020), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(noteIdx, when, vel = 0.78, durSteps = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[noteIdx]; if (!n) return;
+  const { isGhost = false, dingHz = null } = opts, isDing = noteIdx === 0;
+  const freq = (isDing && dingHz) ? dingHz : n.freq;
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.12, 1.05);
+  const sus = clamp(0.42 + durSteps * 0.30, 0.42, 2.45) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? -0.04 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.22, 0.90], [2.0, 0.30, 0.72], [3.0, 0.38, 0.62]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.85], [2.0, 0.26, 0.68], [3.0, 0.45, 0.66]];
+  for (const [ratio, amp, dm] of partials) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * ratio, t0);
+    const atk = isDing ? 0.007 : (ratio === 3 ? 0.020 : 0.005), dec = Math.max(0.08, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isGhost ? 0.035 : 0.07), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+}
+
+// ==================== 2. ADDITIVE LEARNED LAYER ENGINE ====================
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1, nextLayerNum: 1,
+  pastNotes: [], futureNotes: [],
+  // Learned Layers: PERSIST FOREVER until user explicitly drops them!
+  // Each layer: { id, tag, role, events:[{pos, noteIdx, dur, vel}], muted, bornPerf, hotPerf, varPulse }
+  layers: [],
+  // Live capture buffer: records performed notes until a natural pause crystallizes them into a layer
+  captureBuf: [], captureLastMs: 0, pausedCursor: 0,
+};
+const loci = NOTES.map(() => ({ glow: 0, heat: 0, damp: 2.0 }));
+const blooms = [];
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+const chordAtBar = (b) => PROG[((b % PROG.length) + PROG.length) % PROG.length];
+
+// Classify what musical role a performed phrase plays (for clean label + variation rules)
+function classifyRole(events) {
+  const avgPitch = events.reduce((s, e) => s + e.noteIdx, 0) / events.length;
+  const hasDing = events.some(e => e.noteIdx === 0);
+  if (hasDing && avgPitch < 2.2) return 'BASS';
+  if (events.length >= 6 && avgPitch < 5.2) return 'BED';
+  if (avgPitch >= 4.5) return 'MELODY';
+  return 'MOTIF';
+}
+
+// Crystallize a set of captured events into a persistent Additive Learned Layer!
+function crystallizeLayer(rawEvents, customRole = null) {
+  if (!rawEvents || !rawEvents.length) return null;
+  // Deduplicate by (pos, noteIdx) keeping latest strike
+  const byKey = new Map();
+  for (const e of rawEvents) {
+    const pos = mod16(e.pos);
+    byKey.set(`${pos}:${e.noteIdx}`, { pos, noteIdx: e.noteIdx, dur: clamp(e.dur || 2, 1, 6), vel: clamp(e.vel || 0.86, 0.25, 0.98) });
+  }
+  const events = [...byKey.values()].sort((a, b) => a.pos - b.pos || a.noteIdx - b.noteIdx);
+  const nowPerf = performance.now();
+  const layer = {
+    id: state.nextLayerNum++,
+    role: customRole || classifyRole(events),
+    events,
+    muted: false,
+    bornPerf: nowPerf,
+    hotPerf: nowPerf,
+    varPulse: 0,
+    rect: { x: 0, y: 0, w: 0, h: 0, dropX: 0, dropY: 0 }, // updated in render
+  };
+  state.layers.push(layer);
+  if (state.layers.length > 7) state.layers.shift(); // keep visual rail clean (max 7 stacked)
+  recomputeFuture(true);
+  return layer;
+}
+
+function dropLayer(layerId) {
+  const idx = state.layers.findIndex(l => l.id === layerId);
+  if (idx < 0) return;
+  state.layers.splice(idx, 1);
+  recomputeFuture(true);
+}
+
+// Render 1 bar of additive synthesis across ALL active Learned Layers (+ base ambient ghost pulse if 0 layers)
+function generateBar(barIdx) {
+  const barStart = barIdx * 16, ch = chordAtBar(barIdx), out = [];
+  const activeLayers = state.layers.filter(l => !l.muted);
+  const usedKey = new Set();
+
+  // 1. Always render every Learned Layer — NEVER drop a layer automatically!
+  //    Each layer keeps its exact skeleton + subtle organic variation (harmony follow + ghost ornament)
+  for (let li = 0; li < activeLayers.length; li++) {
+    const L = activeLayers[li];
+    const isNewest = (li === activeLayers.length - 1);
+
+    for (let ei = 0; ei < L.events.length; ei++) {
+      const ev = L.events[ei];
+      let noteIdx = ev.noteIdx;
+      let mutated = false;
+
+      // Living variation (18% chance on non-downbeat notes to adapt 1 degree toward current chord pool)
+      if (barIdx > 0 && ev.pos !== 0 && ev.noteIdx > 0 && hash01(barIdx * 23 + L.id, ev.pos * 7 + ei, 91) < 0.18) {
+        const cand = clamp(ev.noteIdx + ch.shift, 1, 8);
+        if (ch.pool.includes(cand) && cand !== noteIdx) { noteIdx = cand; mutated = true; }
+      }
+
+      const key = `${ev.pos}:${noteIdx}`;
+      const velScale = usedKey.has(key) ? 0.65 : (isNewest ? 1.0 : 0.92);
+      usedKey.add(key);
+
+      out.push({
+        id: 0, step: barStart + ev.pos, dur: ev.dur, noteIdx,
+        vel: clamp(ev.vel * velScale, 0.25, 0.98),
+        isGhost: ev.vel < 0.45, layerId: L.id, mutated, dingHz: ch.dingHz, flashPerf: -9999
+      });
+
+      // Living ghost-note ornament ("a"-16th pickup before a strong layer accent, 32% of bars)
+      const prevPos = mod16(ev.pos - 1);
+      if (ev.pos % 4 === 0 && !usedKey.has(`${prevPos}:${noteIdx}`) && hash01(barIdx * 11, L.id * 17 + ev.pos, 37) < 0.34) {
+        const gPitch = noteIdx === 0 ? 1 : clamp(noteIdx - 1, 1, 8);
+        usedKey.add(`${prevPos}:${gPitch}`);
+        out.push({
+          id: 0, step: barStart + prevPos, dur: 1, noteIdx: gPitch, vel: 0.28,
+          isGhost: true, layerId: L.id, mutated: true, dingHz: ch.dingHz, flashPerf: -9999
+        });
+      }
+    }
+  }
+
+  // 2. Subtle quiet breathing ghost-bed floor so even with 1 layer the handpan still breathes (#41 50% rule)
+  const hasBed = activeLayers.some(l => l.role === 'BED' || l.events.length >= 6);
+  if (!hasBed) {
+    const pulseSteps = [0, 3, 4, 7, 8, 11, 12, 15];
+    for (const pos of pulseSteps) {
+      const pIdx = pos === 0 ? 0 : ch.pool[(pos + barIdx) % ch.pool.length];
+      if (usedKey.has(`${pos}:${pIdx}`)) continue;
+      // Only quiet ghost floor (0.24-0.34) so human learned layers dominate foreground!
+      const v = pos === 0 && !activeLayers.length ? 0.78 : (pos % 4 === 3 ? 0.34 : 0.22);
+      out.push({
+        id: 0, step: barStart + pos, dur: pos === 0 ? 3 : 1, noteIdx: pIdx, vel: v,
+        isGhost: v < 0.45, layerId: 0, mutated: false, dingHz: ch.dingHz, flashPerf: -9999
+      });
+    }
+  }
+
+  out.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  return out;
+}
+
+function recomputeFuture(flash = false) {
+  const nowPerf = performance.now();
+  const prevMap = new Map(state.futureNotes.map(n => [`${n.step}:${n.noteIdx}:${n.layerId}`, n]));
+  const curStep = getCurrentStep(), minStep = Math.ceil(Math.max(state.nextSchedStep, curStep + 0.01));
+  const curBar = Math.floor(minStep / 16), next = [];
+  for (let b = curBar; b <= curBar + 2; b++) {
+    for (const ev of generateBar(b)) {
+      if (ev.step < minStep) continue;
+      const old = prevMap.get(`${ev.step}:${ev.noteIdx}:${ev.layerId}`);
+      if (old) ev.flashPerf = old.flashPerf;
+      else if (flash && prevMap.size) ev.flashPerf = nowPerf;
+      next.push(ev);
+    }
+  }
+  state.futureNotes = next;
+}
+
+function triggerResonator(idx, vel, dur, hot = false, nowPerf = performance.now()) {
+  const loc = loci[idx];
+  loc.glow = clamp(Math.max(loc.glow * 0.4, 0.35 + vel * 0.65), 0, 1);
+  loc.damp = clamp(3.8 / (0.65 + dur * 0.45), 0.7, 3.8);
+  if (hot) loc.heat = 1.0;
+  if (vel >= 0.45 || hot) {
+    blooms.push({ idx, vel, dur, bornPerf: nowPerf, lifeMs: clamp(320 + dur * 220, 360, 1900), hot });
+    if (blooms.length > 22) blooms.shift();
+  }
+}
+
+// ==================== 3. SCHEDULER & PERFORMANCE CAPTURE ====================
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const ev = state.futureNotes.shift();
+    if (ev.step < state.nextSchedStep - 0.001) continue;
+    const jitter = (Math.random() * 2 - 1) * 0.007 + (ev.isGhost ? 0.002 : -0.005);
+    const when = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (ev.step - state.anchorStep) * TATUM + jitter);
+    playPan(ev.noteIdx, when, ev.vel, ev.dur, { isGhost: ev.isGhost, dingHz: ev.dingHz });
+    ev.id = state.nextId++; ev.firedVisual = false; state.pastNotes.push(ev);
+    if (!state.futureNotes.length || state.futureNotes[0].step > ev.step + 0.001) state.nextSchedStep = Math.max(state.nextSchedStep, ev.step + 0.5);
+  }
+  const curBar = Math.floor(getCurrentStep() / 16);
+  if ((state.futureNotes.length ? state.futureNotes[state.futureNotes.length - 1].step : -1) < (curBar + 2) * 16 + 12) recomputeFuture(false);
+  if (state.pastNotes.length > 260) { const cur = getCurrentStep(); state.pastNotes = state.pastNotes.filter(n => cur - n.step < 96); }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay() {
+  ensureAudio();
+  if (!state.playing) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001); state.playing = true;
+    recomputeFuture(false); schedulerTick(); schedTimer = setInterval(schedulerTick, 22);
+  } else {
+    state.playheadStep = getCurrentStep(); state.playing = false; clearInterval(schedTimer); schedTimer = null;
+  }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+
+function performNote(noteIdx) {
+  ensureAudio();
+  const nowPerf = performance.now(), cur = getCurrentStep(), ch = chordAtBar(Math.floor(cur / 16));
+  playPan(noteIdx, actx.currentTime, 0.94, 3, { dingHz: ch.dingHz });
+  triggerResonator(noteIdx, 0.96, 3, true, nowPerf);
+
+  let pos;
+  if (state.playing) {
+    pos = mod16(Math.round(cur));
+    state.pastNotes.push({ id: state.nextId++, step: cur, dur: 2, noteIdx, vel: 0.94, isGhost: false, layerId: -1, firedVisual: true, flashPerf: nowPerf });
+  } else {
+    if (nowPerf - state.captureLastMs > 2200) state.pausedCursor = 0;
+    pos = state.pausedCursor % 16;
+    state.pausedCursor = (state.pausedCursor + 3) % 16; // tresillo spacing when paused
+  }
+  state.captureBuf.push({ pos, noteIdx, dur: noteIdx === 0 ? 4 : 2, vel: 0.90 });
+  state.captureLastMs = nowPerf;
+}
+
+// ==================== 4. LAYOUT & INTERACTION (PERFORM + MARQUEE + RIBBONS) ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { nowY: 0, padTop: 52, padBot: 30, pxPerStep: 10, gap: 44, locusX: new Float32Array(9), fieldL: 0, fieldR: 0, railX: 24, railW: 168 };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  geo.nowY = Math.round(H * 0.48);
+  const half = Math.max(120, Math.min(geo.nowY - geo.padTop - 10, H - geo.nowY - geo.padBot - 10));
+  geo.pxPerStep = half / 28;
+  geo.railW = clamp(Math.round(W * 0.16), 136, 186);
+  geo.railX = 18;
+  const fieldCenter = Math.round(lerp(geo.railX + geo.railW + 30, W - 26, 0.50));
+  geo.gap = clamp(Math.min((W - geo.railW - 110) / 9.5, 54), 26, 54);
+  for (let i = 0; i < 9; i++) geo.locusX[i] = fieldCenter + (i - 4) * geo.gap;
+  geo.fieldL = geo.locusX[0]; geo.fieldR = geo.locusX[8];
+}
+window.addEventListener('resize', layout); layout();
+
+const drag = { mode: null, x0: 0, y0: 0, x1: 0, y1: 0, selIds: new Set() };
+const hover = { locusIdx: -1, layerId: -1, dropLayerId: -1 };
+const stepToY = (s, cur) => geo.nowY + (s - cur) * geo.pxPerStep;
+const nearestLocus = (mx) => (mx < geo.fieldL - geo.gap * 0.5 || mx > geo.fieldR + geo.gap * 0.5) ? -1 : clamp(Math.round((mx - geo.fieldL) / geo.gap), 0, 8);
+const inPast = (mx, my) => my < geo.nowY - 18 && my > geo.padTop && mx >= geo.fieldL - 22 && mx <= geo.fieldR + 22;
+
+function hitLayerRibbon(mx, my) {
+  for (const L of state.layers) {
+    const r = L.rect;
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+      const onDrop = Math.hypot(mx - r.dropX, my - r.dropY) <= 13;
+      return { layer: L, onDrop };
+    }
+  }
+  return null;
+}
+
+function queryMarquee(x0, y0, x1, y1, cur) {
+  const rx0 = Math.min(x0, x1), rx1 = Math.max(x0, x1), ry0 = Math.min(y0, y1), ry1 = Math.min(geo.nowY - 4, Math.max(y0, y1));
+  const out = [];
+  for (const n of state.pastNotes) {
+    if (n.step >= cur) continue;
+    const x = geo.locusX[n.noteIdx], y = stepToY(n.step, cur);
+    if (x >= rx0 - 8 && x <= rx1 + 8 && y >= ry0 - 6 && y <= ry1 + 6 && y >= geo.padTop) out.push(n);
+  }
+  return out.sort((a, b) => a.step - b.step);
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  canvas.setPointerCapture(e.pointerId);
+
+  const rib = hitLayerRibbon(mx, my);
+  if (rib) {
+    if (e.button === 2 || rib.onDrop) { dropLayer(rib.layer.id); }
+    else { rib.layer.muted = !rib.layer.muted; rib.layer.hotPerf = performance.now(); recomputeFuture(true); }
+    return;
+  }
+
+  if (inPast(mx, my)) {
+    drag.mode = 'marquee'; drag.x0 = drag.x1 = mx; drag.y0 = drag.y1 = my; drag.selIds.clear(); return;
+  }
+
+  const l = nearestLocus(mx);
+  if (l >= 0 && Math.abs(my - geo.nowY) <= 28) { drag.mode = 'strike'; performNote(l); }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.mode === 'marquee') {
+    drag.x1 = clamp(mx, geo.fieldL - 18, geo.fieldR + 18);
+    drag.y1 = clamp(my, geo.padTop, geo.nowY - 6);
+    drag.selIds = new Set(queryMarquee(drag.x0, drag.y0, drag.x1, drag.y1, getCurrentStep()).map(n => n.id));
+    return;
+  }
+  hover.locusIdx = -1; hover.layerId = -1; hover.dropLayerId = -1;
+  const rib = hitLayerRibbon(mx, my);
+  if (rib) { hover.layerId = rib.layer.id; if (rib.onDrop) hover.dropLayerId = rib.layer.id; canvas.style.cursor = 'pointer'; return; }
+  const l = nearestLocus(mx);
+  if (l >= 0 && Math.abs(my - geo.nowY) <= 28) { hover.locusIdx = l; canvas.style.cursor = 'pointer'; }
+  else if (inPast(mx, my)) canvas.style.cursor = 'crosshair';
+  else canvas.style.cursor = 'default';
+});
+
+const endPtr = () => {
+  if (drag.mode === 'marquee') {
+    const cap = queryMarquee(drag.x0, drag.y0, drag.x1, drag.y1, getCurrentStep());
+    if (cap.length) {
+      crystallizeLayer(cap.map(n => ({ pos: mod16(n.step), noteIdx: n.noteIdx, dur: n.dur, vel: Math.max(0.80, n.vel) })));
+    }
+  }
+  drag.mode = null; drag.selIds.clear();
+};
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (!e.repeat && e.key >= '1' && e.key <= '9') performNote(Number(e.key) - 1);
+});
+
+// ==================== 5. VISUALIZING "LEARNED" LAYERS + ATTENTION THREADS ====================
+const edgeFade = (y) => Math.min(clamp((y - geo.padTop) / 26, 0, 1), clamp((H - geo.padBot - y) / 26, 0, 1));
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+
+function drawLayerRibbons(curStep, nowPerf) {
+  const x = geo.railX, w = geo.railW, cardH = 54, gap = 10;
+  const phase = ((curStep % 16) + 16) % 16;
+
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.fillText(`LEARNED LAYERS (${state.layers.length})`, x, geo.padTop + 10);
+
+  // Live capture indicator when human is mid-phrase!
+  let topY = geo.padTop + 18;
+  if (state.captureBuf.length) {
+    const prog = clamp((nowPerf - state.captureLastMs) / PHRASE_SETTLE_MS, 0, 1);
+    ctx.strokeStyle = 'rgba(255,90,31,0.55)'; ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, topY + 0.5, w, 26);
+    ctx.fillStyle = 'rgba(255,90,31,0.18)'; ctx.fillRect(x + 1, topY + 1, (w - 2) * prog, 24);
+    ctx.fillStyle = '#ff5a1f'; ctx.textBaseline = 'middle';
+    ctx.fillText(`LEARNING ${state.captureBuf.length}n…`, x + 8, topY + 13.5);
+    topY += 34;
+  }
+
+  for (let i = 0; i < state.layers.length; i++) {
+    const L = state.layers[i], y = topY + i * (cardH + gap);
+    const heat = clamp(1 - (nowPerf - L.hotPerf) / 700, 0, 1);
+    const isHov = hover.layerId === L.id, isDropHov = hover.dropLayerId === L.id;
+    L.rect = { x, y, w, h: cardH, dropX: x + w - 12, dropY: y + 11 };
+
+    // Architectural ribbon frame
+    ctx.fillStyle = L.muted ? 'rgba(255,255,255,0.015)' : mixInk(heat, isHov ? 0.065 : 0.03);
+    ctx.fillRect(x, y, w, cardH);
+    ctx.strokeStyle = L.muted ? 'rgba(255,255,255,0.12)' : mixInk(heat, isHov ? 0.72 : 0.34);
+    ctx.lineWidth = isHov ? 1.1 : 0.85;
+    ctx.strokeRect(x + 0.5, y + 0.5, w, cardH);
+
+    // Header: L1 · BASS + explicit Drop [×]
+    ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = L.muted ? 'rgba(255,255,255,0.28)' : mixInk(heat, 0.86);
+    ctx.fillText(`L${L.id} · ${L.role}`, x + 8, y + 11);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = isDropHov ? '#ff5a1f' : 'rgba(255,255,255,0.36)';
+    ctx.fillText('×', L.rect.dropX, L.rect.dropY + 0.5);
+
+    // 16-step pitch-contour sparkline inside the ribbon (visual fingerprint of the learned pattern!)
+    const gx0 = x + 10, gx1 = x + w - 10, gy0 = y + 22, gy1 = y + cardH - 8;
+    sLine(gx0, gy1, gx1, gy1, 'rgba(255,255,255,0.09)', 0.75);
+    for (let b = 0; b < 4; b++) {
+      const bx = lerp(gx0, gx1, (b * 4) / 15);
+      sLine(bx, gy1 - 2, bx, gy1 + 2, 'rgba(255,255,255,0.20)', 0.75);
+    }
+
+    // Contour polyline connecting learned notes
+    ctx.beginPath();
+    L.events.forEach((ev, idx) => {
+      const px = lerp(gx0, gx1, ev.pos / 15);
+      const py = lerp(gy1 - 2, gy0 + 2, ev.noteIdx / 8);
+      idx ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    });
+    ctx.strokeStyle = L.muted ? 'rgba(255,255,255,0.16)' : mixInk(heat, 0.50);
+    ctx.lineWidth = 1; ctx.stroke();
+
+    for (const ev of L.events) {
+      const px = lerp(gx0, gx1, ev.pos / 15);
+      const py = lerp(gy1 - 2, gy0 + 2, ev.noteIdx / 8);
+      const near = !L.muted && state.playing && Math.abs(phase - ev.pos) < 0.75;
+      fCirc(px, py, near ? 2.8 : 1.9, L.muted ? 'rgba(255,255,255,0.22)' : mixInk(near ? 0.9 : heat, near ? 1 : 0.85));
+    }
+
+    // Live playhead glider sweeping across the learned ribbon
+    if (!L.muted && state.playing) {
+      const sx = lerp(gx0, gx1, phase / 15);
+      sLine(sx, gy0, sx, gy1, 'rgba(255,255,255,0.28)', 0.8);
+    }
+
+    // Right-edge anchor port (where Attention Threads launch out to future notes)
+    fCirc(x + w, y + cardH * 0.5, L.muted ? 1.5 : 2.3, L.muted ? 'rgba(255,255,255,0.18)' : mixInk(heat, isHov ? 1 : 0.72));
+  }
+}
+
+function drawAttentionThreads(curStep, nowPerf) {
+  const byId = new Map(state.layers.map(l => [l.id, l]));
+  for (const fn of state.futureNotes) {
+    if (!fn.layerId) continue;
+    const L = byId.get(fn.layerId); if (!L || L.muted) continue;
+    const y2 = stepToY(fn.step, curStep); if (y2 > H - geo.padBot || y2 < geo.nowY) continue;
+    const x1 = L.rect.x + L.rect.w, y1 = L.rect.y + L.rect.h * 0.5;
+    const x2 = geo.locusX[fn.noteIdx], f = edgeFade(y2);
+    const isHov = hover.layerId === L.id;
+    const heat = Math.max(clamp(1 - (nowPerf - L.hotPerf) / 600, 0, 1), isHov ? 0.85 : 0, fn.mutated ? 0.35 : 0);
+    const alpha = (isHov ? 0.52 : fn.isGhost ? 0.08 : 0.17) * f;
+    ctx.strokeStyle = mixInk(heat, alpha);
+    ctx.lineWidth = isHov ? 1.15 : 0.75;
+    if (fn.mutated) ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.bezierCurveTo(lerp(x1, x2, 0.35), y1, lerp(x1, x2, 0.45), y2, x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawWaterfall(curStep, dt, nowPerf) {
+  const xL = geo.fieldL - 20, xR = geo.fieldR + 20;
+  // Bar grid
+  for (let g = Math.floor(curStep) - 28; g <= Math.ceil(curStep) + 32; g++) {
+    if (mod16(g) !== 0) continue;
+    const y = Math.round(stepToY(g, curStep)) + 0.5;
+    if (y < geo.padTop || y > H - geo.padBot) continue;
+    sLine(xL, y, xR, y, `rgba(255,255,255,${(0.10 * edgeFade(y)).toFixed(3)})`);
+  }
+  // Lane labels
+  ctx.font = '9.5px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i], hov = hover.locusIdx === i;
+    sLine(x, geo.padTop, x, H - geo.padBot, `rgba(255,255,255,${hov ? 0.16 : i === 0 || i === 4 ? 0.065 : 0.032})`);
+    ctx.textBaseline = 'bottom'; ctx.fillStyle = mixInk(loc.heat, 0.26 + loc.glow * 0.70 + (hov ? 0.3 : 0)); ctx.fillText(NOTES[i].name, x, geo.padTop - 8);
+    ctx.textBaseline = 'top';    ctx.fillStyle = `rgba(255,255,255,${0.22 + loc.glow * 0.45})`; ctx.fillText(String(i + 1), x, H - geo.padBot + 8);
+  }
+
+  // Notes (past + future)
+  const drawNote = (n, isFut) => {
+    const y0 = stepToY(n.step, curStep), y1 = stepToY(n.step + n.dur, curStep);
+    if (y1 < geo.padTop || y0 > H - geo.padBot) return;
+    const x = geo.locusX[n.noteIdx], f = edgeFade((y0 + y1) * 0.5);
+    const inMarq = !isFut && drag.mode === 'marquee' && drag.selIds.has(n.id);
+    const isHovLayer = n.layerId > 0 && hover.layerId === n.layerId;
+    const heat = inMarq ? 1 : isHovLayer ? 0.9 : (n.layerId === -1 ? 0.85 : clamp(1 - (nowPerf - n.flashPerf) / FLASH_MS, 0, 1));
+    const r = n.isGhost ? 1.6 : (2.4 + n.vel * 2.0) * (n.noteIdx === 0 ? 1.25 : 1);
+    const a = (n.isGhost ? 0.25 : isFut ? (n.layerId > 0 ? 0.78 : 0.42) : 0.82) * f;
+
+    sLine(x, y0, x, y1, mixInk(heat, a * 0.5), n.isGhost ? 0.85 : 1.4);
+    if (isFut) {
+      fCirc(x, y0, r, '#000');
+      sCirc(x, y0, r, mixInk(heat, a), n.layerId > 0 ? 1.25 : 0.85);
+      // Tiny variation ring on subtly varied notes so user sees "held with living variation"!
+      if (n.mutated) sCirc(x, y0, r + 3.2, mixInk(0.7, 0.36 * f), 0.75);
+    } else {
+      fCirc(x, y0, r, mixInk(heat, a));
+      if (inMarq) sCirc(x, y0, r + 4.5, '#ff5a1f', 1.3);
+    }
+  };
+  for (const n of state.pastNotes) drawNote(n, false);
+  for (const n of state.futureNotes) drawNote(n, true);
+
+  // NOW horizon + blooms
+  for (const loc of loci) { loc.glow = Math.max(0, loc.glow * Math.exp(-dt * loc.damp)); loc.heat = Math.max(0, loc.heat - dt * 2.4); }
+  for (let i = blooms.length - 1; i >= 0; i--) if (nowPerf - blooms[i].bornPerf >= blooms[i].lifeMs) blooms.splice(i, 1);
+  for (const b of blooms) {
+    const p = clamp((nowPerf - b.bornPerf) / b.lifeMs, 0, 1), e = Math.pow(1 - p, 1.85), rx = 5 + Math.pow(p, 0.72) * (24 + b.dur * 9);
+    ctx.strokeStyle = mixInk(b.hot ? (1 - p) : 0, e * 0.55); ctx.lineWidth = 0.8 + e * 0.7;
+    ctx.beginPath(); ctx.ellipse(geo.locusX[b.idx], geo.nowY, rx, rx * 0.44, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  sLine(xL, geo.nowY + 0.5, xR, geo.nowY + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], loc = loci[i];
+    fCirc(x, geo.nowY, (i === 0 ? 2.8 : 2.1) + loc.glow * 2.1, mixInk(loc.heat, 0.58 + loc.glow * 0.42));
+  }
+
+  // Marquee selection box in PAST
+  if (drag.mode === 'marquee') {
+    const rx = Math.min(drag.x0, drag.x1), ry = Math.min(drag.y0, drag.y1);
+    const rw = Math.abs(drag.x1 - drag.x0), rh = Math.abs(drag.y1 - drag.y0);
+    ctx.fillStyle = 'rgba(255,90,31,0.08)'; ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#ff5a1f'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.strokeRect(rx + 0.5, ry + 0.5, rw, rh); ctx.setLineDash([]);
+  }
+}
+
+let lastPerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastPerf) / 1000)); lastPerf = nowPerf;
+  const curStep = getCurrentStep();
+
+  // Auto-crystallize performed phrase after natural pause (~1.05s) so machine learns & holds it!
+  if (state.captureBuf.length && (nowPerf - state.captureLastMs) >= PHRASE_SETTLE_MS) {
+    crystallizeLayer(state.captureBuf);
+    state.captureBuf = [];
+  }
+
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; triggerResonator(n.noteIdx, n.vel, n.dur, false, nowPerf); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  drawLayerRibbons(curStep, nowPerf);
+  drawAttentionThreads(curStep, nowPerf);
+  drawWaterfall(curStep, dt, nowPerf);
+  requestAnimationFrame(frame);
+}
+
+// Seed 1 initial Learned Layer (classic SPRITES Tresillo Ding) so you immediately hear & see how a learned layer works!
+crystallizeLayer([
+  { pos: 0, noteIdx: 0, dur: 4, vel: 0.94 },
+  { pos: 6, noteIdx: 0, dur: 3, vel: 0.80 },
+  { pos: 12, noteIdx: 0, dur: 3, vel: 0.86 },
+], 'BASS');
+recomputeFuture(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
