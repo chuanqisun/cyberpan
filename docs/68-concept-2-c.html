@@ -1,0 +1,570 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>68 · 2C · waterfall funnel · straight attention</title>
+<!--
+68 · 2C: lock groups live in SIDE BOXES (gutters left/right of the wall) with a mini live pattern + playhead;
+  attention (STRAIGHT lines) leaves from the mini notes in the box. Wheel / right-click / click on a box act on that lock.
+68 · concept 2A next step (feedback #67): no NOW label · additive groups · drag ignores grouped notes (shift = include) · random seed per load (?seed=xxx to replay)
+  attention viz: STRAIGHT lines (68-concept-2-b = parabola arcs)
+66 · concept 2 (waterfall: multi-group locks + visible past→future influence) · variation 2A PSEUDO-3D FUNNEL
+Past = straight vertical wall above NOW (lanes as parallel columns, scrolling up).
+Future = one-point perspective floor below NOW, funnelling into the wall and decelerating near NOW.
+Marquee on the wall creates lock groups (several coexist); each re-emits per 16/32-step period with variability V.
+Lines run from every future lock note back to its most recent wall instance; dashed rings = varied by V,
+the short tick points to where the exact copy would be. Dotted lines = short-memory echoes of what you played.
+Lineage: #37 funnel-into-vertical-lens, #45 funnel stage, #60 decelerating floor, #52 variability tiers.
+Judge: does the perspective floor make influence (wall → floor lines) readable, and is the wall easy to marquee?
+-->
+<style>
+html,body{margin:0;height:100%;background:#000;color:#fff;font:11px monospace;overflow:hidden;user-select:none}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#hd{position:fixed;left:0;top:0;right:0;padding:6px 10px;color:rgba(255,255,255,.55);pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hd button{pointer-events:auto;font:11px monospace;background:#000;color:#fff;border:1px solid rgba(255,255,255,.45);padding:1px 8px;margin-right:10px;cursor:pointer}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="hd"><button id="play">PLAY</button>68 · 2C · <span id="seed"></span> · A–L play · drag over past = add group (free notes only; hold shift = include grouped) · wheel on lock/chip = variability V ([ ]) · right-click lock = remove (Backspace) · right-click future note = mute · click empty future = place · Esc deselect · SPACE play</div>
+<script>
+// ===================== 66 SHARED CORE (audio · clock · theory) =====================
+// E Kurd / Amara 9-tone pan, i–VI–VII–i one-bar harmonic cycle (#41), 16-step bars.
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const mod = (a, n) => ((a % n) + n) % n;
+// per-load seed (feedback #67.4); ?seed=<base36> replays a specific start
+const SEED = (() => { const q = new URLSearchParams(location.search).get('seed'); return q ? parseInt(q, 36) | 0 : (Math.random() * 2 ** 31) | 0; })();
+const hash01 = (a, b = 0, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647) + Math.imul(SEED, 1597334677)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const semiHz = (s) => 440 * Math.pow(2, s / 12);
+
+// lane index 0..8 ; KEYS[i] plays lane i (home row)
+const NOTES = [['E3', -17], ['B3', -10], ['C4', -9], ['D4', -7], ['E4', -5], ['F#4', -3], ['G4', -2], ['A4', 0], ['B4', 2]]
+  .map(([name, s], idx) => ({ name, idx, freq: semiHz(s), pan: (idx / 8 - 0.5) * 0.5 }));
+const KEYS = 'asdfghjkl';
+// one chord per bar; pool = lanes that sound "right" in that bar; bassHz = sub root
+const PROG = [
+  { sym: 'i', pool: [0, 1, 4, 6, 8], bassHz: semiHz(-29) },
+  { sym: 'VI', pool: [2, 4, 6, 8, 1], bassHz: semiHz(-33) },
+  { sym: 'VII', pool: [3, 5, 7, 8, 1], bassHz: semiHz(-31) },
+  { sym: 'i', pool: [0, 1, 4, 6, 5], bassHz: semiHz(-29) },
+];
+const chordAt = (bar) => PROG[mod(bar, PROG.length)];
+// #41 metric weight per 16th: strong downbeats, strong "a" pickups (3,7,11,15), weak "e"
+const METRIC = [1, .3, .55, .8, .85, .25, .55, .8, .95, .3, .5, .85, .85, .2, .55, .75];
+
+// ----------------------------- AUDIO -----------------------------
+const Audio = (() => {
+  let ctx = null, master, bus, hpf, lpf, dry, revSend, revOut, noise, riserBP, riserG, ui;
+  function ensure() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -10; comp.ratio.value = 6; comp.connect(ctx.destination);
+      master = ctx.createGain(); master.gain.value = 0.85; master.connect(comp);
+      lpf = filt('lowpass', 18000, 0.7); hpf = filt('highpass', 20, 0.7); dry = ctx.createGain();
+      bus = ctx.createGain(); bus.connect(hpf); hpf.connect(lpf); lpf.connect(dry); dry.connect(master);
+      const sr = ctx.sampleRate, n = Math.floor(sr * 2.6), ir = ctx.createBuffer(2, n, sr);
+      for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); let lp = 0; for (let i = 0; i < n; i++) { lp = lp * .55 + (Math.random() * 2 - 1) * .45; d[i] = lp * Math.pow(1 - i / n, 2.4) * .5; } }
+      const conv = ctx.createConvolver(); conv.buffer = ir;
+      revSend = ctx.createGain(); revSend.gain.value = 0.25; revOut = ctx.createGain(); revOut.gain.value = 0.5;
+      lpf.connect(revSend); revSend.connect(conv); conv.connect(revOut); revOut.connect(master);
+      noise = ctx.createBuffer(1, sr * 2, sr); const nd = noise.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const rs = ctx.createBufferSource(); rs.buffer = noise; rs.loop = true;
+      riserBP = filt('bandpass', 400, 2); riserG = ctx.createGain(); riserG.gain.value = 0.0001;
+      rs.connect(riserBP); riserBP.connect(riserG); riserG.connect(master); rs.start();
+      ui = ctx.createGain(); ui.gain.value = 0.2; ui.connect(master);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+  const filt = (type, f, q) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+  const env = (t, a, p, d) => { const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(Math.max(.0002, p), t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(a + .01, d)); return g; };
+  const T = (when) => Math.max(ctx.currentTime + 0.002, when == null ? 0 : when);
+  const osc = (type, f, t, d, out) => { const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); o.connect(out); o.start(t); o.stop(t + d + .05); return o; };
+  function noiseHit(t, type, f, q, peak, d, out = bus) { const s = ctx.createBufferSource(); s.buffer = noise; const b = filt(type, f, q), g = env(t, .002, peak, d); s.connect(b); b.connect(g); g.connect(out); s.start(t); s.stop(t + d + .03); }
+  return {
+    ensure, get ctx() { return ctx; }, now: () => (ctx ? ctx.currentTime : 0),
+    // handpan strike: lane 0..8, vel 0..1, durSteps controls ring length, octave shifts up 1 octave
+    pan(lane, when, vel = .8, durSteps = 4, octave = 0) {
+      ensure(); const n = NOTES[lane]; if (!n) return; const t = T(when), v = clamp(vel, .05, 1), f = n.freq * (octave ? 2 : 1);
+      const tau = clamp(.25 + durSteps * .22, .3, 2.4) * (lane === 0 ? 1.2 : 1);
+      const out = ctx.createGain(), p = ctx.createStereoPanner(); p.pan.value = n.pan; out.connect(p); p.connect(bus);
+      const g = env(t, .004, .26 * v, tau); g.connect(out); osc('sine', f, t, tau, g); osc('sine', f + .7, t, tau, g);
+      const h2 = env(t, .02, .12 * v, tau * .6); h2.connect(out); osc('sine', f * 2.001, t, tau * .6, h2);
+      const h3 = env(t, .03, .07 * v, tau * .45); h3.connect(out); osc('sine', f * 2.998, t, tau * .45, h3);
+      noiseHit(t, 'bandpass', clamp(f * 3, 600, 2000), 2, .1 * v, .02, out);
+    },
+    kick(when, v = .8) { ensure(); const t = T(when), g = env(t, .003, .7 * v, .3); g.connect(bus); const o = osc('sine', 130, t, .32, g); o.frequency.exponentialRampToValueAtTime(42, t + .12); },
+    hat(when, v = .4, open = false) { ensure(); noiseHit(T(when), 'highpass', open ? 6000 : 7500, .8, .12 * v, open ? .16 : .035); },
+    tak(when, v = .6) { ensure(); const t = T(when); noiseHit(t, 'bandpass', 2400, 1.6, .26 * v, .07); const g = env(t, .002, .15 * v, .06); g.connect(bus); osc('triangle', 300, t, .06, g); },
+    sub(when, hz, durSec, v = .45) { ensure(); const t = T(when), g = env(t, .015, v, Math.max(.1, durSec)), lp = filt('lowpass', 220, 1); lp.connect(g); g.connect(bus); osc('sine', hz, t, durSec, lp); osc('triangle', hz * 2, t, durSec, lp); },
+    impact(when, v = 1) { ensure(); const t = T(when), g = env(t, .004, .8 * v, 1.4); g.connect(master); const o = osc('sine', 120, t, 1.4, g); o.frequency.exponentialRampToValueAtTime(41, t + .1); noiseHit(t, 'lowpass', 3000, .7, .3 * v, 1.6, master); },
+    // UI detent click (haptic-ish); pitch 0.5..2
+    click(pitch = 1, strong = false) { if (!ctx) return; noiseHit(ctx.currentTime + .001, 'bandpass', 2200 * pitch, 5, strong ? .25 : .12, strong ? .025 : .012, ui); },
+    // continuous macro controls (0..1), smoothed
+    setRiser(x) { if (!ctx) return; const t = ctx.currentTime; riserG.gain.setTargetAtTime(Math.max(.0001, Math.pow(x, 1.5) * .22), t, .04); riserBP.frequency.setTargetAtTime(300 + x * 4500, t, .04); },
+    setHPF(x) { if (!ctx) return; hpf.frequency.setTargetAtTime(20 * Math.pow(70, clamp(x, 0, 1)), ctx.currentTime, .03); hpf.Q.value = .7 + x * 3; },
+    setLPF(x) { if (!ctx) return; lpf.frequency.setTargetAtTime(18000 * Math.pow(400 / 18000, clamp(x, 0, 1)), ctx.currentTime, .03); },
+    setReverb(x) { if (!ctx) return; revSend.gain.setTargetAtTime(.25 + x * .6, ctx.currentTime, .05); },
+    // freeze: dry bus muted, reverb tail hangs
+    setFreeze(on) { if (!ctx) return; const t = ctx.currentTime; dry.gain.setTargetAtTime(on ? .0001 : 1, t, on ? .01 : .005); revSend.gain.setTargetAtTime(on ? .0001 : .25, t, .01); revOut.gain.setTargetAtTime(on ? .7 : .5, t, .05); },
+  };
+})();
+
+// ----------------------------- CLOCK -----------------------------
+// Sample-accurate 16th-step scheduler. Clock.onStep(fn(step, when)) is called ~120ms ahead.
+// Clock.pos() = fractional current step (for drawing). Clock.later(when, fn) runs fn when audio time arrives.
+const Clock = (() => {
+  const subs = []; let bpm = 105, playing = false, anchorStep = 0, anchorTime = 0, next = 0, timer = null, pausedAt = 0;
+  const stepDur = () => 60 / bpm / 4;
+  function tick() {
+    const ctx = Audio.ctx; if (!playing || !ctx) return;
+    const horizon = ctx.currentTime + .12;
+    while (anchorTime + (next - anchorStep) * stepDur() < horizon) { const when = anchorTime + (next - anchorStep) * stepDur(); for (const f of subs) f(next, when); next++; }
+  }
+  return {
+    get playing() { return playing; }, get bpm() { return bpm; }, stepDur,
+    setBpm(b) { const p = this.pos(); bpm = b; if (playing) { anchorStep = p; anchorTime = Audio.now(); } },
+    onStep(f) { subs.push(f); },
+    pos() { if (!playing || !Audio.ctx) return pausedAt; return anchorStep + Math.max(0, (Audio.now() - anchorTime) / stepDur()); },
+    timeOf(step) { return anchorTime + (step - anchorStep) * stepDur(); },
+    start() { Audio.ensure(); if (playing) return; playing = true; anchorStep = pausedAt; anchorTime = Audio.now() + .05; next = Math.ceil(anchorStep); timer = setInterval(tick, 25); tick(); },
+    stop() { if (!playing) return; pausedAt = this.pos(); playing = false; clearInterval(timer); },
+    toggle() { playing ? this.stop() : this.start(); },
+    later(when, fn) { setTimeout(fn, Math.max(0, (when - Audio.now()) * 1000)); },
+  };
+})();
+
+// ----------------------------- CANVAS HELPERS -----------------------------
+function setupCanvas(canvas, onResize) {
+  const ctx = canvas.getContext('2d');
+  const fit = () => { const d = Math.min(2, devicePixelRatio || 1), r = canvas.getBoundingClientRect(); canvas.width = r.width * d; canvas.height = r.height * d; ctx.setTransform(d, 0, 0, d, 0, 0); onResize && onResize(r.width, r.height); };
+  addEventListener('resize', fit); fit(); return ctx;
+}
+const ink = (a) => `rgba(255,255,255,${clamp(a, 0, 1).toFixed(3)})`;
+const HOT = '#ff5a1f';
+const hot = (a) => `rgba(255,90,31,${clamp(a, 0, 1).toFixed(3)})`;
+// ===================== END CORE =====================
+
+// ---------------- WATERFALL ENGINE (identical in 66-concept-2-a/b/c) ----------------
+// Future = generator (METRIC onsets, ~50% ghosts, stepwise pool melody, ding on 1)
+//        + echoes of recent user notes (short memory, fades after 2 bars)
+//        + lock re-emissions (permanent, variability V per lock). Deterministic hashing keeps notes stable.
+const HUES = [[110, 160, 210], [140, 190, 120], [190, 140, 205], [205, 185, 110]];
+const hueA = (L, a) => { const [r, g, b] = HUES[L.hue]; return `rgba(${r},${g},${b},${clamp(a, 0, 1).toFixed(3)})`; };
+const FONT = '11px monospace';
+const E = { past: [], locks: [], placed: new Map(), dismissed: new Set(), nextStep: 0, nextId: 1,
+  sel: null, hover: null, marq: null, fvis: [], chips: [] };
+let POS = 0; // fractional playhead step, refreshed every frame / event
+const key = (step, lane) => step + ':' + lane;
+const mk = (step, lane, vel, src, x) => Object.assign({ step, lane, vel, ghost: vel < .5, src }, x);
+const barCache = new Map();
+const bump = () => barCache.clear();
+
+function baseBar(b) {
+  const pool = chordAt(b).pool.filter(l => l > 0).sort((x, y) => x - y), out = [mk(b * 16, 0, .85, 'gen')];
+  let pi = Math.floor(hash01(b, 7, 1) * pool.length), dir = hash01(b, 7, 2) < .5 ? -1 : 1;
+  for (let s = 1; s < 16; s++) {
+    if (hash01(b, s, 3) > .1 + .55 * METRIC[s]) continue;
+    const r = hash01(b, s, 4);
+    if (r > .85) dir = -dir;
+    if (r > .3) pi += dir;
+    if (pi < 0 || pi >= pool.length) { dir = -dir; pi = clamp(pi, 0, pool.length - 1) + dir; pi = clamp(pi, 0, pool.length - 1); }
+    out.push(mk(b * 16 + s, pool[pi], hash01(b, s, 5) > METRIC[s] * .85 ? .3 : .85, 'gen'));
+  }
+  return out;
+}
+
+// user notes from the previous 1–2 bars echo at the same bar position, with decaying probability
+function echoInto(b) {
+  const out = [];
+  for (const u of E.past) {
+    if (u.src !== 'user') continue;
+    const age = b - Math.floor(u.step / 16);
+    if (age < 1 || age > 2 || hash01(u.step * 9 + u.lane, b, 21) > (age === 1 ? .8 : .35)) continue;
+    out.push(mk(b * 16 + mod(u.step, 16), u.lane, u.vel * (age === 1 ? .8 : .55), 'echo', { from: u, age }));
+  }
+  return out;
+}
+
+function subst(lane, pool, V, r) {
+  const c = pool.filter(l => l !== lane && l !== 0);
+  if (V >= .6) return c[Math.floor(r * c.length)];
+  c.sort((a, b) => Math.abs(a - lane) - Math.abs(b - lane));
+  return c[r < .7 ? 0 : Math.min(1, c.length - 1)];
+}
+
+// lock L re-emits its notes every period; V tiers (#52): pitch substitution → ±1 displacement → ghost pickups
+function lockInto(L, b) {
+  const out = [], b0 = b * 16, b1 = b0 + 16, V = L.V;
+  for (let k = Math.max(1, Math.floor((b0 - L.anchor) / L.period) - 1); L.anchor + k * L.period <= b1; k++) {
+    const base = L.anchor + k * L.period;
+    L.notes.forEach((n, i) => {
+      const h = (c) => hash01(L.id * 131 + i, k, c), at = base + n.off, head = mod(n.off, 16) === 0;
+      const pool = chordAt(Math.floor(at / 16)).pool;
+      let lane = n.lane, off = n.off;
+      if (V > 0 && h(1) < V && !(head && lane === 0)) lane = subst(n.lane, pool, V, h(2));
+      if (V > .3 && !head && h(3) < (V - .3) * .8) off += h(4) < .5 ? -1 : 1;
+      const step = base + off;
+      if (step >= b0 && step < b1) out.push(mk(step, lane, n.vel, 'lock',
+        { lock: L, idx: i, k, varied: lane !== n.lane || off !== n.off, orig: { step: at, lane: n.lane } }));
+      if (V > .2 && h(5) < V * .5 && step - 1 >= b0 && step - 1 < b1)
+        out.push(mk(step - 1, pool[Math.floor(h(6) * pool.length)], .28, 'lock', { lock: L, idx: i, k, varied: true, pickup: true, parent: { step, lane } }));
+    });
+  }
+  return out;
+}
+
+// priority: placed > lock > lock pickup > echo > generated. Lock/echo steps silence generated notes on that step.
+function genBar(b) {
+  if (barCache.has(b)) return barCache.get(b);
+  const locks = E.locks.flatMap(L => lockInto(L, b)), echoes = echoInto(b), m = new Map();
+  const lockSteps = new Set(locks.filter(n => !n.pickup).map(n => n.step)), echoSteps = new Set(echoes.map(n => n.step));
+  const put = n => m.set(key(n.step, n.lane), n);
+  baseBar(b).filter(n => !lockSteps.has(n.step) && !echoSteps.has(n.step)).forEach(put);
+  echoes.filter(n => !lockSteps.has(n.step)).forEach(put);
+  locks.filter(n => n.pickup).forEach(n => { const o = m.get(key(n.step, n.lane)); if (!o || o.src === 'gen') put(n); });
+  locks.filter(n => !n.pickup).forEach(put);
+  for (const n of E.placed.values()) if (Math.floor(n.step / 16) === b) put(n);
+  const out = [...m.values()].sort((a, c) => a.step - c.step || a.lane - c.lane);
+  out.forEach(n => { n.muted = E.dismissed.has(key(n.step, n.lane)); });
+  barCache.set(b, out);
+  return out;
+}
+
+function futureNotes(to) {
+  const out = [];
+  for (let b = Math.floor(E.nextStep / 16); b * 16 < to; b++)
+    for (const n of genBar(b)) if (n.step >= E.nextStep && n.step < to) out.push(n);
+  return out;
+}
+
+function schedStep(step, when) {
+  if (step < E.nextStep) return; // already scheduled before a pause
+  const s = mod(step, 16), b = Math.floor(step / 16);
+  if (s === 0) { Audio.sub(when, chordAt(b).bassHz, Clock.stepDur() * 15, .3); Audio.kick(when, .5); }
+  if (s === 8) Audio.kick(when, .3);
+  if (s === 4 || s === 12) Audio.tak(when, .28);
+  if (s % 2) Audio.hat(when, s % 4 === 3 ? .22 : .1);
+  let placed = false;
+  for (const n of genBar(b)) {
+    if (n.step !== step || n.muted) continue;
+    Audio.pan(n.lane, when, n.vel, n.ghost ? 2 : 4);
+    const p = { step, lane: n.lane, vel: n.vel, ghost: n.ghost, src: n.src === 'place' ? 'user' : n.src, lock: n.lock, idx: n.idx, pickup: n.pickup };
+    E.past.push(p);
+    if (n.lock && !n.pickup) n.lock.last[n.idx] = p; // the lock carries itself forward
+    if (n.src === 'place') { E.placed.delete(key(step, n.lane)); placed = true; }
+  }
+  E.nextStep = step + 1;
+  if (s === 15) E.past = E.past.filter(n => n.step > step - 16 * 12);
+  if (placed) bump();
+}
+Clock.onStep(schedStep);
+
+const Eng = {
+  playKey(lane) {
+    Audio.ensure(); Audio.pan(lane, 0, .85, 4);
+    const step = Math.round(Clock.pos()), o = E.past.find(n => n.step === step && n.lane === lane);
+    if (o) { o.src = 'user'; o.vel = .85; o.ghost = false; } else E.past.push(mk(step, lane, .85, 'user'));
+    bump();
+  },
+  makeLock(sel) {
+    sel = sel.filter(n => n.step < E.nextStep || n.step < POS);
+    if (!sel.length) return null;
+    const anchor = Math.floor(Math.min(...sel.map(n => n.step)) / 16) * 16;
+    sel = sel.filter(n => n.step - anchor < 32).sort((a, b) => a.step - b.step || a.lane - b.lane);
+    const span = sel[sel.length - 1].step - anchor + 1, id = E.nextId++;
+    const L = { id, hue: (id - 1) % HUES.length, anchor, period: span <= 16 ? 16 : 32, V: .2, alive: true,
+      notes: sel.map(n => ({ off: n.step - anchor, lane: n.lane, vel: n.vel })), last: sel.slice() };
+    sel.forEach(n => { n.lock = L; });
+    E.locks.push(L); bump(); Audio.click(1.4, true);
+    return L;
+  },
+  removeLock(L) {
+    L.alive = false; E.locks = E.locks.filter(x => x !== L);
+    if (E.sel === L) E.sel = null; if (E.hover === L) E.hover = null;
+    bump(); Audio.click(.6, true);
+  },
+  setV(L, v) { const nv = Math.round(clamp(v, 0, 1) * 20) / 20; if (nv === L.V) return; L.V = nv; bump(); Audio.click(.7 + nv); },
+  toggleDismiss(n) {
+    const k = key(n.step, n.lane);
+    if (n.src === 'place') E.placed.delete(k); else if (E.dismissed.has(k)) E.dismissed.delete(k); else E.dismissed.add(k);
+    bump(); Audio.click(.8);
+  },
+  place(step, lane) {
+    if (step < E.nextStep) return;
+    const k = key(step, lane);
+    E.dismissed.delete(k); E.placed.set(k, mk(step, lane, .85, 'place')); bump(); Audio.pan(lane, 0, .4, 2);
+  },
+};
+
+// pre-generated past: 4 bars, plus a short "played" motif in the last bar so echoes show immediately
+for (let b = -4; b < 0; b++) E.past.push(...baseBar(b));
+// seeded motif: 4 steps biased to strong metric positions, lanes from the bar's chord pool
+const MOTIF = [...Array(16).keys()].map(s => [s, hash01(s, 9, 31) * (1.25 - METRIC[s])]).sort((a, b) => a[1] - b[1]).slice(0, 4)
+  .map(([s]) => { const pool = chordAt(-1).pool; return [s - 16, pool[Math.floor(hash01(s, 9, 32) * pool.length)]]; });
+for (const [step, lane] of MOTIF) {
+  E.past = E.past.filter(n => n.step !== step);
+  E.past.push(mk(step, lane, .85, 'user'));
+}
+
+// ---------------- shared drawing (UI supplies P(note) -> {x,y,s} | null) ----------------
+const alive = (n) => n.lock && n.lock.alive;
+const noteCol = (n, a) => alive(n) ? hueA(n.lock, a) : ink(a);
+function ring(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.stroke(); }
+function dot(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+const straight = (g, a, b) => { g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); };
+const lockActive = (L) => L === E.hover || L === E.sel;
+
+function inMarq(p) {
+  const m = E.marq; if (!m || !p) return false;
+  return p.x >= Math.min(m.x0, m.x1) && p.x <= Math.max(m.x0, m.x1) && p.y >= Math.min(m.y0, m.y1) && p.y <= Math.max(m.y0, m.y1);
+}
+// two layers: grouped (alive lock) vs free. Marquee picks free notes only; shift includes grouped ones.
+const marqPick = (P) => E.past.filter(n => n.step < POS && (E.marq.all || !alive(n)) && inMarq(P(n)));
+
+// influence: lock notes -> most recent past instance; echoes -> the user note that caused them; varied -> tick to exact position
+function drawLinks(g, P, fut, link = straight, srcOf = null) {
+  g.lineWidth = 1;
+  for (const n of fut) {
+    const b = P(n); if (!b) continue;
+    if (n.src === 'lock') {
+      const a = !n.pickup && srcOf ? srcOf(n) : P(n.pickup ? n.parent : n.lock.last[n.idx]); if (!a) continue; // pickups hang off the note they ornament
+      g.strokeStyle = lockActive(n.lock) ? hot(n.pickup ? .35 : .75) : hueA(n.lock, n.pickup ? .18 : .42);
+      if (n.pickup) straight(g, a, b); else link(g, a, b, n);
+      if (n.varied && !n.pickup) {
+        const o = P(n.orig);
+        if (o) { g.strokeStyle = hueA(n.lock, .7); straight(g, b, o); g.fillStyle = hueA(n.lock, .8); dot(g, o.x, o.y, 1.5); }
+      }
+    } else if (n.src === 'echo') {
+      const a = P(n.from); if (!a) continue;
+      g.strokeStyle = ink((.32 / n.age) * clamp(1 - (POS - n.from.step) / 40, .15, 1));
+      g.setLineDash([2, 3]); link(g, a, b, n); g.setLineDash([]);
+    }
+  }
+}
+
+function drawNote(g, p, n, past, r, picked, dim = 1) {
+  const a = (n.ghost ? .42 : .92) * dim;
+  g.lineWidth = 1;
+  if (n.muted) {
+    g.strokeStyle = ink(.3); g.beginPath();
+    g.moveTo(p.x - r, p.y - r); g.lineTo(p.x + r, p.y + r); g.moveTo(p.x + r, p.y - r); g.lineTo(p.x - r, p.y + r); g.stroke();
+    return;
+  }
+  if (past) {
+    g.fillStyle = noteCol(n, a); dot(g, p.x, p.y, r);
+    if (n.src === 'user') { g.strokeStyle = ink(.6); ring(g, p.x, p.y, r + 2.5); }
+  } else {
+    g.strokeStyle = noteCol(n, a);
+    if (n.varied) g.setLineDash([2, 2]);
+    ring(g, p.x, p.y, r); g.setLineDash([]);
+    if (n.src === 'place') { g.fillStyle = ink(.9); dot(g, p.x, p.y, 1.5); }
+  }
+  if (picked) { g.strokeStyle = HOT; ring(g, p.x, p.y, r + 3); }
+}
+
+function drawNotes(g, P, fut, R) {
+  const pick = E.marq ? new Set(marqPick(P)) : null;
+  E.fvis = [];
+  const dimGrouped = E.marq && !E.marq.all; // grouped layer recedes while a plain drag is in progress
+  for (const n of E.past) { const p = P(n); if (p) drawNote(g, p, n, true, R(n, p), pick && pick.has(n), dimGrouped && alive(n) ? .3 : 1); }
+  for (const n of fut) { const p = P(n); if (!p) continue; E.fvis.push({ n, x: p.x, y: p.y }); drawNote(g, p, n, false, R(n, p)); }
+}
+
+// bounding box of the lock's most recent past instance (what the wheel/right-click/backspace act on)
+function lockBox(L, P, pad = 7) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const n of L.last) { const p = P(n); if (!p) continue; x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+  return x0 > x1 ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
+}
+function drawLockBoxes(g, P, pad) {
+  g.font = FONT; g.textAlign = 'left'; g.textBaseline = 'bottom'; g.lineWidth = 1;
+  for (const L of E.locks) {
+    const r = lockBox(L, P, pad); if (!r) continue;
+    const c = lockActive(L) ? HOT : hueA(L, .65);
+    g.strokeStyle = c; g.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    g.fillStyle = c; g.fillText(`L${L.id} V${L.V.toFixed(2)}`, r.x0, r.y0 - 2);
+  }
+}
+
+function drawChips(g, x, y) {
+  g.font = FONT; g.textAlign = 'left'; g.textBaseline = 'middle'; E.chips = [];
+  if (!E.locks.length) { g.fillStyle = ink(.35); g.fillText('no locks yet: drag a box over past notes', x, y); return; }
+  for (const L of E.locks) {
+    const t = `L${L.id}  V ${L.V.toFixed(2)}  /${L.period}`, w = g.measureText(t).width + 12;
+    g.strokeStyle = lockActive(L) ? HOT : hueA(L, .5); g.strokeRect(x, y - 8, w, 16);
+    g.fillStyle = lockActive(L) ? HOT : hueA(L, .9); g.fillText(t, x + 6, y);
+    E.chips.push({ L, x, y: y - 8, w, h: 16 }); x += w + 6;
+  }
+}
+
+function drawMarquee(g) {
+  const m = E.marq; if (!m) return;
+  g.strokeStyle = hot(.8); g.lineWidth = 1; g.setLineDash([4, 3]);
+  g.strokeRect(Math.min(m.x0, m.x1), Math.min(m.y0, m.y1), Math.abs(m.x1 - m.x0), Math.abs(m.y1 - m.y0)); g.setLineDash([]);
+  g.font = FONT; g.textAlign = 'left'; g.textBaseline = 'top'; g.fillStyle = hot(.8);
+  g.fillText(m.all ? '+ grouped' : 'free only', Math.min(m.x0, m.x1), Math.max(m.y0, m.y1) + 3);
+}
+
+// ---------------- shared input ----------------
+function wireInput(cv, UI) {
+  const xy = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const chipAt = (x, y) => (E.chips.find(c => x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) || {}).L;
+  const lockAt = (x, y) => chipAt(x, y) || E.locks.find(L => { const r = UI.lockBox ? UI.lockBox(L) : lockBox(L, UI.P); return r && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1; });
+  const futAt = (x, y) => { let best = null, bd = 9; for (const f of E.fvis) { const d = Math.hypot(f.x - x, f.y - y); if (d < bd) { bd = d; best = f.n; } } return best; };
+  cv.addEventListener('pointerdown', (e) => {
+    Audio.ensure(); POS = Clock.pos();
+    if (e.button !== 0) return;
+    const [x, y] = xy(e), L = chipAt(x, y);
+    if (L) { E.sel = L; return; }
+    const cell = UI.cellAt(x, y);
+    if (cell && cell.step >= E.nextStep) { if (!futAt(x, y)) Eng.place(cell.step, cell.lane); return; }
+    E.marq = { x0: x, y0: y, x1: x, y1: y, all: e.shiftKey }; try { cv.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointers */ }
+  });
+  cv.addEventListener('pointermove', (e) => {
+    const [x, y] = xy(e);
+    if (E.marq) { E.marq.x1 = x; E.marq.y1 = y; E.marq.all = e.shiftKey; }
+    E.hover = lockAt(x, y) || null;
+  });
+  cv.addEventListener('pointerup', (e) => {
+    const m = E.marq; if (!m) return; POS = Clock.pos();
+    if (Math.abs(m.x1 - m.x0) > 4 || Math.abs(m.y1 - m.y0) > 4) Eng.makeLock(marqPick(UI.P));
+    else E.sel = lockAt(m.x0, m.y0) || null;
+    E.marq = null;
+  });
+  cv.addEventListener('contextmenu', (e) => {
+    e.preventDefault(); POS = Clock.pos();
+    const [x, y] = xy(e), L = lockAt(x, y);
+    if (L) { Eng.removeLock(L); return; }
+    const n = futAt(x, y); if (n) Eng.toggleDismiss(n);
+  });
+  cv.addEventListener('wheel', (e) => {
+    const [x, y] = xy(e), L = lockAt(x, y); if (!L) return;
+    e.preventDefault(); Eng.setV(L, L.V - Math.sign(e.deltaY) * .05);
+  }, { passive: false });
+  const btn = document.getElementById('play');
+  const toggle = () => { Clock.toggle(); btn.textContent = Clock.playing ? 'STOP' : 'PLAY'; };
+  btn.addEventListener('click', () => { toggle(); btn.blur(); });
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Shift' && E.marq) E.marq.all = true;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const i = KEYS.indexOf(e.key.toLowerCase());
+    if (i >= 0) { if (!e.repeat) Eng.playKey(i); return; }
+    const L = E.hover || E.sel;
+    if (e.code === 'Space') { e.preventDefault(); toggle(); }
+    else if (e.key === 'Escape') { E.sel = null; E.marq = null; }
+    else if ((e.key === 'Backspace' || e.key === 'Delete') && L) { e.preventDefault(); Eng.removeLock(L); }
+    else if (e.key === '[' && L) Eng.setV(L, L.V - .05);
+    else if (e.key === ']' && L) Eng.setV(L, L.V + .05);
+  });
+  addEventListener('keyup', (e) => { if (e.key === 'Shift' && E.marq) E.marq.all = false; });
+  const frame = () => { POS = Clock.pos(); UI.draw(); requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+}
+// ---------------- END ENGINE ----------------
+
+// ---------------- 2A UI: vertical past wall + perspective future floor ----------------
+const cv = document.getElementById('c');
+const FUT = 40, DEC = 1.6; // steps visible on the floor; deceleration constant (#60)
+let W = 0, H = 0, G = {};
+const g = setupCanvas(cv, (w, h) => {
+  W = w; H = h;
+  const nowY = Math.round(H * .46), gap = Math.min(30, W / 22), top = 34;
+  G = { nowY, gap, cx: W / 2, top, pps: (nowY - top) / 52, frontH: H - nowY - 44, flare: Math.min(2.6, (W * .47) / (gap * 4.5)) };
+});
+
+// wall: linear scroll; floor: q(u) = (e^(c u) - 1)/(e^c - 1), lane spread grows with q
+function P(n) {
+  const d = n.step - POS;
+  if (d < 0) { const y = G.nowY + d * G.pps; return y < G.top ? null : { x: G.cx + (n.lane - 4) * G.gap, y, s: 1 }; }
+  const u = Math.min(1, d / FUT); if (d > FUT + 1e-6) return null;
+  const q = (Math.exp(DEC * u) - 1) / (Math.exp(DEC) - 1), s = 1 + (G.flare - 1) * q;
+  return { x: G.cx + (n.lane - 4) * G.gap * s, y: G.nowY + q * G.frontH, s };
+}
+function cellAt(x, y) {
+  if (y <= G.nowY || y > G.nowY + G.frontH) return null;
+  const q = (y - G.nowY) / G.frontH, s = 1 + (G.flare - 1) * q;
+  const d = FUT * Math.log(1 + q * (Math.exp(DEC) - 1)) / DEC, lane = Math.round((x - G.cx) / (G.gap * s) + 4);
+  return lane < 0 || lane > 8 ? null : { step: Math.round(POS + d), lane };
+}
+const R = (n, p) => (n.ghost ? 2.6 : 4.2) * p.s;
+const line = (a, b) => { if (!a || !b) return; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); };
+
+function drawGrid() {
+  g.lineWidth = 1; g.font = FONT; g.textBaseline = 'middle'; g.textAlign = 'right';
+  for (let l = 0; l < 9; l++) {
+    g.strokeStyle = ink(.07); line({ x: G.cx + (l - 4) * G.gap, y: G.top }, { x: G.cx + (l - 4) * G.gap, y: G.nowY });
+    line(P({ step: POS, lane: l }), P({ step: POS + FUT, lane: l }));
+  }
+  const first = Math.ceil((POS - (G.nowY - G.top) / G.pps) / 4) * 4;
+  for (let st = first; st <= POS + FUT; st += 4) {
+    const a = P({ step: st, lane: -.5 }), b = P({ step: st, lane: 8.5 }); if (!a || !b) continue;
+    const bar = mod(st, 16) === 0;
+    g.strokeStyle = ink(bar ? .2 : .06); line(a, b);
+    if (bar) { g.fillStyle = ink(.35); g.fillText(`${st / 16} ${chordAt(st / 16).sym}`, a.x - 8, a.y); }
+  }
+}
+
+
+// ---------------- SIDE ATTENTION BOXES (68 · C/D) ----------------
+// Each lock lives in a box in the side gutters (alternating left/right, stacked along the wall).
+// Inside: a mini copy of the locked pattern (9 lane columns × period rows, time downward like the wall)
+// with its own playhead sweeping the period. Attention lines leave from these mini notes into the floor.
+// A faint dotted tether links each box to the lock's latest instance on the wall.
+const SB = { col: 9, row: 3.2, gapY: 26, rects: new Map() };
+function layoutSide() {
+  SB.rects.clear();
+  const wallL = G.cx - 4.5 * G.gap, wallR = G.cx + 4.5 * G.gap, w = SB.col * 9, yy = [G.top + 14, G.top + 14];
+  E.locks.forEach((L, i) => {
+    const side = i % 2, h = L.period * SB.row, x = side ? wallR + 34 : wallL - 58 - w;
+    SB.rects.set(L, { x, y: yy[side], w, h, side });
+    yy[side] += h + SB.gapY;
+  });
+}
+const sideRect = (L) => SB.rects.get(L);
+const sideBox = (L) => { const r = sideRect(L); return r && { x0: r.x - 4, y0: r.y - 16, x1: r.x + r.w + 4, y1: r.y + r.h + 4 }; };
+const sidePt = (L, i) => { const r = sideRect(L), n = L.notes[i]; return r && n && { x: r.x + (n.lane + .5) * SB.col, y: r.y + (n.off + .5) * SB.row, s: 1 }; };
+function drawSideBoxes(g) {
+  g.font = FONT; g.textBaseline = 'bottom'; g.lineWidth = 1;
+  for (const L of E.locks) {
+    const r = sideRect(L); if (!r) continue;
+    const act = lockActive(L), c = act ? HOT : hueA(L, .65);
+    g.fillStyle = '#000'; g.fillRect(r.x, r.y, r.w, r.h);
+    g.strokeStyle = c; g.strokeRect(r.x, r.y, r.w, r.h);
+    g.fillStyle = c; g.textAlign = r.side ? 'left' : 'right';
+    g.fillText(`L${L.id} V${L.V.toFixed(2)} /${L.period}`, r.side ? r.x : r.x + r.w, r.y - 3);
+    for (let b = 4; b < L.period; b += 4) { g.strokeStyle = ink(b % 16 ? .05 : .15); g.beginPath(); g.moveTo(r.x, r.y + b * SB.row); g.lineTo(r.x + r.w, r.y + b * SB.row); g.stroke(); }
+    const ph = mod(POS - L.anchor, L.period);
+    g.strokeStyle = hot(.6); g.beginPath(); g.moveTo(r.x, r.y + ph * SB.row); g.lineTo(r.x + r.w, r.y + ph * SB.row); g.stroke();
+    L.notes.forEach((n, i) => {
+      const p = sidePt(L, i), age = mod(ph - n.off, L.period), flash = age < 1.5 ? 1 - age / 1.5 : 0;
+      g.fillStyle = flash ? hot(.5 + flash * .5) : hueA(L, n.vel < .5 ? .5 : .95);
+      dot(g, p.x, p.y, (n.vel < .5 ? 1.6 : 2.4) + flash * 1.5);
+    });
+    // tether to the latest wall instance
+    const w = lockBox(L, P, 6); if (!w) continue;
+    g.strokeStyle = hueA(L, act ? .5 : .2); g.setLineDash([1, 3]);
+    g.beginPath(); g.moveTo(r.side ? r.x : r.x + r.w, r.y + r.h / 2); g.lineTo(r.side ? w.x1 : w.x0, (w.y0 + w.y1) / 2); g.stroke(); g.setLineDash([]);
+  }
+}
+
+function draw() {
+  layoutSide();
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  drawGrid();
+  const fut = futureNotes(POS + FUT + 1);
+  // NOW line + key letters (drawn under the notes)
+  g.strokeStyle = ink(.85); g.lineWidth = 1; line({ x: G.cx - 5 * G.gap, y: G.nowY }, { x: G.cx + 5 * G.gap, y: G.nowY });
+  g.font = FONT; g.textAlign = 'center'; g.textBaseline = 'top'; g.fillStyle = ink(.45);
+  for (let l = 0; l < 9; l++) g.fillText(KEYS[l].toUpperCase(), G.cx + (l - 4) * G.gap, G.nowY + 3);
+  drawLinks(g, P, fut, straight, n => sidePt(n.lock, n.idx));
+  drawNotes(g, P, fut, R);
+  drawSideBoxes(g);
+  drawMarquee(g);
+  drawChips(g, 10, H - 18);
+}
+
+document.getElementById('seed').textContent = 'seed ' + (SEED >>> 0).toString(36);
+wireInput(cv, { P, cellAt, draw, lockBox: sideBox });
+
+</script>
+</body></html>
