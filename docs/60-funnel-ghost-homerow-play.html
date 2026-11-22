@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>60 — Funnel Ghost Play · Home-Row Typing Hints &amp; Adaptive #41 Suggestions</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #harmHud { color: rgba(255,255,255,0.58); font-size: 10px; letter-spacing: 0.08em; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.1em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 900px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>60</b> · HOME-ROW FUNNEL PLAY · type <b>A S D F G H J K L</b> (or chord keys) on approaching ghost hints to play into existence · <b>L-DRAG</b> paint confirm · <b>R-DRAG / SHIFT</b> dismiss · <b>SPACE</b> play</span>
+  <div class="grp">
+    <span id="harmHud">i · ADAPTIVE</span>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 60 — HOME-ROW FUNNEL GHOST PLAY × FRONTAL DECELERATION × #41 ADAPTIVE THEORY
+//   Folds #51 + #54 cleanly into 1 unified interaction:
+//     1. HOME-ROW TYPING HINTS (A S D F G H J K L): Approaching ghost notes
+//        display their home-row key + closing timing halo at NOW — type them
+//        into existence (single notes OR chords!) or paint/brush with mouse.
+//     2. FRONTAL DECELERATION (opposite to vertical wall):
+//        Notes enter briskly from far future bottom and exponentially BRAKE
+//        as they approach NOW (y = nowY + frontH * (exp(c*u)-1)/(exp(c)-1)),
+//        giving calm visual precision right before typing/brushing!
+//     3. #41-INFORMED ADAPTIVE FUTURE SUGGESTIONS:
+//        Every confirmed note immediately recomputes upcoming ghost suggestions:
+//          - Harmonic Root Gravity (i / VI / VII inferred from confirmed pitches)
+//          - "a"-16th Suction Pickups leading into confirmed downbeats (3,7,11,15)
+//          - 50% Ghost-Note Figure-Ground Balance (fills gaps, dips on "e" 1,5,9,13)
+//          - Register Complementarity (confirm high → suggests Ding bass; confirm
+//            low → suggests singing upper melody & open-5th/triad chord halos!)
+//          - Call-and-Response phrasing across bar halves (0–7 ↔ 8–15)
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const KEYS = ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'];
+const KEY_TO_LANE = Object.fromEntries(KEYS.map((k, i) => [k.toLowerCase(), i]));
+
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, key: KEYS[idx], hz, idx, pan: ((idx / 8) - 0.5) * 0.60 }));
+
+// E Amara / Kurd harmonic fields (#41 Secret 4: i – VI – VII modal gravity)
+const FIELDS = {
+  i:   { sym: 'i (Em)',   dingHz: semiHz(-17), chord: [0, 4, 6, 8], bed: [1, 4, 6],   alt: [5, 7] },
+  VI:  { sym: 'VI (C)',   dingHz: semiHz(-21), chord: [2, 4, 6, 8], bed: [2, 4, 6],   alt: [0, 1] },
+  VII: { sym: 'VII (D)',  dingHz: semiHz(-19), chord: [3, 5, 7, 8], bed: [1, 3, 5],   alt: [4, 6] },
+};
+const PROG_ORDER = ['i', 'VI', 'VII', 'i'];
+
+const BPM = 98, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.10;
+const FUTURE_STEPS = 20; // crisp 1.25-bar frontal runway with unmistakable deceleration!
+const DECEL_C = 1.68;    // exponential frontal braking into NOW (opposite to vertical wall!)
+const FLARE = 1.56, WALL_PAD = 4.55, PAST_K = 0.055;
+const HIT_WINDOW = 1.15;
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM #41/#42 HANDPAN + CHORD STRUM AUDIO ====================
+let actx = null, masterLP = null, clickBuf = null, uiBus = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.85; master.connect(comp);
+    uiBus = actx.createGain(); uiBus.gain.value = 0.20; uiBus.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2380; masterLP.Q.value = 0.65;
+
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.45;
+    const irLen = Math.floor(sr * 2.5), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.52; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+
+    clickBuf = actx.createBuffer(1, Math.floor(sr * 0.020), sr);
+    const cd = clickBuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (cd.length * 0.26));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isQuiet = false, dingHz = null, spread = 0 } = opts, isDing = idx === 0;
+  const freq = (isDing && dingHz) ? dingHz : n.hz;
+  const t0 = Math.max(actx.currentTime + 0.002, when + spread), v = clamp(vel, 0.10, 1.05);
+  const sus = clamp(0.45 + dur * 0.34, 0.45, 2.75) * (isDing ? 1.42 : 1.0) * (isQuiet ? 0.66 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.42 : 0.28), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? -0.04 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+
+  const partials = isDing
+    ? [[1.0, 1.0, 1.0], [1.003, 0.22, 0.90], [2.0, 0.30, 0.74], [3.0, 0.40, 0.64]]
+    : [[1.0, 0.92, 1.0], [1.0025, 0.18, 0.86], [2.0, 0.26, 0.70], [3.0, 0.48, 0.68]];
+  for (const [r, amp, dm] of partials) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = isDing ? 0.007 : (r === 3 ? 0.022 : 0.005), dec = Math.max(0.08, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  const ns = actx.createBufferSource(); ns.buffer = clickBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 2.2;
+  const ng = actx.createGain(); ng.gain.setValueAtTime(v * (isQuiet ? 0.03 : 0.07), t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ns.start(t0);
+}
+
+function playBrushTick(confirm = true, panVal = 0) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, o = actx.createOscillator(), g = actx.createGain(), p = actx.createStereoPanner();
+  o.type = 'sine'; o.frequency.setValueAtTime(confirm ? 1460 : 580, t0);
+  o.frequency.exponentialRampToValueAtTime(confirm ? 1940 : 260, t0 + 0.022);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(confirm ? 0.13 : 0.09, t0 + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.026);
+  p.pan.value = clamp(panVal, -0.8, 0.8); o.connect(g); g.connect(p); p.connect(uiBus); o.start(t0); o.stop(t0 + 0.03);
+}
+
+// ==================== 2. #41-ADAPTIVE SUGGESTION & CONFIRMED MEMORY ENGINE ====================
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nextId: 1,
+  // Confirmed loop memory (1-bar persistent pattern of notes you confirmed via typing or brush!)
+  confirmedPattern: new Map(), // key `${pos}:${lane}` -> { pos, lane, dur, vel, born }
+  // Explicit per-step confirmed/dismissed overrides in upcoming future
+  futureConfirmed: new Map(),  // key `${step}:${lane}` -> { step, lane, dur, vel, flashPerf }
+  dismissedFuture: new Set(),  // key `${step}:${lane}`
+  futureNotes: [],             // combined confirmed + adaptive #41 ghost suggestions!
+  pastNotes: [], dust: [], brushTrail: [], sparks: [],
+  lociGlow: new Float32Array(9), lociHeat: new Float32Array(9),
+  heldKeys: new Set(), activeFieldKey: 'i',
+};
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+
+// Infer best #41 modal field (i / VI / VII) given the user's confirmed notes + bar progression!
+function inferHarmonicField(barIdx) {
+  const confirmed = [...state.confirmedPattern.values()];
+  if (!confirmed.length) return PROG_ORDER[((barIdx % 4) + 4) % 4];
+
+  // Score i / VI / VII by overlap with user's confirmed pitches + natural 2.5s bar progression drift
+  const progDefault = PROG_ORDER[((barIdx % 4) + 4) % 4];
+  let best = progDefault, bestScore = -1;
+  for (const key of ['i', 'VI', 'VII']) {
+    const f = FIELDS[key];
+    let sc = (key === progDefault ? 1.35 : 0.65); // preserve organic 1-bar movement while honoring confirmed harmony!
+    for (const c of confirmed) {
+      if (f.chord.includes(c.lane)) sc += 1.0;
+      else if (f.bed.includes(c.lane)) sc += 0.45;
+    }
+    if (sc > bestScore) { bestScore = sc; best = key; }
+  }
+  return best;
+}
+
+// Recompute ALL future ghost suggestions dynamically to work BEST with user's confirmed notes (#41 rules!)
+function rebuildAdaptiveFuture() {
+  const cur = getCurrentStep(), minS = Math.ceil(Math.max(state.nextSchedStep, cur + 0.01));
+  const maxS = Math.floor(cur) + FUTURE_STEPS + 16;
+  const nowPerf = performance.now();
+
+  // Prune old future overrides
+  for (const [k, v] of state.futureConfirmed) if (v.step < minS) state.futureConfirmed.delete(k);
+  for (const k of state.dismissedFuture) if (Number(k.split(':')[0]) < minS) state.dismissedFuture.delete(k);
+
+  const confirmedArr = [...state.confirmedPattern.values()];
+  const hasLowBass = confirmedArr.some(c => c.lane <= 1);
+  const hasHighMel = confirmedArr.some(c => c.lane >= 5);
+  const firstHalfCount = confirmedArr.filter(c => c.pos < 8).length;
+  const secondHalfCount = confirmedArr.filter(c => c.pos >= 8).length;
+
+  const out = [];
+  const occupied = new Set();
+
+  for (let step = minS; step <= maxS; step++) {
+    const pos = mod16(step), barIdx = Math.floor(step / 16);
+    const fKey = inferHarmonicField(barIdx), field = FIELDS[fKey];
+    if (step === minS) state.activeFieldKey = fKey;
+
+    // 1. Place all CONFIRMED notes (from persistent confirmedPattern + one-shot futureConfirmed)
+    for (const c of confirmedArr) {
+      if (c.pos !== pos) continue;
+      const key = `${step}:${c.lane}`;
+      if (state.dismissedFuture.has(key)) continue;
+      occupied.add(key);
+      out.push({ id: key, step, noteIdx: c.lane, dur: c.dur, vel: c.vel, status: 'confirmed', prob: 1, reason: 'LOCKED', dingHz: field.dingHz, flashPerf: c.born });
+    }
+    for (const [key, fc] of state.futureConfirmed) {
+      if (fc.step !== step || occupied.has(key)) continue;
+      occupied.add(key);
+      out.push({ id: key, step, noteIdx: fc.lane, dur: fc.dur, vel: fc.vel, status: 'confirmed', prob: 1, reason: 'LOCKED', dingHz: field.dingHz, flashPerf: fc.flashPerf });
+    }
+
+    const pushGhost = (lane, prob, dur, reason, chordGroup = false) => {
+      const key = `${step}:${lane}`;
+      if (occupied.has(key) || state.dismissedFuture.has(key)) return;
+      occupied.add(key);
+      out.push({ id: key, step, noteIdx: lane, dur, vel: 0.84, status: 'ghost', prob, reason, chordGroup, dingHz: field.dingHz, flashPerf: -9999 });
+    };
+
+    // 2. #41 RULE A — Register Complementarity (Warmth-to-Activity Inversion):
+    //    If user confirmed high melody but no bass -> suggest grounding Tresillo / step-15 Ding bass!
+    if ((pos === 0 || pos === 6 || pos === 12 || (pos === 15 && barIdx % 2 === 1)) && (!hasLowBass || pos === 0)) {
+      pushGhost(0, pos === 0 ? 0.88 : 0.72, 4, 'BASS', pos === 0);
+    }
+
+    // 3. #41 RULE B — Harmonic Chord Voicing on Beat 1 (0) and Beat 3 (8):
+    //    Suggests consonant open-5th / triad companions for any confirmed pitch on that beat!
+    if (pos === 0 || pos === 8) {
+      const chordPicks = hasLowBass && !hasHighMel ? field.chord.slice(1) : field.chord.slice(0, 3);
+      for (const ln of chordPicks) pushGhost(ln, 0.74, 5, 'CHORD', true);
+    }
+
+    // 4. #41 RULE C — "a"-16th Forward Suction Pickup (steps 3, 7, 11, 15):
+    //    Look ahead 1 step: if a confirmed note lands on the NEXT beat, suggest a stepwise pickup leading RIGHT into it!
+    if (pos % 4 === 3) {
+      const nextPos = mod16(pos + 1);
+      const upcoming = confirmedArr.find(c => c.pos === nextPos);
+      if (upcoming) {
+        // Stepwise neighbor leading straight into the user's confirmed downbeat!
+        const lead = clamp(upcoming.lane === 0 ? 1 : upcoming.lane - 1, 1, 8);
+        pushGhost(lead, 0.86, 2, 'a-PICKUP');
+      } else {
+        const pick = field.chord[(barIdx + (pos >> 2)) % field.chord.length];
+        pushGhost(pick === 0 ? 4 : pick, 0.78, 2, 'a-PICKUP');
+      }
+    }
+
+    // 5. #41 RULE D — Call-and-Response Phrasing across Bar Halves:
+    //    If user confirmed notes in steps 0–7, suggest lyrical answering motif in steps 8–15 (and vice-versa)!
+    const answerHalf = (firstHalfCount > secondHalfCount && pos >= 8) || (secondHalfCount > firstHalfCount && pos < 8);
+    if ((pos === 2 || pos === 6 || pos === 10 || pos === 14) && (answerHalf || confirmedArr.length === 0)) {
+      const targetLanes = hasHighMel ? field.bed : field.chord.filter(l => l >= 4);
+      const ln = targetLanes[(barIdx + pos) % targetLanes.length];
+      pushGhost(ln, answerHalf ? 0.82 : 0.62, 3, answerHalf ? 'ANSWER' : 'MELODY');
+    }
+
+    // 6. #41 RULE E — 50% Ghost-Note Rule (leave "e" steps 1,5,9,13 empty for groove breath!)
+  }
+
+  out.sort((a, b) => a.step - b.step || a.noteIdx - b.noteIdx);
+  state.futureNotes = out;
+  document.getElementById('harmHud').textContent = `${FIELDS[state.activeFieldKey].sym} · ${state.confirmedPattern.size} CONFIRMED`;
+}
+
+// ==================== 3. SCHEDULER ====================
+let schedTimer = null;
+function schedulerTick() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const step = state.futureNotes[0].step, batch = [];
+    while (state.futureNotes.length && state.futureNotes[0].step === step) batch.push(state.futureNotes.shift());
+    if (step < state.nextSchedStep - 0.001) continue;
+
+    const confirmed = batch.filter(n => n.status === 'confirmed');
+    // Confirmed notes play full voice (or lush strummed chord if >=2!).
+    // Unconfirmed ghost suggestions stay SILENT — except a whisper-quiet Ding/bed pulse on step 0/6/12 so tempo stays grounded!
+    const toPlay = confirmed.length
+      ? confirmed
+      : batch.filter(n => n.reason === 'BASS' && (mod16(step) === 0 || mod16(step) === 12)).slice(0, 1);
+
+    const tBase = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (step - state.anchorStep) * TATUM);
+    const isChord = toPlay.length >= 2;
+    toPlay.forEach((ev, k) => {
+      // Skip double-firing a note the human literally just typed on this exact beat
+      if (ev.status === 'confirmed' && performance.now() - ev.flashPerf < 220) return;
+      const isWhisper = ev.status !== 'confirmed';
+      const vel = isWhisper ? 0.34 : (isChord ? 0.82 : ev.vel);
+      playPan(ev.noteIdx, tBase + (Math.random() - 0.5) * 0.005, vel, isChord ? 5 : ev.dur, {
+        isQuiet: isWhisper, dingHz: ev.dingHz, spread: isChord ? k * 0.018 : 0
+      });
+      ev.playedVel = vel; ev.firedVisual = false; ev.wasChord = isChord;
+      state.pastNotes.push(ev);
+    });
+    state.nextSchedStep = step + 0.5;
+  }
+  if (!state.futureNotes.length || state.futureNotes[state.futureNotes.length - 1].step < getCurrentStep() + FUTURE_STEPS + 6) {
+    rebuildAdaptiveFuture();
+  }
+  if (state.pastNotes.length > 220) { const cur = getCurrentStep(); state.pastNotes = state.pastNotes.filter(n => cur - n.step < 90); }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  ensureAudio(); state.playing = want;
+  if (want) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001);
+    rebuildAdaptiveFuture(); schedulerTick(); schedTimer = setInterval(schedulerTick, 18);
+  } else { state.playheadStep = getCurrentStep(); clearInterval(schedTimer); schedTimer = null; }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', () => togglePlay());
+
+// ==================== 4. FRONTAL DECELERATION PROJECTION (OPPOSITE TO VERTICAL WALL!) ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { cx: 0, nowY: 0, padTop: 48, padBot: 34, frontH: 300, wallGap: 46, wallHalfW: 205, wallL: 0, wallR: 0, s0: 8, locusX: new Float32Array(9) };
+
+function layout() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  geo.cx = Math.round(W * 0.5); geo.nowY = Math.round(H * 0.40);
+  geo.frontH = Math.max(180, H - geo.nowY - geo.padBot);
+  const maxBotHalf = Math.min(W * 0.44, 480);
+  geo.wallGap = clamp((maxBotHalf / FLARE) / WALL_PAD, 26, 60);
+  geo.wallHalfW = geo.wallGap * WALL_PAD;
+  geo.wallL = geo.cx - geo.wallHalfW; geo.wallR = geo.cx + geo.wallHalfW;
+  for (let i = 0; i < 9; i++) geo.locusX[i] = geo.cx + (i - 4) * geo.wallGap;
+  // Exact C¹ vertical speed matching the exponential deceleration right at NOW (u = 0)!
+  geo.s0 = (geo.frontH * DECEL_C) / ((Math.exp(DECEL_C) - 1) * FUTURE_STEPS);
+}
+window.addEventListener('resize', layout); layout();
+
+const wallX = (wx) => geo.cx + wx * geo.wallGap;
+const wallY = (age) => geo.nowY - (geo.s0 / PAST_K) * Math.log(1 + PAST_K * Math.max(0, age));
+
+// EXPONENTIAL FRONTAL DECELERATION:
+//   q(u) = (exp(c * u) - 1) / (exp(c) - 1)   for u = off / FUTURE_STEPS in [0, 1]
+//   Notes zip briskly in from the far bottom (high dy/dt) and BRAKE smoothly as they approach NOW!
+//   Exact straight converging rails: S(q) = 1 + (FLARE - 1) * q!
+function projFunnel(wx, off) {
+  const u = clamp(off / FUTURE_STEPS, 0, 1.05);
+  const q = (Math.exp(DECEL_C * u) - 1) / (Math.exp(DECEL_C) - 1);
+  const S = 1 + (FLARE - 1) * q;
+  return { x: geo.cx + wx * geo.wallGap * S, y: geo.nowY + q * geo.frontH, scale: S, q };
+}
+function unprojFunnel(sx, sy) {
+  if (sy < geo.nowY) return null;
+  const q = clamp((sy - geo.nowY) / geo.frontH, 0, 1.05);
+  const S = 1 + (FLARE - 1) * q;
+  const u = Math.log(1 + q * (Math.exp(DECEL_C) - 1)) / DECEL_C;
+  return { wx: (sx - geo.cx) / (geo.wallGap * S), off: u * FUTURE_STEPS, scale: S };
+}
+
+// ==================== 5. HOME-ROW TYPING + FRAGILE BRUSH INTERACTION ====================
+const brush = { active: false, confirm: true, touched: new Set() };
+
+function confirmNoteAt(pos, lane, dur = 3, vel = 0.90) {
+  const p = mod16(pos);
+  state.confirmedPattern.set(`${p}:${lane}`, { pos: p, lane, dur, vel, born: performance.now() });
+  rebuildAdaptiveFuture();
+}
+
+function shatter(x, y) {
+  for (let k = 0; k < 7; k++) {
+    const a = (Math.PI * 2 * k) / 7 + Math.random() * 0.5, sp = 28 + Math.random() * 55;
+    state.dust.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, age: 0, life: 0.36 });
+  }
+}
+
+function applyBrush(mx, my, isConfirm) {
+  const cur = getCurrentStep(), nowPerf = performance.now();
+  state.brushTrail.push({ x: mx, y: my, confirm: isConfirm, born: nowPerf });
+  if (state.brushTrail.length > 24) state.brushTrail.shift();
+
+  for (const n of state.futureNotes) {
+    if (brush.touched.has(n.id)) continue;
+    const off = n.step - cur; if (off < 0.05 || off > FUTURE_STEPS) continue;
+    const pt = projFunnel(n.noteIdx - 4, off);
+    if (Math.hypot(mx - pt.x, my - pt.y) <= 24 * clamp(pt.scale, 0.95, 1.45)) {
+      brush.touched.add(n.id);
+      if (isConfirm) {
+        if (n.status !== 'confirmed') {
+          confirmNoteAt(mod16(n.step), n.noteIdx, n.dur, 0.90);
+          playBrushTick(true, NOTES[n.noteIdx].pan);
+        }
+      } else {
+        shatter(pt.x, pt.y);
+        state.dismissedFuture.add(n.id);
+        state.confirmedPattern.delete(`${mod16(n.step)}:${n.noteIdx}`);
+        playBrushTick(false, NOTES[n.noteIdx].pan);
+        rebuildAdaptiveFuture();
+      }
+      return;
+    }
+  }
+}
+
+// Type Home-Row Key (A S D F G H J K L) -> Plays live + snaps onto approaching ghost hint + updates future!
+function typeHomeRowLane(lane) {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  const cur = getCurrentStep(), nowPerf = performance.now();
+  const field = FIELDS[state.activeFieldKey];
+  playPan(lane, actx.currentTime, state.heldKeys.size >= 2 ? 0.84 : 0.95, state.heldKeys.size >= 2 ? 5 : 4, { dingHz: field.dingHz });
+  state.lociGlow[lane] = 1; state.lociHeat[lane] = 1;
+
+  // Check if a ghost suggestion on this lane is near NOW -> snap cleanly onto its exact musical slot!
+  let snappedPos = mod16(Math.round(cur)), hitHint = false;
+  for (const fn of state.futureNotes) {
+    if (fn.noteIdx === lane && fn.status === 'ghost' && Math.abs(fn.step - cur) <= HIT_WINDOW) {
+      snappedPos = mod16(fn.step); hitHint = true; break;
+    }
+  }
+  confirmNoteAt(snappedPos, lane, state.heldKeys.size >= 2 ? 5 : 3, 0.92);
+  state.pastNotes.push({ step: cur, noteIdx: lane, dur: 4, playedVel: 0.94, status: 'confirmed', firedVisual: true, wasChord: state.heldKeys.size >= 2 });
+  state.sparks.push({ lane, born: nowPerf, life: 520, hitHint });
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  ensureAudio(); canvas.setPointerCapture(e.pointerId);
+  if (Math.abs(my - geo.nowY) <= 26 && mx >= geo.wallL - 12 && mx <= geo.wallR + 12) {
+    typeHomeRowLane(clamp(Math.round((mx - geo.cx) / geo.wallGap + 4), 0, 8)); return;
+  }
+  if (my > geo.nowY + 8) {
+    brush.active = true; brush.confirm = !(e.button === 2 || e.shiftKey); brush.touched.clear();
+    applyBrush(mx, my, brush.confirm);
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!brush.active) return;
+  const r = canvas.getBoundingClientRect();
+  applyBrush(e.clientX - r.left, e.clientY - r.top, brush.confirm);
+});
+canvas.addEventListener('pointerup', () => { brush.active = false; brush.touched.clear(); });
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.key === 'Escape') { state.confirmedPattern.clear(); state.dismissedFuture.clear(); rebuildAdaptiveFuture(); return; }
+  if (e.repeat) return;
+  const lane = KEY_TO_LANE[e.key.toLowerCase()];
+  if (lane !== undefined) { state.heldKeys.add(lane); typeHomeRowLane(lane); }
+});
+window.addEventListener('keyup', (e) => {
+  const lane = KEY_TO_LANE[e.key.toLowerCase()];
+  if (lane !== undefined) state.heldKeys.delete(lane);
+});
+
+// ==================== 6. PURE DARK MINIMALIST RENDERER ====================
+const sLine = (x1, y1, x2, y2, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+const sCirc = (x, y, r, col, lw = 1) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.stroke(); };
+const fCirc = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill(); };
+const drawGrad = (ax, ay, bx, by, c0, c1, lw) => { const g = ctx.createLinearGradient(ax, ay, bx, by); g.addColorStop(0, c0); g.addColorStop(1, c1); ctx.strokeStyle = g; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); };
+
+let lastPerf = performance.now();
+function frame(nowPerf) {
+  const dt = Math.min(0.05, Math.max(0.001, (nowPerf - lastPerf) / 1000)); lastPerf = nowPerf;
+  const curStep = getCurrentStep();
+  for (const n of state.pastNotes) if (!n.firedVisual && n.step <= curStep) { n.firedVisual = true; state.lociGlow[n.noteIdx] = Math.max(state.lociGlow[n.noteIdx], n.playedVel); }
+  for (let i = 0; i < 9; i++) { state.lociGlow[i] *= Math.exp(-dt * 5.0); state.lociHeat[i] = Math.max(0, state.lociHeat[i] - dt * 2.5); }
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const fBL = projFunnel(-WALL_PAD, FUTURE_STEPS), fBR = projFunnel(WALL_PAD, FUTURE_STEPS);
+
+  // Clean pure #000 3D Funnel Rails (zero floor/wall shading!)
+  drawGrad(geo.wallL, geo.nowY, geo.wallL, geo.padTop, 'rgba(255,255,255,0.16)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallR, geo.nowY, geo.wallR, geo.padTop, 'rgba(255,255,255,0.16)', 'rgba(255,255,255,0.02)', 1);
+  drawGrad(geo.wallL, geo.nowY, fBL.x, fBL.y, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.08)', 1);
+  drawGrad(geo.wallR, geo.nowY, fBR.x, fBR.y, 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.08)', 1);
+  for (let i = 0; i < 9; i++) {
+    const wx = i - 4, xW = wallX(wx), pBot = projFunnel(wx, FUTURE_STEPS);
+    const a = i === 0 || i === 4 ? 0.085 : 0.042;
+    drawGrad(xW, geo.nowY, xW, geo.padTop, `rgba(255,255,255,${a})`, 'rgba(255,255,255,0)', 0.85);
+    drawGrad(xW, geo.nowY, pBot.x, pBot.y, `rgba(255,255,255,${a * 1.1})`, `rgba(255,255,255,${a * 0.5})`, 0.85);
+  }
+
+  // Decelerating beat/bar horizontal lines on frontal funnel (visibly tightening smoothly into NOW!)
+  for (let s = Math.ceil(curStep); s <= Math.floor(curStep) + FUTURE_STEPS; s++) {
+    if (s % 4 !== 0) continue;
+    const off = s - curStep; if (off <= 0.1 || off > FUTURE_STEPS) continue;
+    const isBar = mod16(s) === 0, pL = projFunnel(-WALL_PAD, off), pR = projFunnel(WALL_PAD, off);
+    sLine(pL.x, pL.y, pR.x, pR.y, `rgba(255,255,255,${isBar ? 0.14 : 0.04})`, isBar ? 1 : 0.75);
+  }
+
+  // Horizontal chord bridges across simultaneous notes
+  const byStep = new Map();
+  for (const n of state.futureNotes) {
+    const off = n.step - curStep; if (off < 0 || off > FUTURE_STEPS) continue;
+    if (!byStep.has(n.step)) byStep.set(n.step, []);
+    byStep.get(n.step).push(n);
+  }
+  for (const [step, list] of byStep) {
+    const off = step - curStep;
+    const conf = list.filter(n => n.status === 'confirmed').sort((a, b) => a.noteIdx - b.noteIdx);
+    const gho  = list.filter(n => n.status === 'ghost' && n.chordGroup).sort((a, b) => a.noteIdx - b.noteIdx);
+    if (conf.length >= 2) {
+      const pA = projFunnel(conf[0].noteIdx - 4, off), pB = projFunnel(conf[conf.length - 1].noteIdx - 4, off);
+      sLine(pA.x, pA.y, pB.x, pB.y, 'rgba(255,90,31,0.58)', 1.3 * pA.scale);
+    }
+    if (gho.length >= 2) {
+      const pA = projFunnel(gho[0].noteIdx - 4, off), pB = projFunnel(gho[gho.length - 1].noteIdx - 4, off);
+      ctx.save(); ctx.setLineDash([2, 4]); sLine(pA.x, pA.y, pB.x, pB.y, 'rgba(255,255,255,0.16)', 0.9); ctx.restore();
+    }
+  }
+
+  // FUTURE notes: Fragile Ghost Typing Hints (carrying Home-Row Letter A–L + Closing Halo at NOW!)
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const n of state.futureNotes) {
+    const off = n.step - curStep; if (off < -0.3 || off > FUTURE_STEPS) continue;
+    const pt = projFunnel(n.noteIdx - 4, Math.max(0, off));
+    const fade = clamp((H - geo.padBot - pt.y) / 22, 0, 1);
+
+    if (n.status === 'confirmed') {
+      const r = 4.2 * pt.scale;
+      fCirc(pt.x, pt.y, r, mixInk(0.85, 0.95 * fade));
+    } else {
+      const near = clamp(1 - off / 5.5, 0, 1);
+      const r = (7.2 + n.prob * 2.0) * clamp(pt.scale * 0.85, 0.85, 1.35);
+      const a = (0.20 + n.prob * 0.36 + near * 0.35) * fade;
+      ctx.save(); ctx.setLineDash([2.5, 2.5]);
+      sCirc(pt.x, pt.y, r, mixInk(near > 0.65 ? 1 : 0.4, a), near > 0.65 ? 1.4 : 0.95);
+      ctx.restore();
+      ctx.font = `${Math.round(9 * clamp(pt.scale * 0.88, 0.9, 1.25))}px ui-monospace, monospace`;
+      ctx.fillStyle = mixInk(near > 0.65 ? 1 : 0.35, clamp(a + 0.18, 0, 0.96));
+      ctx.fillText(NOTES[n.noteIdx].key, pt.x, pt.y + 0.5);
+
+      // Closing typing timing halo right on NOW locus as ghost brakes into strike window!
+      if (off > 0 && off <= 3.6) {
+        const u = off / 3.6;
+        sCirc(geo.locusX[n.noteIdx], geo.nowY, 5 + u * 22, mixInk(1, (1 - u) * 0.78), 1.15);
+      }
+    }
+  }
+
+  // PAST notes rising straight up
+  for (const n of state.pastNotes) {
+    if (n.step >= curStep) continue;
+    const y0 = wallY(curStep - n.step); if (y0 < geo.padTop) continue;
+    const f = clamp((y0 - geo.padTop) / 22, 0, 1);
+    fCirc(geo.locusX[n.noteIdx], y0, n.status === 'confirmed' ? 3.2 : 1.6, mixInk(n.wasChord ? 0.75 : 0, (n.status === 'confirmed' ? 0.88 : 0.30) * f));
+  }
+
+  // Dust + Brush + Sparks
+  for (let i = state.dust.length - 1; i >= 0; i--) {
+    const d = state.dust[i]; d.age += dt; if (d.age >= d.life) { state.dust.splice(i, 1); continue; }
+    d.x += d.vx * dt; d.y += d.vy * dt; d.vx *= 0.93; d.vy *= 0.93;
+    fCirc(d.x, d.y, 1.4 * (1 - d.age / d.life), `rgba(255,255,255,${((1 - d.age / d.life) * 0.75).toFixed(3)})`);
+  }
+  while (state.brushTrail.length && nowPerf - state.brushTrail[0].born > 200) state.brushTrail.shift();
+  for (let i = 1; i < state.brushTrail.length; i++) {
+    const a = state.brushTrail[i - 1], b = state.brushTrail[i], e = 1 - (nowPerf - b.born) / 200;
+    sLine(a.x, a.y, b.x, b.y, b.confirm ? `rgba(255,90,31,${(e * 0.7).toFixed(3)})` : `rgba(255,255,255,${(e * 0.45).toFixed(3)})`, 1.8);
+  }
+  for (let i = state.sparks.length - 1; i >= 0; i--) {
+    const sp = state.sparks[i], p = (nowPerf - sp.born) / sp.life; if (p >= 1) { state.sparks.splice(i, 1); continue; }
+    sCirc(geo.locusX[sp.lane], geo.nowY, 6 + p * (sp.hitHint ? 32 : 18), mixInk(1, (1 - p) * 0.85), 1.3);
+  }
+
+  // NOW fold + crisp Home-Row Keycaps (A S D F G H J K L)
+  sLine(geo.wallL - 8, geo.nowY + 0.5, geo.wallR + 8, geo.nowY + 0.5, 'rgba(255,255,255,0.68)', 1.15);
+  for (let i = 0; i < 9; i++) {
+    const x = geo.locusX[i], pBot = projFunnel(i - 4, FUTURE_STEPS), g = state.lociGlow[i], h = state.lociHeat[i];
+    const held = state.heldKeys.has(i);
+    fCirc(x, geo.nowY, (held ? 4.4 : i === 0 ? 2.8 : 2.1) + g * 2.2, mixInk(held ? 1 : h, 0.58 + g * 0.42));
+    ctx.font = '10px ui-monospace, monospace'; ctx.textBaseline = 'top';
+    ctx.fillStyle = mixInk(held ? 1 : h, 0.55 + g * 0.45);
+    ctx.fillText(NOTES[i].key, pBot.x, pBot.y + 6);
+    ctx.font = '8px ui-monospace, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.fillText(NOTES[i].name, pBot.x, pBot.y + 18);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+rebuildAdaptiveFuture();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

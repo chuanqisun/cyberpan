@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>66 · 1A — Realtime DJ HUD: horizontal timeline</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font: 11px/1 ui-monospace, Menlo, Consolas, monospace; user-select: none; touch-action: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header { position: fixed; top: 8px; left: 12px; right: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; pointer-events: none; }
+  .hint { color: rgba(255,255,255,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button { pointer-events: auto; background: #000; color: #fff; border: 1px solid rgba(255,255,255,.3); font: inherit; padding: 3px 10px; cursor: pointer; }
+  button.on { border-color: #ff5a1f; color: #ff5a1f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint">66 · 1A · SPACE play · press-drag in future = pie (direction=type, distance=intensity) · drag cue = move · wheel = intensity · right-click/⌫ = delete · hold W = build · ←/→ drop flavor · J = tap</span>
+  <button id="play">PLAY</button>
+</header>
+<script>
+// ===================== 66 SHARED CORE (audio · clock · theory) =====================
+// E Kurd / Amara 9-tone pan, i–VI–VII–i one-bar harmonic cycle (#41), 16-step bars.
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const mod = (a, n) => ((a % n) + n) % n;
+const hash01 = (a, b = 0, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const semiHz = (s) => 440 * Math.pow(2, s / 12);
+
+// lane index 0..8 ; KEYS[i] plays lane i (home row)
+const NOTES = [['E3', -17], ['B3', -10], ['C4', -9], ['D4', -7], ['E4', -5], ['F#4', -3], ['G4', -2], ['A4', 0], ['B4', 2]]
+  .map(([name, s], idx) => ({ name, idx, freq: semiHz(s), pan: (idx / 8 - 0.5) * 0.5 }));
+const KEYS = 'asdfghjkl';
+// one chord per bar; pool = lanes that sound "right" in that bar; bassHz = sub root
+const PROG = [
+  { sym: 'i', pool: [0, 1, 4, 6, 8], bassHz: semiHz(-29) },
+  { sym: 'VI', pool: [2, 4, 6, 8, 1], bassHz: semiHz(-33) },
+  { sym: 'VII', pool: [3, 5, 7, 8, 1], bassHz: semiHz(-31) },
+  { sym: 'i', pool: [0, 1, 4, 6, 5], bassHz: semiHz(-29) },
+];
+const chordAt = (bar) => PROG[mod(bar, PROG.length)];
+// #41 metric weight per 16th: strong downbeats, strong "a" pickups (3,7,11,15), weak "e"
+const METRIC = [1, .3, .55, .8, .85, .25, .55, .8, .95, .3, .5, .85, .85, .2, .55, .75];
+
+// ----------------------------- AUDIO -----------------------------
+const Audio = (() => {
+  let ctx = null, master, bus, hpf, lpf, dry, revSend, revOut, noise, riserBP, riserG, ui;
+  function ensure() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -10; comp.ratio.value = 6; comp.connect(ctx.destination);
+      master = ctx.createGain(); master.gain.value = 0.85; master.connect(comp);
+      lpf = filt('lowpass', 18000, 0.7); hpf = filt('highpass', 20, 0.7); dry = ctx.createGain();
+      bus = ctx.createGain(); bus.connect(hpf); hpf.connect(lpf); lpf.connect(dry); dry.connect(master);
+      const sr = ctx.sampleRate, n = Math.floor(sr * 2.6), ir = ctx.createBuffer(2, n, sr);
+      for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); let lp = 0; for (let i = 0; i < n; i++) { lp = lp * .55 + (Math.random() * 2 - 1) * .45; d[i] = lp * Math.pow(1 - i / n, 2.4) * .5; } }
+      const conv = ctx.createConvolver(); conv.buffer = ir;
+      revSend = ctx.createGain(); revSend.gain.value = 0.25; revOut = ctx.createGain(); revOut.gain.value = 0.5;
+      lpf.connect(revSend); revSend.connect(conv); conv.connect(revOut); revOut.connect(master);
+      noise = ctx.createBuffer(1, sr * 2, sr); const nd = noise.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const rs = ctx.createBufferSource(); rs.buffer = noise; rs.loop = true;
+      riserBP = filt('bandpass', 400, 2); riserG = ctx.createGain(); riserG.gain.value = 0.0001;
+      rs.connect(riserBP); riserBP.connect(riserG); riserG.connect(master); rs.start();
+      ui = ctx.createGain(); ui.gain.value = 0.2; ui.connect(master);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+  const filt = (type, f, q) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+  const env = (t, a, p, d) => { const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(Math.max(.0002, p), t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(a + .01, d)); return g; };
+  const T = (when) => Math.max(ctx.currentTime + 0.002, when == null ? 0 : when);
+  const osc = (type, f, t, d, out) => { const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); o.connect(out); o.start(t); o.stop(t + d + .05); return o; };
+  function noiseHit(t, type, f, q, peak, d, out = bus) { const s = ctx.createBufferSource(); s.buffer = noise; const b = filt(type, f, q), g = env(t, .002, peak, d); s.connect(b); b.connect(g); g.connect(out); s.start(t); s.stop(t + d + .03); }
+  return {
+    ensure, get ctx() { return ctx; }, now: () => (ctx ? ctx.currentTime : 0),
+    // handpan strike: lane 0..8, vel 0..1, durSteps controls ring length, octave shifts up 1 octave
+    pan(lane, when, vel = .8, durSteps = 4, octave = 0) {
+      ensure(); const n = NOTES[lane]; if (!n) return; const t = T(when), v = clamp(vel, .05, 1), f = n.freq * (octave ? 2 : 1);
+      const tau = clamp(.25 + durSteps * .22, .3, 2.4) * (lane === 0 ? 1.2 : 1);
+      const out = ctx.createGain(), p = ctx.createStereoPanner(); p.pan.value = n.pan; out.connect(p); p.connect(bus);
+      const g = env(t, .004, .26 * v, tau); g.connect(out); osc('sine', f, t, tau, g); osc('sine', f + .7, t, tau, g);
+      const h2 = env(t, .02, .12 * v, tau * .6); h2.connect(out); osc('sine', f * 2.001, t, tau * .6, h2);
+      const h3 = env(t, .03, .07 * v, tau * .45); h3.connect(out); osc('sine', f * 2.998, t, tau * .45, h3);
+      noiseHit(t, 'bandpass', clamp(f * 3, 600, 2000), 2, .1 * v, .02, out);
+    },
+    kick(when, v = .8) { ensure(); const t = T(when), g = env(t, .003, .7 * v, .3); g.connect(bus); const o = osc('sine', 130, t, .32, g); o.frequency.exponentialRampToValueAtTime(42, t + .12); },
+    hat(when, v = .4, open = false) { ensure(); noiseHit(T(when), 'highpass', open ? 6000 : 7500, .8, .12 * v, open ? .16 : .035); },
+    tak(when, v = .6) { ensure(); const t = T(when); noiseHit(t, 'bandpass', 2400, 1.6, .26 * v, .07); const g = env(t, .002, .15 * v, .06); g.connect(bus); osc('triangle', 300, t, .06, g); },
+    sub(when, hz, durSec, v = .45) { ensure(); const t = T(when), g = env(t, .015, v, Math.max(.1, durSec)), lp = filt('lowpass', 220, 1); lp.connect(g); g.connect(bus); osc('sine', hz, t, durSec, lp); osc('triangle', hz * 2, t, durSec, lp); },
+    impact(when, v = 1) { ensure(); const t = T(when), g = env(t, .004, .8 * v, 1.4); g.connect(master); const o = osc('sine', 120, t, 1.4, g); o.frequency.exponentialRampToValueAtTime(41, t + .1); noiseHit(t, 'lowpass', 3000, .7, .3 * v, 1.6, master); },
+    // UI detent click (haptic-ish); pitch 0.5..2
+    click(pitch = 1, strong = false) { if (!ctx) return; noiseHit(ctx.currentTime + .001, 'bandpass', 2200 * pitch, 5, strong ? .25 : .12, strong ? .025 : .012, ui); },
+    // continuous macro controls (0..1), smoothed
+    setRiser(x) { if (!ctx) return; const t = ctx.currentTime; riserG.gain.setTargetAtTime(Math.max(.0001, Math.pow(x, 1.5) * .22), t, .04); riserBP.frequency.setTargetAtTime(300 + x * 4500, t, .04); },
+    setHPF(x) { if (!ctx) return; hpf.frequency.setTargetAtTime(20 * Math.pow(70, clamp(x, 0, 1)), ctx.currentTime, .03); hpf.Q.value = .7 + x * 3; },
+    setLPF(x) { if (!ctx) return; lpf.frequency.setTargetAtTime(18000 * Math.pow(400 / 18000, clamp(x, 0, 1)), ctx.currentTime, .03); },
+    setReverb(x) { if (!ctx) return; revSend.gain.setTargetAtTime(.25 + x * .6, ctx.currentTime, .05); },
+    // freeze: dry bus muted, reverb tail hangs
+    setFreeze(on) { if (!ctx) return; const t = ctx.currentTime; dry.gain.setTargetAtTime(on ? .0001 : 1, t, on ? .01 : .005); revSend.gain.setTargetAtTime(on ? .0001 : .25, t, .01); revOut.gain.setTargetAtTime(on ? .7 : .5, t, .05); },
+  };
+})();
+
+// ----------------------------- CLOCK -----------------------------
+// Sample-accurate 16th-step scheduler. Clock.onStep(fn(step, when)) is called ~120ms ahead.
+// Clock.pos() = fractional current step (for drawing). Clock.later(when, fn) runs fn when audio time arrives.
+const Clock = (() => {
+  const subs = []; let bpm = 105, playing = false, anchorStep = 0, anchorTime = 0, next = 0, timer = null, pausedAt = 0;
+  const stepDur = () => 60 / bpm / 4;
+  function tick() {
+    const ctx = Audio.ctx; if (!playing || !ctx) return;
+    const horizon = ctx.currentTime + .12;
+    while (anchorTime + (next - anchorStep) * stepDur() < horizon) { const when = anchorTime + (next - anchorStep) * stepDur(); for (const f of subs) f(next, when); next++; }
+  }
+  return {
+    get playing() { return playing; }, get bpm() { return bpm; }, stepDur,
+    setBpm(b) { const p = this.pos(); bpm = b; if (playing) { anchorStep = p; anchorTime = Audio.now(); } },
+    onStep(f) { subs.push(f); },
+    pos() { if (!playing || !Audio.ctx) return pausedAt; return anchorStep + Math.max(0, (Audio.now() - anchorTime) / stepDur()); },
+    timeOf(step) { return anchorTime + (step - anchorStep) * stepDur(); },
+    start() { Audio.ensure(); if (playing) return; playing = true; anchorStep = pausedAt; anchorTime = Audio.now() + .05; next = Math.ceil(anchorStep); timer = setInterval(tick, 25); tick(); },
+    stop() { if (!playing) return; pausedAt = this.pos(); playing = false; clearInterval(timer); },
+    toggle() { playing ? this.stop() : this.start(); },
+    later(when, fn) { setTimeout(fn, Math.max(0, (when - Audio.now()) * 1000)); },
+  };
+})();
+
+// ----------------------------- CANVAS HELPERS -----------------------------
+function setupCanvas(canvas, onResize) {
+  const ctx = canvas.getContext('2d');
+  const fit = () => { const d = Math.min(2, devicePixelRatio || 1), r = canvas.getBoundingClientRect(); canvas.width = r.width * d; canvas.height = r.height * d; ctx.setTransform(d, 0, 0, d, 0, 0); onResize && onResize(r.width, r.height); };
+  addEventListener('resize', fit); fit(); return ctx;
+}
+const ink = (a) => `rgba(255,255,255,${clamp(a, 0, 1).toFixed(3)})`;
+const HOT = '#ff5a1f';
+const hot = (a) => `rgba(255,90,31,${clamp(a, 0, 1).toFixed(3)})`;
+// ===================== END CORE =====================
+
+/* 66 · Concept 1 · Realtime DJ HUD — variation 1A: HORIZONTAL TIMELINE HUD.
+   You schedule future events ("cues") with a radial pie (direction = type, drag length = intensity);
+   each cue plays itself automatically, and when the playhead reaches it a live control appears in a
+   fixed HUD panel at the bottom-left, under the playhead, so you can take over.
+   Time flows right -> left; playhead at 25% width. Top band = energy (past = recorded, future = predicted),
+   middle = cue lane, bottom = upcoming notes. Hover a cue to see the energy with vs without it.
+   Lineage: #30 drop piston (DROP control), #49 HALF/RAVE/FAKEOUT flavors, #52 snap-to-archetype (RHYTHM),
+   #62 radial layout (pie). Judge: is a fixed control panel + left-scrolling timeline easy to read and steer? */
+// ==================== CONCEPT-1 ENGINE (identical in 1A / 1B / 1C; only the UI differs) ====================
+Clock.setBpm(120);
+const BAR = 16, POST = 64, LOOK = 128;                       // POST = climax steps after a drop
+const TYPES = ['RHYTHM', 'DROP', 'LIFT', 'SWEEP', 'KILL', 'BREAK'];
+const SHORT = { RHYTHM: 'RHY', DROP: 'DROP', LIFT: 'LIFT', SWEEP: 'SWP', KILL: 'KILL', BREAK: 'BRK' };
+const FLAV = ['HALF', 'FULL', 'FAKE'];
+// candidate percussion patterns, ordered sparse -> driving (intensity preselects)
+const RHY = [
+  { name: 'TRESILLO', kick: [0, 6, 12], tak: [3, 9], e: 0 },
+  { name: 'BROKEN', kick: [0, 3, 10], tak: [4, 12], e: .04 },
+  { name: 'FOUR', kick: [0, 4, 8, 12], tak: [], e: .09 },
+];
+const S = { cues: [], nextId: 1, rhythm0: 0, hist: [], played: [], pos: 0, holding: false, hover: null, tapT: -1e9, lastTap: -1 };
+
+const snap4 = (s) => Math.round(s / 4) * 4;
+const minFuture = () => Math.ceil((S.pos + 2) / 4) * 4;
+function addCue(type, step, intensity) {
+  const c = { id: S.nextId++, type, step: Math.max(snap4(step), minFuture()), len: type === 'DROP' ? 64 : 32, intensity: clamp(intensity, .05, 1),
+    done: false, phase: 'wait', taps: [], locked: null, charge: 0, flavor: 'FULL', manual: false, dropAt: null, freezeAt: null, power: 1, buildStart: 0 };
+  S.cues.push(c); S.cues.sort((a, b) => a.step - b.step); return c;
+}
+const started = (c) => c.phase !== 'wait' || c.step <= S.pos + 1.5;
+function moveCue(c, step) { if (started(c)) return; c.step = Math.max(snap4(step), minFuture()); S.cues.sort((a, b) => a.step - b.step); }
+function removeCue(c) {
+  if (!c) return; if (c.type === 'DROP' && c.phase === 'freeze') Audio.setFreeze(false);
+  S.cues = S.cues.filter(x => x !== c); if (S.hover === c) S.hover = null;
+}
+const setIntensity = (c, v) => { c.intensity = clamp(v, .05, 1); };
+
+// ---------- rhythm candidates: circular snap distance between taps and kick onsets ----------
+const cdist = (a, b) => { const d = Math.abs(mod(a - b, BAR)); return Math.min(d, BAR - d); };
+function rhyConf(taps) {
+  if (!taps.length) return [1 / 3, 1 / 3, 1 / 3];
+  const raw = RHY.map(r => {
+    let a = 0, b = 0;
+    for (const t of taps) a += Math.min(...r.kick.map(o => cdist(t, o)));
+    for (const o of r.kick) b += Math.min(...taps.map(t => cdist(t, o)));
+    return a / taps.length + .5 * b / r.kick.length;
+  });
+  const w = raw.map(x => Math.exp(-x * 1.4)), sum = w.reduce((p, q) => p + q, 0);
+  return w.map(x => x / sum);
+}
+const argmax = (arr) => arr.indexOf(Math.max(...arr));
+const preselect = (i) => Math.min(2, Math.floor(i * 3));
+const leadOf = (c) => c.locked ?? (c.taps.length ? argmax(rhyConf(c.taps)) : preselect(c.intensity));
+function rhythmAt(s, skipId) {
+  let r = S.rhythm0;
+  for (const c of S.cues) if (c.type === 'RHYTHM' && c.id !== skipId && c.step <= s) r = leadOf(c);
+  return r;
+}
+
+// ---------- DROP timing (predicted while not yet decided) ----------
+function dropTimes(c) {
+  if (c.dropAt != null) return { fr: c.freezeAt ?? c.dropAt, dr: c.dropAt };
+  if (!c.manual) return { fr: c.freezeAt ?? c.step + c.len - 8, dr: c.step + c.len };
+  const nb = Math.ceil((S.pos + 1.5) / 4) * 4;
+  if (c.freezeAt != null) return { fr: c.freezeAt, dr: Math.max(c.freezeAt + 4, nb) };
+  const fr = Math.ceil(S.pos + (1 - c.charge) * 32);       // if held: full charge takes 2 bars
+  return { fr, dr: Math.ceil((fr + 4) / 4) * 4 };
+}
+const cueEnd = (c) => c.type === 'DROP' ? dropTimes(c).dr : c.step + c.len;
+
+// ---------- ENERGY model: base groove + every cue's characteristic shape ----------
+function dropE(c, s, base) {
+  if (s < c.step) return null;
+  const { fr, dr } = dropTimes(c), i = c.intensity;
+  if (s < fr) {
+    const p = c.manual ? (s <= S.pos ? c.charge : lerp(c.charge, 1, (s - S.pos) / Math.max(1, fr - S.pos))) : (s - c.step) / Math.max(1, fr - c.step);
+    return base + .42 * (.4 + .6 * i) * clamp(p, 0, 1);
+  }
+  if (s < dr) return .03;
+  const k = s - dr; if (k >= POST) return null;
+  const full = (.62 + .38 * i) * (.6 + .4 * c.power) * (k < 4 ? 1.1 - k * .025 : 1);
+  if (c.flavor === 'HALF' && k < 32) return full * .68;
+  if (c.flavor === 'FAKE' && k < 16) return .1;
+  return full;
+}
+function macroAt(s, skipId) {
+  const m = { LIFT: 0, SWEEP: 0, KILL: 0, BREAK: 0 };
+  for (const c of S.cues) {
+    if (c.id === skipId || !(c.type in m)) continue;
+    const rel = s - c.step; if (rel < 0 || rel >= c.len) continue;
+    const p = rel / c.len, shape = c.type === 'LIFT' ? p : c.type === 'SWEEP' ? 1 - Math.abs(2 * p - 1) : 1;
+    m[c.type] = Math.max(m[c.type], c.intensity * shape);
+  }
+  return m;
+}
+function energyAt(s, skipId) {
+  const m = macroAt(s, skipId);
+  let e = .38 + .07 * mod(Math.floor(s / BAR), 8) / 7 + RHY[rhythmAt(s, skipId)].e;
+  e += .4 * m.LIFT - .32 * m.SWEEP - .3 * m.KILL;
+  e = lerp(e, .1, m.BREAK);
+  let over = null;
+  for (const c of S.cues) if (c.type === 'DROP' && c.id !== skipId) { const v = dropE(c, s, e); if (v != null) over = v; }
+  return clamp(over ?? e, 0, 1);
+}
+
+// ---------- groove: deterministic per 8-bar phrase, density follows energy ----------
+function noteAt(s, E) {
+  const bar = Math.floor(s / BAR), i = mod(s, BAR), ch = chordAt(bar), ph = mod(bar, 8);
+  if (!(i === 0 || hash01(ph, i, 11) < METRIC[i] * (.3 + .55 * E))) return null;
+  const lane = i === 0 ? ch.pool[0] : ch.pool[Math.floor(hash01(ph, i, 3) * ch.pool.length)];
+  const acc = i === 0 || (METRIC[i] >= .75 ? hash01(ph, i, 5) > .3 : hash01(ph, i, 5) > .85);
+  return { lane, vel: acc ? .55 + .35 * E : .3, acc };
+}
+
+// ---------- DROP state machine (runs in the scheduler) ----------
+function fireDrop(c, s, when) {
+  c.phase = 'post'; c.dropAt = s; c.freezeAt ??= s;
+  Clock.later(when - .005, () => Audio.setFreeze(false));
+  return 'post';
+}
+function stepDrop(c, s, when) {
+  if (c.phase === 'wait') { c.phase = 'build'; c.buildStart = s; c.charge = 0; }
+  if (c.phase === 'build') {
+    if (!c.manual) c.charge = clamp((s - c.step) / (c.len - 8), 0, 1);
+    if (c.dropAt != null && s >= c.dropAt) return fireDrop(c, s, when);
+    if (c.charge >= 1) {
+      c.phase = 'freeze'; c.freezeAt = s;
+      Audio.pan(chordAt(Math.floor(s / BAR)).pool[0], when, .9, 16, 1);   // one naked note rings into the frozen hall
+      Clock.later(when + .08, () => { if (c.phase === 'freeze') Audio.setFreeze(true); });
+      return 'freeze';
+    }
+    return 'build';
+  }
+  if (c.phase === 'freeze') {
+    const due = c.dropAt ?? (c.manual ? null : c.step + c.len);
+    return due != null && s >= due ? fireDrop(c, s, when) : 'freeze';
+  }
+  if (c.phase === 'post') { if (s >= c.dropAt + POST) { c.phase = 'done'; c.done = true; return null; } return 'post'; }
+  return null;
+}
+
+Clock.onStep((s, when) => {
+  const sd = Clock.stepDur(), i = mod(s, BAR), ch = chordAt(Math.floor(s / BAR));
+  for (const c of S.cues) {
+    if (c.done || c.type === 'DROP' || s < c.step) continue;
+    if (c.phase === 'wait') c.phase = 'live';
+    if (s >= c.step + c.len) { if (c.type === 'RHYTHM' && c.locked == null) c.locked = leadOf(c); c.done = true; c.phase = 'done'; }
+  }
+  const d = S.cues.find(c => c.type === 'DROP' && !c.done && s >= c.step);
+  const ph = d ? stepDrop(d, s, when) : null;
+  const E = energyAt(s), m = macroAt(s); S.hist[s] = E;
+  const pat = RHY[rhythmAt(s)], strip = m.BREAK > .35, low = !strip && m.KILL < .35;
+  let n = noteAt(s, E);
+  if (ph === 'freeze') return;
+  if (ph === 'build') {
+    const q = d.charge, L = q < .3 ? 8 : q < .6 ? 4 : q < .85 ? 2 : 1;        // loop-roll the last L steps of melody
+    n = noteAt(d.buildStart - L + mod(s - d.buildStart, L), E);
+    const div = q < .25 ? 4 : q < .5 ? 2 : 1;
+    if (i % div === 0) Audio.tak(when, .25 + .5 * q);
+    if (q >= .75) Audio.tak(when + sd / 2, .2 + .45 * q);
+    if (pat.kick.includes(i) && q < .8) Audio.kick(when, .8 * (1 - q * .7));
+    if (i % 4 === 2) Audio.hat(when, .3);
+  } else if (ph === 'post') {
+    const k = s - d.dropAt, kb = mod(k, BAR), fl = d.flavor, pw = .6 + .4 * d.power * d.intensity;
+    const half = fl === 'HALF' && k < 32, fake = fl === 'FAKE' && k < 16;
+    if ((k === 0 && fl !== 'FAKE') || (k === 16 && fl === 'FAKE')) { Audio.impact(when, pw); Audio.sub(when, ch.bassHz, sd * 14, .6 * pw); }
+    if (fake) { if (k === 0) Audio.kick(when, .5); if (kb === 8) Audio.tak(when, .35); n = n && n.acc && i % 8 === 0 ? { ...n, vel: .3 } : null; }
+    else if (half) {
+      if (kb === 0) { Audio.kick(when, pw); if (k) Audio.sub(when, ch.bassHz, sd * 15, .5); }
+      if (kb === 8) Audio.tak(when, .8); if (kb % 4 === 2) Audio.hat(when, .25);
+    } else {
+      if (kb % 4 === 0) Audio.kick(when, .95 * pw); if (kb % 4 === 2) Audio.hat(when, .5, true); else if (kb % 2) Audio.hat(when, .2);
+      if (kb % 8 === 0 && k) Audio.sub(when, ch.bassHz, sd * 7, .5);
+    }
+  } else if (!strip) {
+    const rc = S.cues.find(c => c.type === 'RHYTHM' && c.phase === 'live');
+    if (low && pat.kick.includes(i)) Audio.kick(when, rc ? .55 : .85);
+    if (pat.tak.includes(i)) Audio.tak(when, .45);
+    if (E > .3 && i % 4 === 2) Audio.hat(when, .3);
+    if ((E > .6 || m.LIFT > .4) && i % 2 === 1) Audio.hat(when, .12 + .2 * m.LIFT);
+    if (low && i === 0) Audio.sub(when, ch.bassHz, sd * 15, .38);
+    if (low && i === 8 && E > .6) Audio.sub(when, ch.bassHz, sd * 7, .3);
+  }
+  if (n) {
+    Audio.pan(n.lane, when, n.vel * (strip ? .8 : 1), n.acc ? 6 : 3);
+    if (E > .85 && n.acc && hash01(s, 9) > .5) Audio.pan(n.lane, when, n.vel * .5, 4, 1);
+    S.played.push({ s, lane: n.lane, vel: n.vel }); if (S.played.length > 300) S.played.shift();
+  }
+});
+
+// ---------- live control (shared input semantics) ----------
+const liveDrop = () => S.cues.find(c => c.type === 'DROP' && (c.phase === 'build' || c.phase === 'freeze'));
+const liveRhythm = () => S.cues.find(c => c.type === 'RHYTHM' && c.phase === 'live');
+// the cue whose live control is shown now: pre-drop DROP > RHYTHM > macro > DROP climax
+function liveCue() {
+  return liveDrop() || liveRhythm() || S.cues.find(c => c.phase === 'live') || S.cues.find(c => c.type === 'DROP' && c.phase === 'post') || null;
+}
+function holdBuild(on) {
+  const d = liveDrop();
+  if (on) { if (d) { S.holding = true; d.manual = true; } return; }
+  if (S.holding) { S.holding = false; releaseBuild(); }
+}
+function dragCharge(v) { const d = liveDrop(); if (!d) return; d.manual = true; if (d.phase === 'build') d.charge = clamp(v, 0, 1); }
+function releaseBuild() {
+  const d = liveDrop(); if (!d || !d.manual || d.dropAt != null) return;
+  d.dropAt = Math.ceil((S.pos + 1.5) / 4) * 4;                  // quantized to the next beat
+  if (d.phase === 'build') { d.freezeAt = d.dropAt; d.power = Math.max(.3, d.charge); }
+}
+function setFlavor(f) {
+  const d = liveDrop() || S.cues.find(c => c.type === 'DROP' && c.phase === 'wait');
+  if (d && FLAV.includes(f)) { if (d.flavor !== f) Audio.click(1.2); d.flavor = f; }
+}
+const cycleFlavor = (dir) => { const d = liveDrop() || S.cues.find(c => c.type === 'DROP' && c.phase === 'wait'); if (d) setFlavor(FLAV[clamp(FLAV.indexOf(d.flavor) + dir, 0, 2)]); };
+function tap() {
+  Audio.ensure(); Audio.tak(0, .75); S.tapT = performance.now();
+  const c = liveRhythm(); if (!c || c.locked != null) return;
+  c.taps.push(mod(S.pos, BAR));
+  if (c.taps.length >= 4) { c.locked = argmax(rhyConf(c.taps)); Audio.click(1.6, true); }
+}
+function togglePlay() {
+  Audio.ensure(); Clock.toggle();
+  const b = document.getElementById('play'); b.textContent = Clock.playing ? 'STOP' : 'PLAY'; b.classList.toggle('on', Clock.playing);
+}
+// per-frame: charge integration + continuous macro audio (filters follow what is audible now)
+let lastFrame = performance.now();
+function engineFrame() {
+  const t = performance.now(), dt = Math.min(.1, (t - lastFrame) / 1000); lastFrame = t;
+  S.pos = Clock.pos();
+  const d = liveDrop();
+  if (S.holding && d && d.phase === 'build') d.charge = Math.min(1, d.charge + dt / 4);
+  if (!Audio.ctx) return;
+  const m = macroAt(Math.floor(S.pos));
+  const pre = S.cues.find(c => c.type === 'DROP' && c.phase !== 'wait' && !c.done && S.pos >= c.step && (c.dropAt == null || S.pos < c.dropAt));
+  const frozen = pre && pre.freezeAt != null && S.pos >= pre.freezeAt;
+  const q = pre && Clock.playing ? pre.charge : 0;
+  Audio.setRiser(frozen ? 0 : q);
+  Audio.setHPF(Math.max(frozen ? 0 : q * .75, m.KILL * .3));
+  Audio.setLPF(clamp(.32 * (1 - m.LIFT) + .55 * m.SWEEP + .3 * m.BREAK, 0, 1));
+  if (!frozen) Audio.setReverb(m.BREAK);
+}
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) togglePlay(); }
+  else if (e.code === 'KeyW' || e.code === 'ArrowUp') { e.preventDefault(); if (!e.repeat) { Audio.ensure(); holdBuild(true); } }
+  else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { e.preventDefault(); cycleFlavor(e.code === 'ArrowLeft' ? -1 : 1); }
+  else if (e.code === 'KeyJ') { if (!e.repeat) tap(); }
+  else if (e.code === 'Backspace' || e.code === 'Delete') { e.preventDefault(); removeCue(S.hover); }
+});
+addEventListener('keyup', (e) => { if (e.code === 'KeyW' || e.code === 'ArrowUp') holdBuild(false); });
+
+// ---------- pie menu (placement): direction = type, distance = intensity ----------
+const PIE_R = 92, PIE_DEAD = 14;
+function pieFrom(dx, dy) {
+  const d = Math.hypot(dx, dy); if (d < PIE_DEAD) return null;
+  const a = mod(Math.atan2(dy, dx) + Math.PI / 2 + Math.PI / 6, Math.PI * 2);
+  return { type: TYPES[Math.floor(a / (Math.PI / 3)) % 6], intensity: clamp((d - PIE_DEAD) / (PIE_R - PIE_DEAD), .05, 1) };
+}
+function drawPie(g, x, y, dx, dy) {
+  const sel = pieFrom(dx, dy);
+  g.save(); g.lineWidth = 1; g.fillStyle = 'rgba(0,0,0,.75)';
+  g.beginPath(); g.arc(x, y, PIE_R, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = ink(.25); g.stroke();
+  g.beginPath(); g.arc(x, y, PIE_DEAD, 0, Math.PI * 2); g.stroke();
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  TYPES.forEach((t, k) => {
+    const a0 = -Math.PI / 2 - Math.PI / 6 + k * Math.PI / 3, am = a0 + Math.PI / 6, on = sel && sel.type === t;
+    g.strokeStyle = ink(.12); g.beginPath(); g.moveTo(x + Math.cos(a0) * PIE_DEAD, y + Math.sin(a0) * PIE_DEAD); g.lineTo(x + Math.cos(a0) * PIE_R, y + Math.sin(a0) * PIE_R); g.stroke();
+    if (on) { g.fillStyle = hot(.18); g.beginPath(); g.moveTo(x, y); g.arc(x, y, PIE_R, a0, a0 + Math.PI / 3); g.closePath(); g.fill(); }
+    g.fillStyle = on ? HOT : ink(.55); g.fillText(SHORT[t], x + Math.cos(am) * PIE_R * .72, y + Math.sin(am) * PIE_R * .72);
+  });
+  if (sel) {
+    const ex = x + dx, ey = y + dy, a = Math.atan2(dy, dx);
+    g.strokeStyle = HOT; g.fillStyle = HOT; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(ex, ey); g.stroke();
+    g.beginPath(); g.moveTo(ex, ey); g.lineTo(ex - 9 * Math.cos(a - .4), ey - 9 * Math.sin(a - .4)); g.lineTo(ex - 9 * Math.cos(a + .4), ey - 9 * Math.sin(a + .4)); g.fill();
+    g.fillText(`${sel.type} ${Math.round(sel.intensity * 100)}%`, x, y + PIE_R + 12);
+  }
+  g.restore();
+}
+// a demo plan so the track plays itself on first PLAY
+function demoPlan() {
+  addCue('RHYTHM', 16, .9); addCue('LIFT', 64, .7); addCue('DROP', 112, .9);
+  addCue('KILL', 272, .7); addCue('SWEEP', 336, .8); addCue('RHYTHM', 400, .2); addCue('BREAK', 464, .8); addCue('DROP', 512, 1);
+  S.cues.find(c => c.step === 512).flavor = 'FAKE';
+}
+// ==================== END CONCEPT-1 ENGINE ====================
+
+
+// ==================== 1A UI ====================
+const cv = document.getElementById('c');
+let W = 0, H = 0, PX = 0, K = 1, EY = 40, EH = 100, CY = 0, RY = 0, RH = 0, HUD = { x: 0, y: 0, w: 0, h: 0 };
+const g = setupCanvas(cv, (w, h) => {
+  W = w; H = h; PX = W * .25; K = (W - PX - 16) / LOOK;
+  EY = 40; EH = Math.max(80, H * .24); CY = EY + EH + 36;
+  HUD = { x: 12, y: H - 200, w: Math.min(W - 24, 560), h: 188 };
+  RY = CY + 34; RH = Math.max(40, HUD.y - RY - 16);
+});
+document.getElementById('play').onclick = (e) => { e.target.blur(); togglePlay(); };
+const X = (s) => PX + (s - S.pos) * K;
+const stepAt = (x) => S.pos + (x - PX) / K;
+const EYv = (e) => EY + EH - e * EH;
+const laneY = (l) => RY + RH - (l + .5) * RH / 9;
+const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+const rollDiv = (q) => q < .25 ? '1/4' : q < .5 ? '1/8' : q < .75 ? '1/16' : '1/32';
+
+function hitCue(x, y) {
+  if (Math.abs(y - CY) > 16) return null;
+  let best = null, bd = 14;
+  for (const c of S.cues) { const d = Math.abs(X(c.step) - x); if (d < bd) { bd = d; best = c; } }
+  return best;
+}
+
+// ---------- pointer ----------
+let drag = null;
+const pt = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+cv.addEventListener('pointerdown', (e) => {
+  Audio.ensure(); const [x, y] = pt(e); cv.setPointerCapture(e.pointerId);
+  if (inRect(HUD, x, y)) { drag = { mode: 'hud' }; hudPointer(x, y, 'down'); return; }
+  const c = hitCue(x, y);
+  if (c) { if (e.button === 2) removeCue(c); else drag = { mode: 'move', cue: c, off: X(c.step) - x }; return; }
+  if (x > PX + 4 && y > EY && y < RY + RH && e.button === 0) drag = { mode: 'pie', x0: x, y0: y, x, y };
+});
+cv.addEventListener('pointermove', (e) => {
+  const [x, y] = pt(e);
+  if (!drag) { S.hover = hitCue(x, y); cv.style.cursor = S.hover ? 'ew-resize' : 'default'; return; }
+  if (drag.mode === 'move') moveCue(drag.cue, stepAt(x + drag.off));
+  else if (drag.mode === 'pie') { drag.x = x; drag.y = y; }
+  else hudPointer(x, y, 'move');
+});
+cv.addEventListener('pointerup', (e) => {
+  const [x, y] = pt(e);
+  if (drag && drag.mode === 'pie') { const sel = pieFrom(drag.x - drag.x0, drag.y - drag.y0); if (sel) { addCue(sel.type, stepAt(drag.x0), sel.intensity); Audio.click(1, true); } }
+  if (drag && drag.mode === 'hud') hudPointer(x, y, 'up');
+  drag = null;
+});
+cv.addEventListener('contextmenu', (e) => { e.preventDefault(); if (S.hover) removeCue(S.hover); });
+cv.addEventListener('wheel', (e) => { if (!S.hover) return; e.preventDefault(); setIntensity(S.hover, S.hover.intensity - e.deltaY * .0015); }, { passive: false });
+
+// ---------- HUD geometry + input ----------
+const hudSlider = () => ({ x: HUD.x + 24, y: HUD.y + 34, w: 40, h: HUD.h - 50 });
+const hudFlav = (k) => ({ x: HUD.x + 100 + k * 96, y: HUD.y + 34, w: 86, h: HUD.h - 50 });
+const hudPad = () => ({ x: HUD.x + HUD.w - 124, y: HUD.y + 34, w: 110, h: HUD.h - 50 });
+const hudTrack = () => ({ x: HUD.x + 24, y: HUD.y + 60, w: HUD.w - 48, h: 30 });
+function hudPointer(x, y, kind) {
+  const c = liveCue(); if (!c) return;
+  if (c.type === 'RHYTHM') { if (kind === 'down' && inRect(hudPad(), x, y)) tap(); return; }
+  if (c.type === 'DROP') {
+    if (kind === 'up') { releaseBuild(); return; }
+    const sl = hudSlider(); dragCharge((sl.y + sl.h - y) / sl.h);
+    for (let k = 0; k < 3; k++) { const r = hudFlav(k); if (x >= r.x && x <= r.x + r.w) setFlavor(FLAV[k]); }
+    return;
+  }
+  if (kind !== 'up') { const t = hudTrack(); setIntensity(c, (x - t.x) / t.w); }
+}
+
+// ---------- drawing ----------
+function frame() {
+  engineFrame();
+  const pos = S.pos, s0 = Math.floor(stepAt(0)), s1 = Math.ceil(pos + LOOK), f0 = Math.ceil(pos);
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  g.font = '11px ui-monospace, Menlo, monospace'; g.textBaseline = 'alphabetic'; g.textAlign = 'left';
+  const live = liveCue();
+  // grid: bars, phrases every 4 bars
+  for (let b = Math.floor(s0 / BAR); b * BAR <= s1; b++) {
+    const x = X(b * BAR); if (x < 0 || b < 0) continue;
+    g.fillStyle = ink(b % 4 === 0 ? .2 : .07); g.fillRect(x, EY - 8, 1, RY + RH - EY + 8);
+    g.fillStyle = ink(.35); g.fillText(`${b + 1} ${chordAt(b).sym}`, x + 3, EY - 2);
+  }
+  // cue regions
+  for (const c of S.cues) {
+    const x0 = X(c.step), x1 = X(cueEnd(c)), on = c === live || c === S.hover;
+    g.fillStyle = on ? hot(.09) : ink(c.done ? .02 : .045); g.fillRect(x0, EY, x1 - x0, CY + 20 - EY);
+    if (c.type === 'DROP') { g.fillStyle = ink(.025); g.fillRect(x1, EY, POST * K, EH); }
+  }
+  // energy: predicted future
+  const pred = []; for (let s = f0; s <= s1; s++) pred.push(energyAt(s));
+  g.strokeStyle = ink(.12); g.strokeRect(0, EY, W, EH);
+  g.beginPath(); pred.forEach((e, k) => g.lineTo(X(f0 + k), EYv(e))); g.strokeStyle = ink(.8); g.lineWidth = 1.5; g.stroke();
+  // energy: recorded past
+  g.beginPath(); g.moveTo(X(Math.max(0, s0)), EY + EH);
+  for (let s = Math.max(0, s0); s < f0; s++) g.lineTo(X(s), EYv(S.hist[s] ?? 0));
+  g.lineTo(X(f0 - 1), EY + EH); g.fillStyle = ink(.18); g.fill();
+  // hover: with vs without this cue
+  if (S.hover) {
+    const c = S.hover, a = Math.max(f0, c.step - 8), b = Math.min(s1, cueEnd(c) + (c.type === 'DROP' ? POST : 16));
+    g.beginPath(); for (let s = a; s <= b; s++) g.lineTo(X(s), EYv(energyAt(s))); for (let s = b; s >= a; s--) g.lineTo(X(s), EYv(energyAt(s, c.id)));
+    g.fillStyle = hot(.25); g.fill();
+    g.setLineDash([3, 3]); g.beginPath(); for (let s = a; s <= b; s++) g.lineTo(X(s), EYv(energyAt(s, c.id))); g.strokeStyle = ink(.5); g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+    g.fillStyle = HOT; g.fillText(`${c.type} ${Math.round(c.intensity * 100)}%  (dashed = without it)`, X(c.step) + 4, EY + 12);
+  }
+  g.lineWidth = 1; g.fillStyle = ink(.4); g.fillText('ENERGY', 4, EY + 12);
+  g.fillText(`${(energyAt(Math.floor(pos)) * 100).toFixed(0)}%`, PX - 34, EYv(energyAt(Math.floor(pos))) - 4);
+  // notes: upcoming faint, played brighter
+  pred.forEach((e, k) => { const n = noteAt(f0 + k, e); if (n) { g.fillStyle = ink(.08 + .25 * n.vel); g.fillRect(X(f0 + k), laneY(n.lane) - 2, Math.max(2, K * .8), 4); } });
+  for (const p of S.played) { const x = X(p.s); if (x > -4 && p.s < f0) { g.fillStyle = ink(.25 + .5 * p.vel); g.fillRect(x, laneY(p.lane) - 2, Math.max(2, K * .8), 4); } }
+  g.fillStyle = ink(.3); for (let l = 0; l < 9; l++) g.fillText(NOTES[l].name, 4, laneY(l) + 4);
+  // cue lane
+  g.fillStyle = ink(.1); g.fillRect(0, CY, W, 1);
+  for (const c of S.cues) {
+    const x = X(c.step); if (x < -40 || x > W + 20) continue;
+    const on = c === live, hv = c === S.hover, al = c.done ? .3 : 1;
+    g.strokeStyle = ink(.25 * al); g.beginPath(); g.moveTo(x, CY); g.lineTo(X(cueEnd(c)), CY); g.stroke();
+    g.fillStyle = '#000'; g.beginPath(); g.arc(x, CY, 10, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = ink((hv ? .9 : .45) * al); g.lineWidth = 1; g.stroke();
+    g.strokeStyle = on || hv ? HOT : ink(.85 * al); g.lineWidth = 3;
+    g.beginPath(); g.arc(x, CY, 14, -Math.PI / 2, -Math.PI / 2 + c.intensity * Math.PI * 2); g.stroke(); g.lineWidth = 1;
+    g.textAlign = 'center'; g.fillStyle = on ? HOT : ink(.8 * al); g.fillText(SHORT[c.type], x, CY - 20);
+    const sub = c.type === 'DROP' ? c.flavor : c.type === 'RHYTHM' ? RHY[leadOf(c)].name.slice(0, 5) : '';
+    g.fillStyle = ink(.45 * al); g.fillText(sub, x, CY + 28); g.textAlign = 'left';
+  }
+  // playhead
+  g.fillStyle = ink(.7); g.fillRect(PX, EY - 8, 1, RY + RH - EY + 8);
+  g.fillText('NOW', PX + 4, RY + RH + 2);
+  drawHud(live);
+  if (drag && drag.mode === 'pie') drawPie(g, drag.x0, drag.y0, drag.x - drag.x0, drag.y - drag.y0);
+  requestAnimationFrame(frame);
+}
+
+function drawHud(c) {
+  const { x, y, w, h } = HUD, pos = S.pos;
+  g.fillStyle = '#000'; g.fillRect(x, y, w, h); g.strokeStyle = ink(.3); g.strokeRect(x + .5, y + .5, w, h);
+  // tie the panel to the playhead
+  g.fillStyle = ink(.3); g.fillRect(PX, RY + RH + 6, 1, y - RY - RH - 6);
+  g.textAlign = 'left'; g.fillStyle = ink(.5);
+  if (!c) {
+    const nx = S.cues.find(q => q.phase === 'wait');
+    g.fillText('LIVE · no active cue', x + 12, y + 18);
+    g.fillStyle = ink(.35);
+    g.fillText(nx ? `next: ${nx.type} in ${Math.ceil((nx.step - pos) / 4)} beats` : 'no cues scheduled', x + 12, y + 44);
+    g.fillText('press-drag in the future area to place one', x + 12, y + 62);
+    return;
+  }
+  const prog = clamp((pos - c.step) / Math.max(1, cueEnd(c) - c.step), 0, 1);
+  g.fillStyle = ink(.12); g.fillRect(x, y + h - 3, w, 3); g.fillStyle = HOT; g.fillRect(x, y + h - 3, w * prog, 3);
+  g.fillStyle = HOT; g.fillText(`LIVE · ${c.type}`, x + 12, y + 18);
+  if (c.type === 'RHYTHM') return hudRhythm(c);
+  if (c.type === 'DROP') return hudDrop(c);
+  const t = hudTrack();
+  g.fillStyle = ink(.5); g.fillText(`intensity ${Math.round(c.intensity * 100)}% · auto macro · drag the handle to override`, x + 110, y + 18);
+  g.fillStyle = ink(.15); g.fillRect(t.x, t.y + t.h / 2, t.w, 1);
+  const hx = t.x + c.intensity * t.w; g.fillStyle = HOT; g.fillRect(hx - 5, t.y, 10, t.h);
+  // the macro's shape over the cue, progress marker
+  const gy = y + 110, gh = 50; g.strokeStyle = ink(.6); g.beginPath();
+  for (let k = 0; k <= 40; k++) { const p = k / 40, sh = c.type === 'LIFT' ? p : c.type === 'SWEEP' ? 1 - Math.abs(2 * p - 1) : 1; g.lineTo(t.x + p * t.w, gy + gh - sh * c.intensity * gh); }
+  g.stroke(); g.fillStyle = ink(.6); g.fillRect(t.x + prog * t.w, gy, 1, gh);
+  const what = { LIFT: 'hats + density up, LPF opens', SWEEP: 'LPF closes then reopens', KILL: 'kick + sub removed', BREAK: 'strip to pan, big reverb' }[c.type];
+  g.fillStyle = ink(.4); g.fillText(what, t.x, gy - 6);
+}
+
+function hudRhythm(c) {
+  const { x, y } = HUD, conf = c.taps.length ? rhyConf(c.taps) : RHY.map((_, k) => k === preselect(c.intensity) ? .6 : .2);
+  const lead = leadOf(c), gx = x + 110, cw = (hudPad().x - gx - 12) / 16, ph = mod(S.pos, BAR);
+  g.fillStyle = ink(.5);
+  g.fillText(c.locked != null ? `LOCKED → ${RHY[c.locked].name}` : `${c.taps.length}/4 taps · leading ${RHY[lead].name} · tap J / pad`, x + 110, y + 18);
+  RHY.forEach((r, k) => {
+    const ry = y + 34 + k * 36, isLead = k === lead, a = c.locked != null ? (isLead ? 1 : .15) : .2 + .8 * conf[k];
+    g.fillStyle = isLead ? HOT : ink(a); g.fillText(`${r.name.padEnd(8)} ${Math.round(conf[k] * 100)}%`, x + 12, ry + 18);
+    for (let i = 0; i < BAR; i++) {
+      const kick = r.kick.includes(i), tk = r.tak.includes(i);
+      g.fillStyle = kick ? (isLead ? hot(a) : ink(a)) : tk ? ink(a * .4) : ink(.06);
+      g.fillRect(gx + i * cw + 1, ry + (kick ? 4 : tk ? 12 : 16), cw - 2, kick ? 22 : tk ? 10 : 4);
+    }
+  });
+  const ty = y + 34 + 3 * 36 + 2;
+  for (const t of c.taps) { g.fillStyle = HOT; g.fillRect(gx + t * cw, ty, 2, 10); }
+  g.fillStyle = ink(.7); g.fillRect(gx + ph * cw, y + 30, 1, 3 * 36 + 16);
+  const p = hudPad(), fl = performance.now() - S.tapT < 120;
+  g.fillStyle = fl ? hot(.5) : '#000'; g.fillRect(p.x, p.y, p.w, p.h); g.strokeStyle = fl ? HOT : ink(.5); g.strokeRect(p.x + .5, p.y + .5, p.w, p.h);
+  g.textAlign = 'center'; g.fillStyle = ink(.8); g.fillText('TAP  J', p.x + p.w / 2, p.y + p.h / 2 + 4); g.textAlign = 'left';
+}
+
+function hudDrop(c) {
+  const { x, y } = HUD, sl = hudSlider(), q = c.charge, pos = S.pos;
+  let st;
+  if (c.phase === 'build') st = `${c.manual ? 'MANUAL' : 'AUTO'} BUILD ${Math.round(q * 100)}% · roll ${rollDiv(q)} · ${c.dropAt != null ? 'drop armed' : 'hold W / drag up'}`;
+  else if (c.phase === 'freeze') st = `FREEZE · beat ${Math.floor((pos - c.freezeAt) / 4) + 1} · ${c.manual ? (c.dropAt != null ? 'drop armed' : 'release = drop on next beat') : 'auto drop at cue end'}`;
+  else st = `DROP ${c.flavor} · bar ${Math.min(4, Math.floor((pos - c.dropAt) / BAR) + 1)}/4`;
+  g.fillStyle = ink(.6); g.fillText(st, x + 110, y + 18);
+  const post = c.phase === 'post';
+  g.strokeStyle = ink(.4); g.strokeRect(sl.x + .5, sl.y + .5, sl.w, sl.h);
+  g.fillStyle = c.phase === 'freeze' ? HOT : ink(.06); g.fillRect(sl.x + 1, sl.y + 1, sl.w - 1, 14);
+  g.fillStyle = c.phase === 'freeze' ? '#000' : ink(.5); g.textAlign = 'center'; g.fillText('FRZ', sl.x + sl.w / 2, sl.y + 12);
+  const fh = (post ? 0 : q) * sl.h; g.fillStyle = S.holding || (drag && drag.mode === 'hud') ? hot(.6) : ink(.35); g.fillRect(sl.x + 1, sl.y + sl.h - fh, sl.w - 1, fh);
+  g.fillStyle = ink(.9); g.fillRect(sl.x - 4, sl.y + sl.h - fh, sl.w + 8, 2);
+  FLAV.forEach((f, k) => {
+    const r = hudFlav(k), on = c.flavor === f;
+    g.strokeStyle = on ? HOT : ink(.2); g.strokeRect(r.x + .5, r.y + .5, r.w, r.h);
+    g.fillStyle = on ? HOT : ink(.5); g.fillText(f, r.x + r.w / 2, r.y + 18);
+    g.fillStyle = ink(.35); g.fillText({ HALF: 'half-time', FULL: '4-floor', FAKE: 'void→slam' }[f], r.x + r.w / 2, r.y + 36);
+    // tiny kick diagram of the first 2 bars after the drop
+    for (let i = 0; i < 32; i++) {
+      const kk = f === 'FULL' ? i % 4 === 0 : f === 'HALF' ? i % 16 === 0 : i === 0 || (i >= 16 && i % 4 === 0);
+      if (kk) { g.fillStyle = on ? HOT : ink(.5); g.fillRect(r.x + 6 + i * (r.w - 12) / 32, r.y + r.h - 30, 2, 12); }
+    }
+  });
+  g.textAlign = 'left'; g.fillStyle = ink(.35); g.fillText('←/→ or drag sideways', hudFlav(0).x, y + HUD.h - 6);
+}
+requestAnimationFrame(frame);
+demoPlan();
+</script>
+</body>
+</html>

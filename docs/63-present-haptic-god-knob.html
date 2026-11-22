@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>63 — Present-Tense Haptic Emotion God-Knob</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  #hudState { color: rgba(255,255,255,0.68); font-size: 10px; letter-spacing: 0.09em; }
+  #hudState.hot { color: #ff5a1f; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.09em;
+    height: 22px; padding: 0 10px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 960px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>63</b> · HAPTIC GOD-KNOB (100% PRESENT) · <b>DRAG ↑↓</b> closure↔groove↔loop-halve↔freeze (release/slam = DROP) · <b>DRAG ←→</b> half / rave / 3:2 fakeout · <b>SCROLL (even while dragging!)</b> 3D space/cathedral · <b>HOLD RMB / X</b> bass kill · <b>HOLD B</b> brake · <b>A–L</b> hold/chord</span>
+  <div class="grp">
+    <span id="hudState">GROOVE · SPACE 45%</span>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 63 — PRESENT-TENSE HAPTIC EMOTION GOD-KNOB (FOLDS #56 + #57)
+//   Zero future curves. Pure visceral PRESENT-TENSE crowd-emotion control:
+//     * DIM 1 — VERTICAL Y (Drag ↑↓):  Closure ↔ Groove ↔ Loop-Halve Tension ↔
+//               Reverb Freeze (with magnetic detents & beat-synced Drop release!)
+//     * DIM 2 — HORIZONTAL X (Drag ←→): Half-Time Dub ← 4×4 Rave → 3:2 Fakeout
+//     * DIM 3 — SCROLLWHEEL (while dragging or hovering!): Intimate Club Punch
+//               ↔ Vast 31% Stereo Cathedral Euphoria (+8va shimmer + hall aura)
+//     * DIM 4 — HOLD RMB / X = Instant Surgical Bass Kill · HOLD B = Tape Brake
+//     * DIM 5 — HOME-ROW A–L Holds & Chords = Overtone Bloom, Harmony Lock &
+//               Pitch-Pinned Loop-Roll Risers!
+//   Haptic Craft: Stereo mechanical detent clicks on every notch & scroll tick,
+//   crowd-energy rings physically compressing under pressure & shattering on drop!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const KEYS = ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'];
+const KEY_TO_LANE = Object.fromEntries(KEYS.map((k, i) => [k.toLowerCase(), i]));
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, key: KEYS[idx], hz, idx, pan: ((idx / 8) - 0.5) * 0.65 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), subHz: semiHz(-45), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), subHz: semiHz(-43), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), subHz: semiHz(-41), pool: [0, 1, 4, 6, 5] },
+];
+
+const BASE_BPM = 122, LOOKAHEAD = 0.088, FREEZE_TH = 0.85, CLOSE_TH = -0.18, SAFE = 0.0002;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.96), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. HIGH-IMPACT INSTRUMENT-FIRST AUDIO + HAPTIC CLICKS ====================
+let actx = null, masterBus = null, warmLP = null, washHP = null, dryGate = null, scDuck = null;
+let hallSend = null, hallOut = null, subOsc = null, subGain = null, haloOsc = null, haloGain = null;
+let uiBus = null, noiseBuf = null;
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = actx.sampleRate;
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -8; comp.knee.value = 8; comp.ratio.value = 6.5; comp.attack.value = 0.003; comp.release.value = 0.12;
+  comp.connect(actx.destination);
+
+  masterBus = actx.createGain(); masterBus.gain.value = 0.88; masterBus.connect(comp);
+  uiBus = actx.createGain(); uiBus.gain.value = 0.28; uiBus.connect(comp);
+
+  warmLP = actx.createBiquadFilter(); warmLP.type = 'lowpass'; warmLP.frequency.value = 2600; warmLP.Q.value = 0.7;
+  warmLP.connect(masterBus);
+  washHP = actx.createBiquadFilter(); washHP.type = 'highpass'; washHP.frequency.value = 20; washHP.Q.value = 0.7;
+  dryGate = actx.createGain(); dryGate.gain.value = 1.0;
+  scDuck = actx.createGain(); scDuck.gain.value = 1.0;
+  scDuck.connect(washHP); washHP.connect(dryGate); dryGate.connect(warmLP);
+
+  const irLen = Math.floor(sr * 3.1), ir = actx.createBuffer(2, irLen, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < irLen; i++) { lp = lp * 0.58 + (Math.random() * 2 - 1) * 0.42; d[i] = lp * Math.pow(1 - i / irLen, 2.2) * 0.56; }
+  }
+  const conv = actx.createConvolver(); conv.buffer = ir;
+  const revHP = actx.createBiquadFilter(); revHP.type = 'highpass'; revHP.frequency.value = 320;
+  hallSend = actx.createGain(); hallSend.gain.value = 0.34;
+  hallOut = actx.createGain(); hallOut.gain.value = 0.56;
+  hallSend.connect(conv); conv.connect(revHP); revHP.connect(hallOut); hallOut.connect(masterBus);
+
+  subOsc = actx.createOscillator(); subOsc.type = 'sine'; subOsc.frequency.value = PROG[0].subHz;
+  const subLP = actx.createBiquadFilter(); subLP.type = 'lowpass'; subLP.frequency.value = 130;
+  subGain = actx.createGain(); subGain.gain.value = SAFE;
+  subOsc.connect(subLP); subLP.connect(subGain); subGain.connect(scDuck); subOsc.start();
+
+  haloOsc = actx.createOscillator(); haloOsc.type = 'sine'; haloOsc.frequency.value = NOTES[8].hz * 2;
+  haloGain = actx.createGain(); haloGain.gain.value = SAFE;
+  haloOsc.connect(haloGain); haloGain.connect(hallSend); haloOsc.start();
+
+  noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.055), sr);
+  const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  return actx;
+}
+
+// Haptic micro-ratchet click: makes every detent notch & scroll tick feel like heavy precision hardware!
+function playHaptic(panVal = 0, pitch = 1.0, heavy = false) {
+  if (!actx || actx.state !== 'running') return;
+  const t0 = actx.currentTime + 0.001, o = actx.createOscillator(), g = actx.createGain(), p = actx.createStereoPanner();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime((heavy ? 1120 : 1850) * pitch, t0);
+  o.frequency.exponentialRampToValueAtTime((heavy ? 240 : 620) * pitch, t0 + (heavy ? 0.022 : 0.011));
+  g.gain.setValueAtTime(heavy ? 0.30 : 0.14, t0); g.gain.exponentialRampToValueAtTime(SAFE, t0 + (heavy ? 0.026 : 0.014));
+  p.pan.value = clamp(panVal, -0.8, 0.8);
+  o.connect(g); g.connect(p); p.connect(uiBus); o.start(t0); o.stop(t0 + 0.03);
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  const ctx = ensureAudio(), n = NOTES[idx]; if (!n) return null;
+  const { isGhost = false, isMuted = false, octUp = false, stereoWide = 1.0, dingHz = null, direct = false, brake = 0 } = opts;
+  const isDing = idx === 0, freq = ((isDing && dingHz) ? dingHz : n.hz) * (octUp ? 2 : 1) * lerp(1.0, 0.62, brake);
+  const t0 = Math.max(ctx.currentTime + 0.002, when), v = clamp(vel, 0.10, 1.05);
+  const sus = isMuted ? 0.12 : clamp(0.40 + dur * 0.28, 0.40, 2.60) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = ctx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.44 : 0.29), t0);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(clamp((isDing ? 0 : n.pan) * stereoWide, -0.95, 0.95), t0);
+  out.connect(pan);
+  if (direct) { pan.connect(masterBus); pan.connect(hallSend); }
+  else { pan.connect(scDuck); pan.connect(hallSend); }
+
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.86], [2, 0.26, 0.68], [3, 0.48, 0.68]]) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    if (brake > 0.1) o.frequency.exponentialRampToValueAtTime(Math.max(36, freq * r * 0.72), t0 + 0.22);
+    const atk = isMuted ? 0.002 : (r === 3 ? 0.020 : 0.005), dec = Math.max(0.055, sus * dm);
+    g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(SAFE, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+  return { damp() { const now = ctx.currentTime; out.gain.cancelScheduledValues(now); out.gain.setValueAtTime(Math.max(0.001, out.gain.value), now); out.gain.exponentialRampToValueAtTime(SAFE, now + 0.14); } };
+}
+
+function startBloomHold(idx) {
+  const ctx = ensureAudio(), n = NOTES[idx], t0 = ctx.currentTime;
+  const gM = ctx.createGain(); gM.gain.setValueAtTime(SAFE, t0); gM.gain.setValueAtTime(SAFE, t0 + 0.14); gM.gain.linearRampToValueAtTime(0.22, t0 + 0.95);
+  const pan = ctx.createStereoPanner(); pan.pan.value = n.pan * 1.2; gM.connect(pan); pan.connect(hallSend); pan.connect(masterBus);
+  const oscs = [[n.hz, 0.55], [n.hz * 2.002, 0.32], [n.hz * 3.0, 0.46]].map(([hz, w]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = hz; g.gain.value = w; o.connect(g); g.connect(gM); o.start(t0); return o;
+  });
+  return { stop() { const now = ctx.currentTime; gM.gain.cancelScheduledValues(now); gM.gain.setValueAtTime(Math.max(SAFE, gM.gain.value), now); gM.gain.exponentialRampToValueAtTime(SAFE, now + 0.38); oscs.forEach(o => { try { o.stop(now + 0.42); } catch {} }); } };
+}
+
+function playGuKick(when, power = 0.85, heavy = false) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(heavy ? 140 : 118, t0); o.frequency.exponentialRampToValueAtTime(heavy ? 41.2 : 58, t0 + 0.082);
+  g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(power * (heavy ? 0.82 : 0.48), t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(SAFE, t0 + (heavy ? 0.38 : 0.22));
+  o.connect(g); g.connect(washHP); o.start(t0); o.stop(t0 + 0.42);
+  scDuck.gain.cancelScheduledValues(t0); scDuck.gain.setValueAtTime(1.0, t0);
+  scDuck.gain.linearRampToValueAtTime(heavy ? 0.30 : 0.74, t0 + 0.011); scDuck.gain.exponentialRampToValueAtTime(1.0, t0 + 0.26);
+}
+
+function playTak(when, heat = 0, vel = 0.72, panVal = 0.18) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when), h = clamp(heat, 0, 1);
+  const pan = ctx.createStereoPanner(); pan.pan.setValueAtTime(panVal, t0); pan.connect(washHP);
+  const ns = ctx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = lerp(2250, 3700, h); bp.Q.value = lerp(3.2, 5.4, h);
+  const ng = ctx.createGain(); ng.gain.setValueAtTime(vel * 0.36, t0);
+  ns.connect(bp); bp.connect(ng); ng.connect(pan); ng.connect(hallSend); ns.start(t0);
+}
+
+function playDropSlam(when, subHz, power, hitLanes, dingHz) {
+  const ctx = ensureAudio(), t0 = Math.max(ctx.currentTime + 0.002, when);
+  washHP.frequency.cancelScheduledValues(t0); washHP.frequency.setValueAtTime(20, t0); washHP.Q.setTargetAtTime(0.7, t0, 0.015);
+  dryGate.gain.cancelScheduledValues(t0); dryGate.gain.setValueAtTime(1.0, t0);
+  haloGain.gain.cancelScheduledValues(t0); haloGain.gain.setValueAtTime(SAFE, t0);
+
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(subHz * 3.4, t0); o.frequency.exponentialRampToValueAtTime(subHz, t0 + 0.13);
+  g.gain.setValueAtTime(SAFE, t0); g.gain.linearRampToValueAtTime(0.88 * power, t0 + 0.004); g.gain.exponentialRampToValueAtTime(SAFE, t0 + 1.50);
+  o.connect(g); g.connect(masterBus); o.start(t0); o.stop(t0 + 1.60);
+  playGuKick(t0, 1.0, true);
+  hitLanes.forEach((ln, k) => playPan(ln, t0 + k * 0.010, 0.96, 8, { dingHz, stereoWide: 1.4, octUp: k === 2 && state.space > 0.55 }));
+}
+
+// ==================== 2. 5-DIMENSIONAL PRESENT-TENSE GOD-KNOB STATE ====================
+const state = {
+  playing: false, phase: 'GROOVE',
+  // Knob coordinates in unit disk: x = flavor (-1 HALF .. 0 RAVE .. +1 FAKEOUT), y = pressure (-0.5 CLOSURE .. 0 GROOVE .. 1 FREEZE)
+  kx: 0.0, ky: 0.0,
+  // 3rd Dimension (Scrollwheel!): 0 = Intimate tight punch .. 1 = Wide 31% Cathedral Euphoria (+8va bloom!)
+  space: 0.45,
+  // 4th Dimension (Momentary Modifiers):
+  bassKill: false, tapeBrake: 0.0, brakeHeld: false,
+  // 5th Dimension (Home-Row A–L Holds & Chords):
+  heldTones: new Map(),
+  // Drop & Haptic Physics
+  peakTension: 0.0, dropFlavor: 'RAVE', dropTick: -999, dropEnergy: 0.0, lastDetent: 'GROOVE',
+  tick: 0, nextTickTime: 0, motif: [0, 4, 6, 8, 4, 6, 7, 4],
+  kickRecoil: 0, dropFlash: 0, shocks: [], crowdRings: [],
+  lociGlow: new Float32Array(9), lociHeat: new Float32Array(9),
+};
+
+const flavorForX = (x) => x < -0.34 ? 'HALF' : x > 0.34 ? 'FAKEOUT' : 'RAVE';
+const detentForY = (y) => y >= FREEZE_TH ? 'FREEZE' : y >= 0.72 ? '1/8' : y >= 0.50 ? '1/4' : y >= 0.28 ? '1/2' : y <= CLOSE_TH ? 'CLOSURE' : 'GROOVE';
+
+function activeHarmony(barIdx) {
+  const base = PROG[barIdx % 4], held = [...state.heldTones.keys()].sort((a, b) => a - b);
+  if (!held.length) return { ...base, held, lockedChord: false };
+  const rHz = NOTES[held[0]].hz;
+  return { sym: held.map(i => NOTES[i].name).join('+'), dingHz: rHz, subHz: rHz > 200 ? rHz * 0.25 : rHz * 0.5, pool: held.length >= 2 ? held : [held[0], ...base.pool.slice(1)], held, lockedChord: held.length >= 2 };
+}
+
+function updateKnob(nx, ny, allowSlam = false, vyDown = 0) {
+  const prevY = state.ky;
+  // Soft magnetic snap right around neutral GROOVE center (|y| < 0.055) for ultra-clean haptic zeroing!
+  const snappedY = (Math.abs(ny) < 0.055 && Math.abs(vyDown) < 120) ? 0 : clamp(ny, -0.5, 1.0);
+
+  if (allowSlam && (state.phase === 'TENSION' || state.phase === 'FREEZE') && state.peakTension >= 0.30 && prevY > 0.18 && snappedY <= 0.12 && vyDown > 260) {
+    detonateDrop(); return;
+  }
+  state.kx = clamp(nx, -1, 1); state.ky = snappedY;
+
+  const det = detentForY(snappedY);
+  if (det !== state.lastDetent) {
+    const heavy = det === 'FREEZE' || det === 'GROOVE' || det === 'CLOSURE';
+    const pitch = det === 'FREEZE' ? 0.72 : det === '1/8' ? 1.45 : det === '1/4' ? 1.25 : det === '1/2' ? 1.10 : 1.0;
+    playHaptic(state.kx * 0.45, pitch, heavy);
+    state.lastDetent = det;
+  }
+
+  if (snappedY >= FREEZE_TH) { state.phase = 'FREEZE'; state.peakTension = 1.0; }
+  else if (snappedY > 0.06) { state.phase = 'TENSION'; state.peakTension = Math.max(state.peakTension, snappedY); state.dropEnergy = 0; }
+  else if (snappedY <= CLOSE_TH) { state.phase = 'CLOSURE'; state.peakTension = 0; state.dropEnergy = 0; }
+  else if (state.phase !== 'CLIMAX') { state.phase = 'GROOVE'; state.peakTension = 0; }
+}
+
+function detonateDrop() {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  state.dropFlavor = flavorForX(state.kx);
+  state.phase = 'CLIMAX'; state.ky = 0; state.peakTension = 0; state.lastDetent = 'GROOVE';
+  state.dropTick = state.tick; state.dropEnergy = 1.0;
+  const harm = activeHarmony(Math.floor(state.tick / 32));
+  const hitLanes = harm.held.length ? harm.held : [0, 4, 8];
+  playDropSlam(actx.currentTime + 0.004, harm.subHz, 1.0, hitLanes, harm.dingHz);
+  playHaptic(0, 0.65, true);
+  state.dropFlash = 1.0; state.kickRecoil = 1.25;
+  for (let k = 0; k < 4; k++) state.shocks.push({ born: performance.now() + k * 55, life: 1150 + k * 190 });
+}
+
+// ==================== 3. 32ND-NOTE SCHEDULER ====================
+function scheduleTick(tk, t0) {
+  if (state.phase === 'CLIMAX') {
+    const el = tk - state.dropTick;
+    if (el >= 256) { state.dropEnergy = 0; state.phase = 'GROOVE'; }
+    else state.dropEnergy = el > 160 ? clamp(1 - (el - 160) / 96, 0, 1) : 1.0;
+  }
+  const inBar32 = tk % 32, is16 = (inBar32 % 2) === 0, step16 = inBar32 >> 1;
+  const isBeat = (inBar32 % 8) === 0, barIdx = Math.floor(tk / 32), harm = activeHarmony(barIdx);
+  const delayMs = Math.max(0, (t0 - actx.currentTime) * 1000);
+  const sp = state.space; // 3rd Dim Scrollwheel: 0 = Intimate Club .. 1 = Vast Cathedral!
+  const stereoWide = lerp(0.45, 1.48, sp);
+
+  if (state.phase === 'FREEZE') {
+    dryGate.gain.setTargetAtTime(SAFE, t0, 0.008);
+    hallSend.gain.setTargetAtTime(SAFE, t0, 0.010); hallOut.gain.setTargetAtTime(lerp(0.65, 0.92, sp), t0, 0.04);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.008); haloGain.gain.setTargetAtTime(SAFE, t0, 0.008);
+    return;
+  }
+
+  dryGate.gain.setTargetAtTime(1.0, t0, 0.012);
+  hallSend.gain.setTargetAtTime(lerp(0.14, 0.72, sp), t0, 0.04);
+  hallOut.gain.setTargetAtTime(lerp(0.32, 0.72, sp), t0, 0.04);
+
+  if (state.bassKill) {
+    washHP.frequency.setTargetAtTime(380, t0, 0.016); washHP.Q.setTargetAtTime(1.4, t0, 0.02);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.010);
+  } else if (state.phase === 'TENSION') {
+    const h = clamp(state.ky / FREEZE_TH, 0, 1), slice = h > 0.72 ? 2 : h > 0.50 ? 4 : h > 0.28 ? 8 : 16;
+    washHP.frequency.setTargetAtTime(28 * Math.pow(1550 / 28, Math.pow(h, 1.18)), t0, 0.022);
+    washHP.Q.setTargetAtTime(lerp(0.9, 4.0, h), t0, 0.03);
+    warmLP.frequency.setTargetAtTime(lerp(2400, 4200, clamp(h * 0.6 + sp * 0.5, 0, 1)), t0, 0.04);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.012);
+    haloOsc.frequency.setTargetAtTime(harm.dingHz * 6 * Math.pow(2, h * 0.55), t0, 0.03);
+    haloGain.gain.setTargetAtTime(Math.pow(h, 1.5) * lerp(0.03, 0.08, sp), t0, 0.03);
+
+    const rollSrc = harm.held.length ? harm.held : state.motif, subPos = tk % slice;
+    if (subPos % Math.max(1, Math.min(2, slice)) === 0) {
+      const mIdx = rollSrc[(subPos >> 1) % rollSrc.length];
+      playPan(mIdx, t0, lerp(0.58, 0.96, h), 1, { isMuted: h > 0.45 && (subPos % 2 === 1), stereoWide, dingHz: harm.dingHz, brake: state.tapeBrake });
+      setTimeout(() => { state.lociGlow[mIdx] = 1; state.lociHeat[mIdx] = h; }, delayMs);
+    }
+    if (tk % slice === 0) playTak(t0, h, lerp(0.45, 0.98, h), tk % 4 < 2 ? -0.24 : 0.24);
+    return;
+  } else if (state.phase === 'CLOSURE') {
+    const d = clamp(-state.ky / 0.5, 0, 1);
+    washHP.frequency.setTargetAtTime(20, t0, 0.05);
+    warmLP.frequency.setTargetAtTime(lerp(2200, 760, d), t0, 0.07);
+    subGain.gain.setTargetAtTime(SAFE, t0, 0.03); haloGain.gain.setTargetAtTime(SAFE, t0, 0.03);
+    if (is16 && step16 === 0) playPan(harm.held[0] ?? 0, t0, 0.78 * (1 - d * 0.3), 6, { dingHz: harm.dingHz, stereoWide });
+    return;
+  } else {
+    washHP.frequency.setTargetAtTime(20, t0, 0.035); washHP.Q.setTargetAtTime(0.7, t0, 0.04);
+    warmLP.frequency.setTargetAtTime(lerp(1800, 3800, clamp(sp * 0.75 + (state.phase === 'CLIMAX' ? 0.3 : 0), 0, 1)), t0, 0.05);
+    subOsc.frequency.setTargetAtTime(harm.subHz * lerp(1, 0.72, state.tapeBrake), t0, 0.022);
+    subGain.gain.setTargetAtTime(state.phase === 'CLIMAX' ? 0.32 * state.dropEnergy : 0.15, t0, 0.025);
+    haloGain.gain.setTargetAtTime(SAFE, t0, 0.03);
+  }
+
+  // Kick + Crowd Pulse Recoil
+  const isCli = state.phase === 'CLIMAX', elBars = isCli ? Math.floor((tk - state.dropTick) / 32) : 0;
+  const flv = isCli ? state.dropFlavor : flavorForX(state.kx);
+  const isHalf = flv === 'HALF' || (isCli && flv === 'FAKEOUT' && elBars < 2);
+  if (isCli && flv === 'FAKEOUT' && tk === state.dropTick + 64) {
+    playDropSlam(t0, harm.subHz, 1.0, [0, 4, 8], harm.dingHz);
+    setTimeout(() => { state.dropFlash = 1; state.kickRecoil = 1.25; state.shocks.push({ born: performance.now(), life: 1100 }); }, delayMs);
+  }
+
+  if (!state.bassKill) {
+    const kickHit = isCli ? (isHalf ? (inBar32 === 0 || inBar32 === 20) : isBeat) : (inBar32 === 0 || inBar32 === 16);
+    if (kickHit) {
+      playGuKick(t0, isCli ? 0.98 : 0.70, isCli);
+      setTimeout(() => { state.kickRecoil = Math.max(state.kickRecoil, isCli ? 0.95 : 0.45); state.crowdRings.push({ born: performance.now(), life: 520, hot: isCli }); }, delayMs);
+    }
+  }
+  if (isCli && (isHalf ? inBar32 === 16 : (inBar32 === 8 || inBar32 === 24))) playTak(t0, 0.22 + sp * 0.2, 0.84, 0.22);
+  else if (is16 && step16 % 4 === 3) playTak(t0, 0.08, 0.44, -0.24);
+
+  // Handpan weave shaped by 2nd Dim (3:2 polymeter on right!) & 3rd Dim (Scrollwheel Space -> +8va euphoria!)
+  if (is16) {
+    const is32 = flv === 'FAKEOUT';
+    if (!state.bassKill && (step16 === 0 || step16 === 6 || step16 === 12)) {
+      const rL = harm.held.length ? harm.held[0] : 0;
+      playPan(rL, t0, step16 === 0 ? 0.94 : 0.76, 4, { dingHz: harm.dingHz, stereoWide, brake: state.tapeBrake });
+      setTimeout(() => { state.lociGlow[rL] = 0.95; }, delayMs);
+    } else if ((is32 && step16 % 3 === 0) || step16 === 3 || step16 === 10 || step16 === 14) {
+      const mIdx = harm.pool[(step16 + barIdx) % harm.pool.length];
+      playPan(mIdx, t0, 0.88, 2, { octUp: sp > 0.68 && mIdx >= 4, stereoWide, brake: state.tapeBrake });
+      setTimeout(() => { state.lociGlow[mIdx] = 1; }, delayMs);
+    } else if (step16 % 4 !== 1) {
+      const gIdx = harm.pool[(step16 + barIdx) % harm.pool.length];
+      playPan(gIdx, t0 + 0.002, step16 % 4 === 3 ? 0.38 : 0.24, 1, { isGhost: true, isMuted: sp < 0.22, stereoWide, brake: state.tapeBrake });
+    }
+  }
+}
+
+let schedTimer = null;
+function runSched() {
+  if (!state.playing || !actx) return;
+  const brakeMul = lerp(1.0, 0.42, state.tapeBrake);
+  const phaseMul = state.phase === 'CLOSURE' ? 0.94 : state.phase === 'CLIMAX' ? 1.02 : 1.0;
+  const tickSec = 60 / (BASE_BPM * phaseMul * brakeMul) / 8;
+  while (state.nextTickTime < actx.currentTime + LOOKAHEAD) {
+    scheduleTick(state.tick++, state.nextTickTime);
+    state.nextTickTime += tickSec;
+  }
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl'), hudState = document.getElementById('hudState');
+function togglePlay(force = null) {
+  const want = force != null ? force : !state.playing;
+  if (want === state.playing) return;
+  ensureAudio(); state.playing = want;
+  if (want) { state.nextTickTime = actx.currentTime + 0.022; runSched(); schedTimer = setInterval(runSched, 16); }
+  else { clearInterval(schedTimer); schedTimer = null; if (subGain) { subGain.gain.setTargetAtTime(SAFE, actx.currentTime, 0.02); haloGain.gain.setTargetAtTime(SAFE, actx.currentTime, 0.02); } }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', () => togglePlay());
+
+// ==================== 4. MULTIDIMENSIONAL HAPTIC INPUT ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0, cx = 0, cy = 0, fieldR = 200;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W * 0.5; cy = H * 0.54; fieldR = clamp(Math.min(W, H) * 0.34, 130, 250);
+}
+window.addEventListener('resize', resize); resize();
+
+const drag = { active: false, lastY: 0, lastT: 0 };
+const ptrToKnob = (mx, my) => ({
+  nx: clamp((mx - cx) / fieldR, -1, 1),
+  ny: my <= cy ? clamp((cy - my) / fieldR, 0, 1) : -clamp((my - cy) / (fieldR * 0.62), 0, 1) * 0.5
+});
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  ensureAudio(); if (!state.playing) togglePlay(true);
+  if (e.button === 2) { state.bassKill = true; playHaptic(0, 1.5, true); return; }
+  canvas.setPointerCapture(e.pointerId);
+  drag.active = true; drag.lastY = e.clientY; drag.lastT = performance.now();
+  const { nx, ny } = ptrToKnob(e.clientX, e.clientY);
+  updateKnob(nx, ny, false, 0);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!drag.active) return;
+  const now = performance.now(), vy = (e.clientY - drag.lastY) / Math.max(0.008, (now - drag.lastT) / 1000);
+  drag.lastY = e.clientY; drag.lastT = now;
+  const { nx, ny } = ptrToKnob(e.clientX, e.clientY);
+  updateKnob(nx, ny, true, vy);
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (e.button === 2) { state.bassKill = false; playHaptic(0, 0.72, true); return; }
+  if (drag.active) {
+    drag.active = false;
+    if (state.phase === 'FREEZE' || (state.phase === 'TENSION' && state.peakTension >= 0.25)) detonateDrop();
+    else if (state.phase === 'TENSION') updateKnob(state.kx, 0, false, 0);
+  }
+});
+
+// SCROLLWHEEL = 3RD CONTINUOUS DIMENSION (works EVEN WHILE DRAGGING the God-Knob!)
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault(); ensureAudio();
+  const prevStep = Math.round(state.space * 12);
+  state.space = clamp(state.space - Math.sign(e.deltaY) * 0.08, 0, 1);
+  if (Math.round(state.space * 12) !== prevStep) playHaptic(0, 0.75 + state.space * 0.85, false);
+}, { passive: false });
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'x') { state.bassKill = true; playHaptic(0, 1.5, true); return; }
+  if (k === 'b') { state.brakeHeld = true; return; }
+  const lane = KEY_TO_LANE[k];
+  if (lane !== undefined && !state.heldTones.has(lane)) {
+    ensureAudio();
+    const voice = playPan(lane, actx.currentTime, 0.94, 6, { direct: state.phase === 'FREEZE', stereoWide: lerp(0.6, 1.45, state.space) });
+    const bloom = startBloomHold(lane);
+    state.heldTones.set(lane, { startMs: performance.now(), voice, bloom });
+    state.lociGlow[lane] = 1; state.lociHeat[lane] = 1;
+    state.motif.push(lane); if (state.motif.length > 8) state.motif.shift();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'x') { state.bassKill = false; playHaptic(0, 0.72, true); return; }
+  if (k === 'b') { state.brakeHeld = false; return; }
+  const lane = KEY_TO_LANE[k];
+  if (lane !== undefined) {
+    const h = state.heldTones.get(lane);
+    if (h) { state.heldTones.delete(lane); if (performance.now() - h.startMs < 180 && h.voice) h.voice.damp(); if (h.bloom) h.bloom.stop(); }
+  }
+});
+
+// ==================== 5. VISCERAL HAPTIC CROWD-ENERGY RENDERER ====================
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  state.tapeBrake = lerp(state.tapeBrake, state.brakeHeld ? 1 : 0, 1 - Math.exp(-dt * (state.brakeHeld ? 3.5 : 14)));
+  state.kickRecoil *= Math.exp(-dt * 9.0); state.dropFlash = Math.max(0, state.dropFlash - dt * 1.4);
+  for (let i = 0; i < 9; i++) { state.lociGlow[i] *= Math.exp(-dt * 5.2); state.lociHeat[i] = Math.max(0, state.lociHeat[i] - dt * 2.4); }
+
+  const held = [...state.heldTones.keys()].sort((a, b) => a - b);
+  const tag = state.bassKill ? 'BASS KILL' : state.brakeHeld ? 'TAPE BRAKE' : `${state.phase} · ${flavorForX(state.kx)}`;
+  hudState.textContent = `${tag} · SPACE ${Math.round(state.space * 100)}%${held.length ? ' · [' + held.map(i => NOTES[i].name).join('+') + ']' : ''}`;
+  hudState.classList.toggle('hot', state.bassKill || state.brakeHeld || state.phase === 'TENSION' || state.phase === 'FREEZE' || state.phase === 'CLIMAX');
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const heat = state.bassKill || state.phase === 'FREEZE' ? 1 : state.phase === 'TENSION' ? clamp(state.ky / FREEZE_TH, 0, 1) : state.phase === 'CLIMAX' ? state.dropEnergy : 0;
+
+  // 1. Minimalist Crowd Pressure Field (physically compresses INWARD during Tension, explodes OUTWARD on Drop!)
+  const baseFieldR = fieldR * (1 - (state.phase === 'TENSION' ? heat * 0.22 : 0) + state.kickRecoil * 0.045);
+  ctx.strokeStyle = `rgba(255,255,255,${state.phase === 'FREEZE' ? 0.08 : 0.14})`; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, baseFieldR, 0, Math.PI * 2); ctx.stroke();
+  // Crosshairs
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.beginPath(); ctx.moveTo(cx - fieldR, cy); ctx.lineTo(cx + fieldR, cy); ctx.moveTo(cx, cy - fieldR); ctx.lineTo(cx, cy + fieldR * 0.62); ctx.stroke();
+
+  // Crowd Beat Pulses & Drop Shockwaves
+  for (let i = state.crowdRings.length - 1; i >= 0; i--) {
+    const r = state.crowdRings[i], p = (nowMs - r.born) / r.life;
+    if (p >= 1) { state.crowdRings.splice(i, 1); continue; }
+    ctx.strokeStyle = mixInk(r.hot ? 0.9 : 0, (1 - p) * (r.hot ? 0.42 : 0.18)); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, 22 + p * fieldR * 0.95, 0, Math.PI * 2); ctx.stroke();
+  }
+  for (let i = state.shocks.length - 1; i >= 0; i--) {
+    const sh = state.shocks[i], p = (nowMs - sh.born) / sh.life;
+    if (p < 0) continue; if (p >= 1) { state.shocks.splice(i, 1); continue; }
+    ctx.strokeStyle = mixInk(1 - p * 0.35, Math.pow(1 - p, 1.4) * 0.88); ctx.lineWidth = 2.0 * (1 - p) + 0.5;
+    ctx.beginPath(); ctx.arc(cx, cy, 20 + Math.pow(p, 0.72) * Math.min(W, H) * 0.52, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Axis Cardinal Labels
+  ctx.font = '8.5px ui-monospace, monospace'; ctx.fillStyle = 'rgba(255,255,255,0.32)'; ctx.textAlign = 'center';
+  ctx.fillText('FREEZE ↑', cx, cy - fieldR - 10);
+  ctx.fillText('CLOSURE ↓', cx, cy + fieldR * 0.62 + 16);
+  ctx.textAlign = 'right'; ctx.fillText('← HALF', cx - fieldR - 10, cy + 3);
+  ctx.textAlign = 'left';  ctx.fillText('3:2 FAKEOUT →', cx + fieldR + 10, cy + 3);
+
+  // 2. Central Haptic God-Knob + 3rd-Dimension Scrollwheel Cathedral Aura Ring!
+  const px = cx + state.kx * fieldR, py = state.ky >= 0 ? cy - state.ky * fieldR : cy + (-state.ky / 0.5) * (fieldR * 0.62);
+  // Tension elastic tether back to center Groove
+  ctx.strokeStyle = mixInk(heat, 0.62); ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.stroke();
+
+  // 3rd-Dimension Scrollwheel Space/Cathedral Ring around knob!
+  const auraR = 16 + state.space * 34 + state.kickRecoil * 6;
+  ctx.strokeStyle = mixInk(state.space > 0.65 ? 0.85 : heat * 0.6, 0.28 + state.space * 0.45);
+  ctx.lineWidth = 1.1; ctx.beginPath(); ctx.arc(px, py, auraR, 0, Math.PI * 2); ctx.stroke();
+  // Rotary tick marks showing exact scrollwheel depth
+  ctx.strokeStyle = mixInk(heat, 0.92); ctx.lineWidth = 2.0;
+  ctx.beginPath(); ctx.arc(px, py, auraR, -Math.PI * 0.5, -Math.PI * 0.5 + state.space * Math.PI * 2); ctx.stroke();
+
+  // Core Knob Sphere
+  ctx.fillStyle = heat > 0.25 ? '#ff5a1f' : '#000';
+  ctx.beginPath(); ctx.arc(px, py, 11 + state.kickRecoil * 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = mixInk(heat, 0.96); ctx.lineWidth = 1.7; ctx.stroke();
+
+  // 3. Minimal Bottom Home-Row Harmonic Strip (A–L holds & chord arcs)
+  const yB = H - 30, span = Math.min(W * 0.62, 520), xL = cx - span * 0.5, xR = cx + span * 0.5;
+  const lx = (i) => lerp(xL, xR, i / 8);
+  if (held.length >= 2) {
+    for (let k = 0; k < held.length - 1; k++) {
+      ctx.strokeStyle = 'rgba(255,90,31,0.75)'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(lx(held[k]), yB); ctx.quadraticCurveTo((lx(held[k]) + lx(held[k + 1])) * 0.5, yB - 24, lx(held[k + 1]), yB); ctx.stroke();
+    }
+  }
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < 9; i++) {
+    const x = lx(i), g = state.lociGlow[i], isH = state.heldTones.has(i);
+    ctx.fillStyle = mixInk(isH ? 1 : state.lociHeat[i], isH ? 1 : 0.30 + g * 0.65);
+    ctx.beginPath(); ctx.arc(x, yB, (isH ? 4.2 : 2.1) + g * 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillText(NOTES[i].key, x, yB + 15);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

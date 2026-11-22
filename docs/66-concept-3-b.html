@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+66 · Concept 3B — Compositional Synthesizer: HORIZONTAL TAPE + ARC DIAGRAM.
+Same engine as 3A/3C: home-row phrases become gist leaves (#52), metas STACK/CHAIN any root boxes (#61).
+Boxes are appended left→right on one tape (auto-scrolls to newest); meta→child links are arcs above.
+Bottom half: output piano roll (time →); every sounding note draws a line up to its source box, and
+the source leaf plus its ancestors pulse. HOT = note introduced by variability.
+Judge: is a left→right tape + arcs easier to grow and read than a vertical list?
+--><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>66 · 3B — Compositional Synth: horizontal tape + arc diagram</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:11px/1.3 ui-monospace,Menlo,Consolas,monospace;user-select:none}
+header{position:fixed;top:0;left:0;right:0;height:28px;display:flex;align-items:center;gap:10px;padding:0 10px;z-index:2;background:#000;border-bottom:1px solid rgba(255,255,255,.12)}
+header .hint{color:rgba(255,255,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+header #status{color:rgba(255,255,255,.7);white-space:nowrap}
+button{background:#000;color:#fff;border:1px solid rgba(255,255,255,.35);font:inherit;padding:2px 8px;cursor:pointer}
+button.on{border-color:#ff5a1f;color:#ff5a1f}
+canvas{position:fixed;left:0;top:28px;width:100vw;height:calc(100vh - 28px);display:block}
+</style></head><body>
+<header><button id="play">PLAY</button><span class="hint">66 · 3B · A–L play/learn · click/⇧click select · ⇧G stack · C chain · ⇧D dup · ⌫ delete · M mute · dbl-click meta fold · drag PROM/VAR · wheel scroll · SPACE play</span><span id="status"></span></header>
+<canvas id="cv"></canvas>
+<script>
+// ===================== 66 SHARED CORE (audio · clock · theory) =====================
+// E Kurd / Amara 9-tone pan, i–VI–VII–i one-bar harmonic cycle (#41), 16-step bars.
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const mod = (a, n) => ((a % n) + n) % n;
+const hash01 = (a, b = 0, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const semiHz = (s) => 440 * Math.pow(2, s / 12);
+
+// lane index 0..8 ; KEYS[i] plays lane i (home row)
+const NOTES = [['E3', -17], ['B3', -10], ['C4', -9], ['D4', -7], ['E4', -5], ['F#4', -3], ['G4', -2], ['A4', 0], ['B4', 2]]
+  .map(([name, s], idx) => ({ name, idx, freq: semiHz(s), pan: (idx / 8 - 0.5) * 0.5 }));
+const KEYS = 'asdfghjkl';
+// one chord per bar; pool = lanes that sound "right" in that bar; bassHz = sub root
+const PROG = [
+  { sym: 'i', pool: [0, 1, 4, 6, 8], bassHz: semiHz(-29) },
+  { sym: 'VI', pool: [2, 4, 6, 8, 1], bassHz: semiHz(-33) },
+  { sym: 'VII', pool: [3, 5, 7, 8, 1], bassHz: semiHz(-31) },
+  { sym: 'i', pool: [0, 1, 4, 6, 5], bassHz: semiHz(-29) },
+];
+const chordAt = (bar) => PROG[mod(bar, PROG.length)];
+// #41 metric weight per 16th: strong downbeats, strong "a" pickups (3,7,11,15), weak "e"
+const METRIC = [1, .3, .55, .8, .85, .25, .55, .8, .95, .3, .5, .85, .85, .2, .55, .75];
+
+// ----------------------------- AUDIO -----------------------------
+const Audio = (() => {
+  let ctx = null, master, bus, hpf, lpf, dry, revSend, revOut, noise, riserBP, riserG, ui;
+  function ensure() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -10; comp.ratio.value = 6; comp.connect(ctx.destination);
+      master = ctx.createGain(); master.gain.value = 0.85; master.connect(comp);
+      lpf = filt('lowpass', 18000, 0.7); hpf = filt('highpass', 20, 0.7); dry = ctx.createGain();
+      bus = ctx.createGain(); bus.connect(hpf); hpf.connect(lpf); lpf.connect(dry); dry.connect(master);
+      const sr = ctx.sampleRate, n = Math.floor(sr * 2.6), ir = ctx.createBuffer(2, n, sr);
+      for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); let lp = 0; for (let i = 0; i < n; i++) { lp = lp * .55 + (Math.random() * 2 - 1) * .45; d[i] = lp * Math.pow(1 - i / n, 2.4) * .5; } }
+      const conv = ctx.createConvolver(); conv.buffer = ir;
+      revSend = ctx.createGain(); revSend.gain.value = 0.25; revOut = ctx.createGain(); revOut.gain.value = 0.5;
+      lpf.connect(revSend); revSend.connect(conv); conv.connect(revOut); revOut.connect(master);
+      noise = ctx.createBuffer(1, sr * 2, sr); const nd = noise.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const rs = ctx.createBufferSource(); rs.buffer = noise; rs.loop = true;
+      riserBP = filt('bandpass', 400, 2); riserG = ctx.createGain(); riserG.gain.value = 0.0001;
+      rs.connect(riserBP); riserBP.connect(riserG); riserG.connect(master); rs.start();
+      ui = ctx.createGain(); ui.gain.value = 0.2; ui.connect(master);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+  const filt = (type, f, q) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+  const env = (t, a, p, d) => { const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(Math.max(.0002, p), t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(a + .01, d)); return g; };
+  const T = (when) => Math.max(ctx.currentTime + 0.002, when == null ? 0 : when);
+  const osc = (type, f, t, d, out) => { const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); o.connect(out); o.start(t); o.stop(t + d + .05); return o; };
+  function noiseHit(t, type, f, q, peak, d, out = bus) { const s = ctx.createBufferSource(); s.buffer = noise; const b = filt(type, f, q), g = env(t, .002, peak, d); s.connect(b); b.connect(g); g.connect(out); s.start(t); s.stop(t + d + .03); }
+  return {
+    ensure, get ctx() { return ctx; }, now: () => (ctx ? ctx.currentTime : 0),
+    // handpan strike: lane 0..8, vel 0..1, durSteps controls ring length, octave shifts up 1 octave
+    pan(lane, when, vel = .8, durSteps = 4, octave = 0) {
+      ensure(); const n = NOTES[lane]; if (!n) return; const t = T(when), v = clamp(vel, .05, 1), f = n.freq * (octave ? 2 : 1);
+      const tau = clamp(.25 + durSteps * .22, .3, 2.4) * (lane === 0 ? 1.2 : 1);
+      const out = ctx.createGain(), p = ctx.createStereoPanner(); p.pan.value = n.pan; out.connect(p); p.connect(bus);
+      const g = env(t, .004, .26 * v, tau); g.connect(out); osc('sine', f, t, tau, g); osc('sine', f + .7, t, tau, g);
+      const h2 = env(t, .02, .12 * v, tau * .6); h2.connect(out); osc('sine', f * 2.001, t, tau * .6, h2);
+      const h3 = env(t, .03, .07 * v, tau * .45); h3.connect(out); osc('sine', f * 2.998, t, tau * .45, h3);
+      noiseHit(t, 'bandpass', clamp(f * 3, 600, 2000), 2, .1 * v, .02, out);
+    },
+    kick(when, v = .8) { ensure(); const t = T(when), g = env(t, .003, .7 * v, .3); g.connect(bus); const o = osc('sine', 130, t, .32, g); o.frequency.exponentialRampToValueAtTime(42, t + .12); },
+    hat(when, v = .4, open = false) { ensure(); noiseHit(T(when), 'highpass', open ? 6000 : 7500, .8, .12 * v, open ? .16 : .035); },
+    tak(when, v = .6) { ensure(); const t = T(when); noiseHit(t, 'bandpass', 2400, 1.6, .26 * v, .07); const g = env(t, .002, .15 * v, .06); g.connect(bus); osc('triangle', 300, t, .06, g); },
+    sub(when, hz, durSec, v = .45) { ensure(); const t = T(when), g = env(t, .015, v, Math.max(.1, durSec)), lp = filt('lowpass', 220, 1); lp.connect(g); g.connect(bus); osc('sine', hz, t, durSec, lp); osc('triangle', hz * 2, t, durSec, lp); },
+    impact(when, v = 1) { ensure(); const t = T(when), g = env(t, .004, .8 * v, 1.4); g.connect(master); const o = osc('sine', 120, t, 1.4, g); o.frequency.exponentialRampToValueAtTime(41, t + .1); noiseHit(t, 'lowpass', 3000, .7, .3 * v, 1.6, master); },
+    // UI detent click (haptic-ish); pitch 0.5..2
+    click(pitch = 1, strong = false) { if (!ctx) return; noiseHit(ctx.currentTime + .001, 'bandpass', 2200 * pitch, 5, strong ? .25 : .12, strong ? .025 : .012, ui); },
+    // continuous macro controls (0..1), smoothed
+    setRiser(x) { if (!ctx) return; const t = ctx.currentTime; riserG.gain.setTargetAtTime(Math.max(.0001, Math.pow(x, 1.5) * .22), t, .04); riserBP.frequency.setTargetAtTime(300 + x * 4500, t, .04); },
+    setHPF(x) { if (!ctx) return; hpf.frequency.setTargetAtTime(20 * Math.pow(70, clamp(x, 0, 1)), ctx.currentTime, .03); hpf.Q.value = .7 + x * 3; },
+    setLPF(x) { if (!ctx) return; lpf.frequency.setTargetAtTime(18000 * Math.pow(400 / 18000, clamp(x, 0, 1)), ctx.currentTime, .03); },
+    setReverb(x) { if (!ctx) return; revSend.gain.setTargetAtTime(.25 + x * .6, ctx.currentTime, .05); },
+    // freeze: dry bus muted, reverb tail hangs
+    setFreeze(on) { if (!ctx) return; const t = ctx.currentTime; dry.gain.setTargetAtTime(on ? .0001 : 1, t, on ? .01 : .005); revSend.gain.setTargetAtTime(on ? .0001 : .25, t, .01); revOut.gain.setTargetAtTime(on ? .7 : .5, t, .05); },
+  };
+})();
+
+// ----------------------------- CLOCK -----------------------------
+// Sample-accurate 16th-step scheduler. Clock.onStep(fn(step, when)) is called ~120ms ahead.
+// Clock.pos() = fractional current step (for drawing). Clock.later(when, fn) runs fn when audio time arrives.
+const Clock = (() => {
+  const subs = []; let bpm = 105, playing = false, anchorStep = 0, anchorTime = 0, next = 0, timer = null, pausedAt = 0;
+  const stepDur = () => 60 / bpm / 4;
+  function tick() {
+    const ctx = Audio.ctx; if (!playing || !ctx) return;
+    const horizon = ctx.currentTime + .12;
+    while (anchorTime + (next - anchorStep) * stepDur() < horizon) { const when = anchorTime + (next - anchorStep) * stepDur(); for (const f of subs) f(next, when); next++; }
+  }
+  return {
+    get playing() { return playing; }, get bpm() { return bpm; }, stepDur,
+    setBpm(b) { const p = this.pos(); bpm = b; if (playing) { anchorStep = p; anchorTime = Audio.now(); } },
+    onStep(f) { subs.push(f); },
+    pos() { if (!playing || !Audio.ctx) return pausedAt; return anchorStep + Math.max(0, (Audio.now() - anchorTime) / stepDur()); },
+    timeOf(step) { return anchorTime + (step - anchorStep) * stepDur(); },
+    start() { Audio.ensure(); if (playing) return; playing = true; anchorStep = pausedAt; anchorTime = Audio.now() + .05; next = Math.ceil(anchorStep); timer = setInterval(tick, 25); tick(); },
+    stop() { if (!playing) return; pausedAt = this.pos(); playing = false; clearInterval(timer); },
+    toggle() { playing ? this.stop() : this.start(); },
+    later(when, fn) { setTimeout(fn, Math.max(0, (when - Audio.now()) * 1000)); },
+  };
+})();
+
+// ----------------------------- CANVAS HELPERS -----------------------------
+function setupCanvas(canvas, onResize) {
+  const ctx = canvas.getContext('2d');
+  const fit = () => { const d = Math.min(2, devicePixelRatio || 1), r = canvas.getBoundingClientRect(); canvas.width = r.width * d; canvas.height = r.height * d; ctx.setTransform(d, 0, 0, d, 0, 0); onResize && onResize(r.width, r.height); };
+  addEventListener('resize', fit); fit(); return ctx;
+}
+const ink = (a) => `rgba(255,255,255,${clamp(a, 0, 1).toFixed(3)})`;
+const HOT = '#ff5a1f';
+const hot = (a) => `rgba(255,90,31,${clamp(a, 0, 1).toFixed(3)})`;
+// ===================== END CORE =====================
+
+// ---------------- CONCEPT 3 ENGINE (identical in 66-concept-3-a/b/c; only the UI below differs) ----------------
+const ARCH = [
+  { name: 'TRESILLO', slots: [0, 6, 12] }, { name: 'a-PICKUP', slots: [0, 3, 8, 11, 15] },
+  { name: 'BACKBEAT', slots: [0, 4, 8, 12] }, { name: '3:2 FLOW', slots: [0, 3, 6, 9, 12] },
+  { name: 'SYNCOP', slots: [0, 3, 6, 10, 14] }, { name: '8TH-BED', slots: [0, 2, 4, 6, 8, 10, 12, 14] },
+];
+const PERC_NAMES = ['kick', 'tak', 'hat'];
+// box: {id, type:'leaf'|'stack'|'chain', name, kind:'pan'|'bass'|'perc', arch, events:[{pos,lane,dur,vel}],
+//       children:[ids], parent, prom, vari, muted, folded, pulse}
+const S = { boxes: [], map: new Map(), sel: new Set(), version: 0, nextId: 1, nStack: 1, nChain: 1,
+  fired: [], lastSched: -1, capture: [], captureT: 0, msg: '' };
+const isMeta = (b) => b.type !== 'leaf';
+const parentOf = (b) => (b.parent == null ? null : S.map.get(b.parent));
+const kidsOf = (b) => b.children.map((id) => S.map.get(id));
+const roots = () => S.boxes.filter((b) => b.parent == null);
+function ancestors(b) { const a = []; for (let p = parentOf(b); p; p = parentOf(p)) a.push(p); return a; }
+const hidden = (b) => ancestors(b).some((a) => a.folded);
+const maxOf = (key, b) => (isMeta(b) ? 2 : 1);
+const eff = (b, key) => ancestors(b).reduce((v, a) => v * a[key], b[key]);
+function boxLen(b) {
+  if (!isMeta(b)) return 1;
+  const l = kidsOf(b).map(boxLen);
+  return b.type === 'stack' ? Math.max(1, ...l) : Math.max(1, l.reduce((a, c) => a + c, 0));
+}
+const touch = () => { S.version++; };
+const say = (m) => { S.msg = m; };
+
+function register(b) { S.boxes.push(b); S.map.set(b.id, b); touch(); return b; }
+function addLeaf(name, kind, arch, events, prom = 0.8, vari = 0.25) {
+  return register({ id: S.nextId++, type: 'leaf', name, kind, arch, events, children: [], parent: null, prom, vari, muted: false, folded: false, pulse: 0 });
+}
+function addMeta(type, kidIds, name) {
+  const m = register({ id: S.nextId++, type, name: name || (type === 'stack' ? `STACK ${S.nStack++}` : `CHAIN ${S.nChain++}`),
+    children: kidIds, parent: null, prom: 1, vari: 1, muted: false, folded: false, pulse: 0 });
+  for (const id of kidIds) S.map.get(id).parent = m.id;
+  return m;
+}
+function group(type) {
+  const sel = [...S.sel].map((id) => S.map.get(id)).filter((b) => b && b.parent == null);
+  if (sel.length < 2) { say('select 2+ root boxes (no parent) to group'); return null; }
+  const m = addMeta(type, sel.map((b) => b.id));   // children in selection order (matters for CHAIN)
+  S.sel = new Set([m.id]); say(`${m.name} ← ${sel.map((b) => b.name).join(' + ')}`);
+  return m;
+}
+function duplicate() {
+  const src = S.map.get([...S.sel].pop()); if (!src) return;
+  const copy = (b) => {
+    if (isMeta(b)) { const m = addMeta(b.type, b.children.map((id) => copy(S.map.get(id)).id), b.name + "'"); Object.assign(m, { prom: b.prom, vari: b.vari }); return m; }
+    const k = Math.floor(hash01(b.id, S.nextId) * b.events.length);   // nudge one event's pitch ("slightly varied")
+    const ev = b.events.map((e, i) => ({ ...e, lane: b.kind === 'pan' && i === k ? clamp(e.lane + 1, 1, 8) : e.lane }));
+    return addLeaf(b.name + "'", b.kind, b.arch, ev, b.prom, clamp(b.vari + 0.1, 0, 1));
+  };
+  const c = copy(src); S.sel = new Set([c.id]); say(`dup ${src.name} → ${c.name}`);
+}
+function removeBox(b) {
+  if (!S.map.has(b.id)) return;
+  const p = parentOf(b);
+  if (isMeta(b)) {  // ungroup: children take the meta's place
+    for (const k of kidsOf(b)) k.parent = b.parent;
+    if (p) p.children.splice(p.children.indexOf(b.id), 1, ...b.children);
+  } else if (p) p.children = p.children.filter((id) => id !== b.id);
+  S.boxes.splice(S.boxes.indexOf(b), 1); S.map.delete(b.id); S.sel.delete(b.id); touch();
+  if (p && !p.children.length) removeBox(p);
+}
+function removeSelected() { const s = [...S.sel].map((id) => S.map.get(id)).filter(Boolean); s.forEach(removeBox); if (s.length) say(`deleted ${s.map((b) => b.name).join(', ')}`); }
+function toggleMute() { for (const id of S.sel) { const b = S.map.get(id); b.muted = !b.muted; } touch(); }
+function toggleFold(b) { if (isMeta(b)) b.folded = !b.folded; }
+function setParam(b, key, v) { b[key] = clamp(v, 0, maxOf(key, b)); touch(); }
+
+// ---- realization: pure function of (structure, bar) → notes, each tagged with its source path ----
+const barCache = new Map(); let cacheVer = -1;
+function barNotes(bar) {
+  if (cacheVer !== S.version) { barCache.clear(); cacheVer = S.version; }
+  let r = barCache.get(bar); if (r) return r;
+  r = { notes: [], active: new Set() };
+  for (const root of roots()) walk(root, mod(bar, boxLen(root)), 1, 1, [], bar, r);
+  r.notes.sort((a, b) => a.step - b.step);
+  if (barCache.size > 48) barCache.delete(barCache.keys().next().value);
+  barCache.set(bar, r); return r;
+}
+function walk(b, local, pm, vm, path, bar, r) {
+  if (b.muted) return;
+  r.active.add(b.id); path = [...path, b.id];
+  pm *= b.prom; vm *= b.vari;
+  if (!isMeta(b)) return realize(b, bar, pm, vm, path, r.notes);
+  if (b.type === 'stack') { for (const k of kidsOf(b)) walk(k, mod(local, boxLen(k)), pm, vm, path, bar, r); return; }
+  let off = 0;
+  for (const k of kidsOf(b)) { const L = boxLen(k); if (local < off + L) return walk(k, local - off, pm, vm, path, bar, r); off += L; }
+}
+// #52 generateBar tiers: pitch substitution → ±1 displacement (never step 0) → ghost "a"-pickups → octave bloom
+function realize(leaf, bar, P, V, path, out) {
+  const ch = chordAt(bar), base = bar * 16, vol = clamp(0.25 + P * 0.9, 0, 1.4); V = clamp(V, 0, 1);
+  const push = (n) => out.push({ ...n, kind: leaf.kind, leaf: leaf.id, path, step: base + n.pos });
+  leaf.events.forEach((ev, i) => {
+    if (METRIC[ev.pos] <= 1 - P * 1.4) return;   // prominence: metrically weak notes drop out first
+    let pos = ev.pos, lane = ev.lane, oct = 0, varied = '';
+    const r1 = hash01(leaf.id * 31 + bar, i * 13, 66), r2 = hash01(bar * 17 + i * 5, leaf.id * 29, 83);
+    if (leaf.kind === 'pan' && V > 0.1 && r1 < V * 0.8) {
+      const cands = ch.pool.filter((p) => p !== lane);
+      const nl = V < 0.5 ? cands.sort((a, b) => Math.abs(a - lane) - Math.abs(b - lane))[0] : cands[Math.floor(r2 * cands.length)];
+      if (nl !== undefined) { lane = nl; varied = 'sub'; }
+    }
+    if (V > 0.4 && pos !== 0 && r2 < (V - 0.35) * 0.7) {
+      const d = r1 < 0.5 ? -1 : 1; pos = mod(pos + d, 16) || mod(pos - d, 16); varied = 'disp';
+    }
+    if (leaf.kind === 'pan' && V > 0.7 && lane >= 4 && r1 > 0.65) { oct = 1; varied = 'oct'; }
+    push({ pos, lane, oct, vel: ev.vel * vol, dur: ev.dur, varied });
+    const gp = mod(pos - 1, 16);
+    if (V > 0.2 && hash01(bar * 19, leaf.id * 11 + i, 97) < V * 0.6 && !leaf.events.some((e) => e.pos === gp)) {
+      const gl = leaf.kind === 'pan' ? ch.pool[(pos + i) % ch.pool.length] : leaf.kind === 'perc' ? 2 : 0;
+      push({ pos: gp, lane: gl, oct: 0, vel: 0.3 * vol, dur: 1, varied: 'orn' });
+    }
+  });
+}
+function notesInRange(s0, s1) {  // fired (past/scheduled) + predicted future
+  const out = S.fired.filter((n) => n.step >= s0 && n.step < s1);
+  for (let bar = Math.floor(s0 / 16); bar * 16 < s1; bar++)
+    for (const n of barNotes(bar).notes) if (n.step > S.lastSched && n.step >= s0 && n.step < s1) out.push(n);
+  return out;
+}
+
+// ---- sound ----
+function sound(n, when) {
+  const sd = Clock.stepDur();
+  if (n.kind === 'perc') { if (n.lane === 0) Audio.kick(when, n.vel); else if (n.lane === 1) Audio.tak(when, n.vel); else Audio.hat(when, n.vel); return; }
+  Audio.pan(n.lane, when, n.vel, n.dur, n.oct);
+  if (n.kind === 'bass' && n.varied !== 'orn') Audio.sub(when, chordAt(Math.floor(n.step / 16)).bassHz, n.dur * sd * 0.9, 0.3 * n.vel);
+}
+Clock.onStep((step, when) => {
+  for (const n of barNotes(Math.floor(step / 16)).notes) {
+    if (n.step !== step) continue;
+    sound(n, when); S.fired.push(n);
+    Clock.later(when, () => { for (const id of n.path) { const b = S.map.get(id); if (b) b.pulse = 1; } });
+  }
+  S.lastSched = step;
+  if (S.fired.length > 600) S.fired.splice(0, 200);
+});
+
+// ---- learning (#52 gist learner): home-row phrase → closest grid archetype → new leaf appended ----
+function strike(lane) {
+  Audio.ensure(); Audio.pan(lane, 0, 0.8, 3);
+  S.capture.push({ lane, pos: Clock.playing ? Clock.pos() : null, t: performance.now() }); S.captureT = performance.now();
+}
+function pollCapture() {
+  const c = S.capture; if (!c.length) return;
+  const barDone = Clock.playing && c[0].pos != null && Clock.pos() - c[0].pos >= 16;
+  if (performance.now() - S.captureT > 1000 || barDone) { S.capture = []; learn(c); }
+}
+function learn(raw) {
+  const barMs = Clock.stepDur() * 16000, t0 = raw[0].t, span = Math.max(800, raw[raw.length - 1].t - t0);
+  const slots = raw.map((n) => ({ lane: n.lane, pos: n.pos != null ? mod(n.pos, 16) : raw.length === 1 ? 0 : ((n.t - t0) / Math.max(barMs, span * 1.15)) * 16 }));
+  const circ = (a, b) => { const d = Math.abs(a - b); return Math.min(d, 16 - d); };
+  let best = ARCH[0], bestCost = Infinity;
+  for (const a of ARCH) {
+    let cost = Math.abs(a.slots.length - slots.length) * 0.65;
+    for (const r of slots) cost += Math.min(...a.slots.map((s) => circ(r.pos, s)));
+    if (cost < bestCost) { bestCost = cost; best = a; }
+  }
+  const snapped = new Map();
+  for (const r of slots) {
+    let bs = null, md = 99;
+    for (const s of best.slots) { const d = circ(r.pos, s); if (d < md && !snapped.has(s)) { md = d; bs = s; } }
+    if (bs != null) snapped.set(bs, { pos: bs, lane: r.lane, dur: r.lane === 0 ? 4 : 2, vel: METRIC[bs] > 0.8 ? 0.85 : 0.65 });
+  }
+  if (snapped.size === 1) { const o = [...snapped.values()][0], p = o.pos === 0 ? 8 : 0; snapped.set(p, { ...o, pos: p, vel: o.vel * 0.85 }); }
+  const events = [...snapped.values()].sort((a, b) => a.pos - b.pos);
+  const bass = events.filter((e) => e.lane === 0).length > events.length / 2;
+  const leaf = addLeaf(best.name, bass ? 'bass' : 'pan', best.name, events);
+  S.sel = new Set([leaf.id]); say(`learned ${raw.length} strikes → ${best.name} (leaf #${leaf.id})`);
+}
+
+// ---- seeds ----
+addLeaf('BASS', 'bass', 'TRESILLO', [{ pos: 0, lane: 0, dur: 6, vel: 0.9 }, { pos: 6, lane: 0, dur: 4, vel: 0.7 }, { pos: 12, lane: 0, dur: 4, vel: 0.75 }], 0.85, 0.15);
+addLeaf('GHOST BED', 'pan', '8TH-BED', [0, 2, 4, 6, 8, 10, 12, 14].map((pos, i) => ({ pos, lane: [4, 6, 5, 6][i % 4], dur: 1, vel: 0.34 })), 0.6, 0.3);
+addLeaf('MELODY', 'pan', 'a-PICKUP', [[0, 8], [3, 7], [8, 6], [11, 7], [15, 5]].map(([pos, lane]) => ({ pos, lane, dur: 3, vel: 0.7 })), 0.8, 0.3);
+addLeaf('PERC', 'perc', 'BACKBEAT', [[0, 0, 0.9], [4, 1, 0.7], [8, 0, 0.6], [12, 1, 0.8]].map(([pos, lane, vel]) => ({ pos, lane, dur: 1, vel })), 0.75, 0.2);
+S.sel.clear(); S.msg = '';
+
+// ---- shared input + header + frame loop ----
+function handleKey(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return false;
+  const k = e.key.toLowerCase();
+  if (e.code === 'Space') Clock.toggle();
+  else if (!e.shiftKey && KEYS.includes(k) && k.length === 1) { if (!e.repeat) strike(KEYS.indexOf(k)); }
+  else if (e.shiftKey && k === 'g') group('stack');
+  else if (k === 'c') group('chain');
+  else if (e.shiftKey && k === 'd') duplicate();
+  else if (k === 'backspace' || k === 'delete') removeSelected();
+  else if (k === 'm') toggleMute();
+  else if (k === 'escape') S.sel.clear();
+  else return false;
+  e.preventDefault(); return true;
+}
+function clickSelect(b, shift) {
+  if (!b) { if (!shift) S.sel.clear(); return; }
+  if (shift) S.sel.has(b.id) ? S.sel.delete(b.id) : S.sel.add(b.id);
+  else S.sel = new Set([b.id]);
+}
+const playBtn = document.getElementById('play'), statusEl = document.getElementById('status');
+playBtn.onclick = () => { Clock.toggle(); playBtn.blur(); };
+function startLoop(draw) {
+  const frame = () => {
+    pollCapture();
+    for (const b of S.boxes) b.pulse *= 0.9;
+    playBtn.textContent = Clock.playing ? 'STOP' : 'PLAY'; playBtn.classList.toggle('on', Clock.playing);
+    statusEl.textContent = S.capture.length ? `listening… ${S.capture.length} strikes` : S.msg;
+    draw(); requestAnimationFrame(frame);
+  };
+  frame();
+}
+const pctTxt = (v) => `${Math.round(v * 100)}%`;
+// 16-step mini grid: gist = outlined cells, realized bar = filled (HOT where variability changed it)
+function drawMini(g, leaf, x, y, w, h, bar) {
+  const rows = leaf.kind === 'perc' ? 3 : 9, cw = w / 16, rh = h / rows, active = barNotes(bar).active.has(leaf.id);
+  const cy = (lane) => y + h - (lane + 1) * rh;
+  g.fillStyle = ink(0.04); g.fillRect(x, y, w, h);
+  for (let i = 0; i < 16; i += 4) { g.fillStyle = ink(0.12); g.fillRect(x + i * cw, y, 1, h); }
+  g.strokeStyle = ink(0.4); g.lineWidth = 1;
+  for (const e of leaf.events) g.strokeRect(x + e.pos * cw + 0.5, cy(e.lane) + 0.5, cw - 1, rh - 1);
+  if (active) for (const n of barNotes(bar).notes) {
+    if (n.leaf !== leaf.id) continue;
+    g.fillStyle = n.varied ? HOT : ink(0.85); g.fillRect(x + n.pos * cw + 1.5, cy(n.lane) + 1.5, cw - 3, Math.max(1, rh - 3));
+  }
+  if (active && Clock.playing) { g.fillStyle = ink(0.3); g.fillRect(x + mod(Clock.pos(), 16) * cw, y, 1, h); }
+}
+
+// ---------------- 3B UI: horizontal tape of boxes + arc diagram above + piano roll below ----------------
+const cv = document.getElementById('cv');
+let W = 0, H = 0; const g = setupCanvas(cv, (w, h) => { W = w; H = h; });
+const LEAF_W = 196, META_W = 160, BOX_H = 118, GAP = 10, ROWS = 12;
+let scrollX = 0, lastCount = S.boxes.length, drag = null, rects = [], sliders = [];
+
+const geo = () => { const arcH = Math.max(60, H * 0.5 - BOX_H - 20); return { arcH, boxY: arcH + 10, rollY: arcH + BOX_H + 30 }; };
+function layout() {
+  let x = 10 - (isFinite(scrollX) ? scrollX : 0); const x0 = x;
+  const items = S.boxes.filter((b) => !hidden(b)).map((b) => { const w = isMeta(b) ? META_W : LEAF_W, it = { b, x, w }; x += w + GAP; return it; });
+  return { items, total: x - x0 + 10 };
+}
+
+function slider(b, key, x, y, w) {
+  const v = b[key], mx = maxOf(key, b), on = drag && drag.b === b && drag.key === key;
+  g.fillStyle = ink(0.55); g.fillText(key === 'prom' ? 'P' : 'V', x, y + 8);
+  g.fillStyle = ink(0.15); g.fillRect(x + 12, y + 4, w, 2);
+  g.fillStyle = on ? HOT : ink(0.6); g.fillRect(x + 12, y + 4, (w * v) / mx, 2);
+  if (mx > 1) { g.fillStyle = ink(0.4); g.fillRect(x + 12 + w / 2, y + 1, 1, 8); }
+  g.fillStyle = on ? HOT : ink(0.55); g.fillText(pctTxt(v), x + w + 18, y + 8);
+  sliders.push({ b, key, x: x + 12, y: y - 3, w, h: 14 });
+}
+
+function drawBox(it, y, bar, active) {
+  const { b, x, w } = it, h = BOX_H, sel = S.sel.has(b.id), dim = b.muted ? 0.35 : 1;
+  g.strokeStyle = sel ? HOT : ink((0.18 + b.pulse * 0.5) * dim); g.lineWidth = 1;
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  g.fillStyle = ink((active ? 0.95 : 0.5) * dim); g.fillText(b.name, x + 8, y + 14);
+  g.fillStyle = ink(0.4 * dim);
+  g.fillText(isMeta(b) ? `#${b.id} ${b.type} · ${boxLen(b)} bar${boxLen(b) > 1 ? 's' : ''}` : `#${b.id} ${b.kind} · ${b.arch}`, x + 8, y + 28);
+  if (isMeta(b)) {
+    const kids = kidsOf(b);
+    kids.slice(0, 3).forEach((k, i) => {
+      const on = b.type === 'chain' && barNotes(bar).active.has(k.id);
+      g.fillStyle = on ? ink(0.9) : ink(0.35 * dim); g.fillText(`${b.type === 'chain' ? i + 1 + '.' : '+'} ${k.name}`, x + 8, y + 44 + i * 13);
+    });
+    if (kids.length > 3) g.fillText(`… +${kids.length - 3}`, x + 8, y + 83);
+    if (b.folded) { g.fillStyle = ink(0.4); g.fillText('folded', x + w - 50, y + 14); }
+  } else drawMini(g, b, x + 8, y + 36, w - 16, 44, bar);
+  if (b.muted) { g.fillStyle = ink(0.4); g.fillText('muted', x + w - 46, y + 28); }
+  slider(b, 'prom', x + 8, y + 88, w - 70); slider(b, 'vari', x + 8, y + 102, w - 70);
+}
+
+function draw() {
+  if (S.boxes.length > lastCount) scrollX = Infinity;   // auto-scroll to the newly appended box
+  lastCount = S.boxes.length;
+  g.clearRect(0, 0, W, H); g.font = '11px ui-monospace,Menlo,monospace'; rects = []; sliders = [];
+  let L = layout();
+  const maxS = Math.max(0, L.total - W + 10);
+  if (!(scrollX >= 0 && scrollX <= maxS)) { scrollX = clamp(isFinite(scrollX) ? scrollX : maxS, 0, maxS); L = layout(); }
+  const { arcH, boxY, rollY } = geo(), pos = Clock.pos(), bar = Math.floor(pos / 16), act = barNotes(bar).active, at = new Map();
+  for (const it of L.items) { at.set(it.b.id, it); rects.push(it); drawBox(it, boxY, bar, act.has(it.b.id)); }
+  // arc diagram: each meta's top-centre → each child's top-centre
+  for (const it of L.items) {
+    if (!isMeta(it.b) || it.b.folded) continue;
+    const mx = it.x + it.w / 2, sel = S.sel.has(it.b.id);
+    g.strokeStyle = sel ? HOT : ink(0.3 + it.b.pulse * 0.4);
+    for (const k of it.b.children.map((id) => at.get(id)).filter(Boolean)) {
+      const kx = k.x + k.w / 2, r = Math.abs(mx - kx) / 2, lift = Math.min(arcH - 4, r * 0.9);
+      g.beginPath(); g.ellipse((mx + kx) / 2, boxY, r, lift, 0, Math.PI, 2 * Math.PI); g.stroke();
+      g.fillStyle = g.strokeStyle; g.fillRect(kx - 2, boxY - 3, 4, 3);
+    }
+  }
+  // piano roll: time → ; rows = 9 pan lanes (low at bottom) + 3 perc rows on top
+  const PX = 9, nowX = W * 0.3, rh = (H - rollY - 10) / ROWS, rowY = (n) => rollY + (n.kind === 'perc' ? 2 - n.lane : 11 - n.lane) * rh;
+  g.fillStyle = ink(0.03); g.fillRect(0, rollY, W, H - rollY);
+  for (let s = Math.ceil(pos - nowX / PX); s < pos + (W - nowX) / PX; s++) if (mod(s, 16) === 0) {
+    const x = nowX + (s - pos) * PX; g.fillStyle = ink(0.15); g.fillRect(x, rollY, 1, H - rollY);
+    g.fillStyle = ink(0.35); g.fillText(`${s / 16 + 1} ${chordAt(s / 16).sym}`, x + 3, rollY + 12);
+  }
+  g.fillStyle = ink(0.6); g.fillRect(nowX, rollY, 1, H - rollY);
+  for (const n of notesInRange(pos - nowX / PX, pos + (W - nowX) / PX)) {
+    const x = nowX + (n.step - pos) * PX, y = rowY(n), past = n.step <= pos;
+    g.fillStyle = n.varied ? hot(past ? 0.5 : 0.9) : ink(past ? 0.3 : 0.75);
+    g.fillRect(x, y + 2, Math.max(3, Math.min(n.dur, 4) * PX - 2), n.varied === 'orn' ? 2 : rh - 4);
+    const age = pos - n.step;
+    if (age >= 0 && age < 3) {   // attention: sounding note → its source box (nearest visible ancestor if folded)
+      const src = [...n.path].reverse().map((id) => at.get(id)).find(Boolean); if (!src) continue;
+      g.strokeStyle = n.varied ? hot(0.8 * (1 - age / 3)) : ink(0.6 * (1 - age / 3));
+      g.beginPath(); g.moveTo(x, y + rh / 2); g.lineTo(src.x + src.w / 2, boxY + BOX_H); g.stroke();
+    }
+  }
+}
+
+const hit = (list, x, y) => list.find((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+const boxAt = (x, y) => { const { boxY } = geo(); return y >= boxY && y <= boxY + BOX_H ? rects.find((r) => x >= r.x && x <= r.x + r.w) : null; };
+cv.addEventListener('pointerdown', (e) => {
+  Audio.ensure();
+  const s = hit(sliders, e.offsetX, e.offsetY);
+  if (s) { drag = s; cv.setPointerCapture(e.pointerId); setParam(s.b, s.key, ((e.offsetX - s.x) / s.w) * maxOf(s.key, s.b)); return; }
+  const c = boxAt(e.offsetX, e.offsetY); clickSelect(c && c.b, e.shiftKey);
+});
+cv.addEventListener('pointermove', (e) => { if (drag) setParam(drag.b, drag.key, ((e.offsetX - drag.x) / drag.w) * maxOf(drag.key, drag.b)); });
+cv.addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('dblclick', (e) => { const c = boxAt(e.offsetX, e.offsetY); if (c) toggleFold(c.b); });
+cv.addEventListener('wheel', (e) => { scrollX = clamp(scrollX + e.deltaX + e.deltaY, 0, 1e9); e.preventDefault(); }, { passive: false });
+addEventListener('keydown', handleKey);
+startLoop(draw);
+</script>
+</body></html>

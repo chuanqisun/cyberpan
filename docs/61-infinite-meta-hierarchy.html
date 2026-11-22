@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>61 — Infinite Meta-Hierarchy &amp; Direct Note Control</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font: 11px/1 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+    user-select: none; touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  header {
+    position: fixed; top: 12px; left: 16px; right: 16px; z-index: 4;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none;
+  }
+  .grp { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hint { color: rgba(255,255,255,0.34); letter-spacing: 0.05em; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .hint b { color: rgba(255,255,255,0.72); font-weight: 500; }
+  button {
+    pointer-events: auto; appearance: none; background: #000; color: rgba(255,255,255,0.68);
+    border: 1px solid rgba(255,255,255,0.20); font: inherit; font-size: 10px; letter-spacing: 0.08em;
+    height: 22px; padding: 0 8px; border-radius: 2px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px; transition: border-color 140ms, color 140ms;
+  }
+  button:hover, button.on { border-color: rgba(255,255,255,0.78); color: #fff; }
+  button.sig { border-color: #ff5a1f; color: #ff5a1f; }
+  button:disabled { opacity: 0.28; cursor: default; }
+  button .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.34); }
+  button.on .dot { background: #ff5a1f; box-shadow: 0 0 6px #ff5a1f; }
+  @media (max-width: 980px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header>
+  <span class="hint"><b>61</b> · INFINITE META × DIRECT NOTES · <b>CLICK</b> select · <b>G</b> group meta (infinite depth!) · <b>DBL-CLICK meta</b> fold/unfold abstraction · <b>DRAG P/V bars</b> (calm, no flash!) · <b>A–L</b> play/learn gist leaf · <b>click waterfall</b> direct note edit</span>
+  <div class="grp">
+    <button id="metaBtn" class="sig" type="button" disabled>+ META (G)</button>
+    <button id="cloneBtn" type="button" disabled>FORK (V)</button>
+    <button id="upBtn" type="button" style="display:none">↑ ROOT</button>
+    <button id="playBtn" type="button"><span class="dot"></span><span id="playLbl">PLAY</span></button>
+  </div>
+</header>
+<script type="module">
+'use strict';
+// ============================================================================
+// 61 — INFINITE COLLAPSIBLE META-HIERARCHY × DIRECT NOTE CONTROL (#52 + #53)
+//   - Combines Gist Grid Learning (#52), Direct Note Editing, and TRULY INFINITE
+//     Recursive Meta-Abstraction (#53) WITHOUT UI overcrowding:
+//       * Unlimited depth: Group any 2+ sibling nodes into a Meta (L1→L2→L3→L∞!)
+//       * Anti-overcrowding Abstraction: Double-click ANY Meta node to COLLAPSE
+//         its subtree into a single clean abstracted Super-Node (showing micro
+//         constituent bars inside), or Zoom Inside via Breadcrumb!
+//       * Calm Non-Flashing Controls: Dragging VAR or PROM highlights ONLY the
+//         thin slider track & value — never flashes the entire card!
+//       * Direct Note Control on Right Waterfall: Type A–L to perform & auto-learn
+//         a Gist Grid leaf, OR click any future note in the waterfall to toggle/
+//         override individual notes directly beneath your meta structure!
+// ============================================================================
+
+const A4 = 440.5, semiHz = (st) => A4 * Math.pow(2, st / 12);
+const KEYS = ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'];
+const KEY_TO_LANE = Object.fromEntries(KEYS.map((k, i) => [k.toLowerCase(), i]));
+const NOTES = [
+  ['E3','^1', semiHz(-17)], ['B3','^5', semiHz(-10)], ['C4','^b6', semiHz(-9)],
+  ['D4','^b7', semiHz(-7)], ['E4','^1', semiHz(-5)],  ['F#4','^2', semiHz(-3)],
+  ['G4','^b3', semiHz(-2)], ['A4','^4', semiHz(0)],   ['B4','^5', semiHz(2)],
+].map(([name, deg, hz], idx) => ({ name, deg, key: KEYS[idx], hz, idx, pan: ((idx / 8) - 0.5) * 0.58 }));
+
+const PROG = [
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 8] },
+  { sym: 'VI',  dingHz: semiHz(-21), pool: [2, 4, 6, 8, 1] },
+  { sym: 'VII', dingHz: semiHz(-19), pool: [3, 5, 7, 8, 1] },
+  { sym: 'i',   dingHz: semiHz(-17), pool: [0, 1, 4, 6, 5] },
+];
+const GRIDS = [
+  { name: 'TRESILLO', slots: [0, 6, 12] },
+  { name: 'a-PICKUP', slots: [0, 3, 8, 11, 15] },
+  { name: '3:2 FLOW', slots: [0, 3, 6, 9, 12] },
+  { name: 'SYNCOP',   slots: [0, 3, 6, 10, 14] },
+];
+
+const BPM = 104, TATUM = 60 / BPM / 4, LOOKAHEAD = 0.095, FUTURE_STEPS = 24;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mod16 = (s) => ((Math.round(s) % 16) + 16) % 16;
+const hash01 = (a, b, c = 0) => {
+  let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+const mixInk = (heat, alpha) => {
+  const h = clamp(heat, 0, 1), a = clamp(alpha, 0, 1);
+  return h <= 0.005 ? `rgba(255,255,255,${a.toFixed(3)})`
+    : `rgba(255,${Math.round(lerp(255, 90, h))},${Math.round(lerp(255, 31, h))},${clamp(lerp(a, Math.max(a, 0.94), h), 0, 1).toFixed(3)})`;
+};
+
+// ==================== 1. WARM HANDPAN + PERC ENGINE ====================
+let actx = null, masterLP = null, noiseBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const sr = actx.sampleRate;
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -9; comp.ratio.value = 5; comp.release.value = 0.14; comp.connect(actx.destination);
+    const master = actx.createGain(); master.gain.value = 0.85; master.connect(comp);
+    masterLP = actx.createBiquadFilter(); masterLP.type = 'lowpass'; masterLP.frequency.value = 2420; masterLP.Q.value = 0.65;
+    const dry = actx.createGain(); dry.gain.value = 0.80;
+    const wet = actx.createGain(); wet.gain.value = 0.44;
+    const irLen = Math.floor(sr * 2.4), ir = actx.createBuffer(2, irLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < irLen; i++) { lp = lp * 0.66 + (Math.random() * 2 - 1) * 0.34; d[i] = lp * Math.pow(1 - i / irLen, 2.5) * 0.50; }
+    }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    masterLP.connect(dry); dry.connect(master);
+    masterLP.connect(conv); conv.connect(wet); wet.connect(master);
+    noiseBuf = actx.createBuffer(1, Math.floor(sr * 0.05), sr);
+    const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (nd.length * 0.24));
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+function playPan(idx, when, vel = 0.8, dur = 3, opts = {}) {
+  ensureAudio();
+  const n = NOTES[idx]; if (!n) return;
+  const { isGhost = false, octUp = false, dingHz = null } = opts, isDing = idx === 0;
+  const freq = ((isDing && dingHz) ? dingHz : n.hz) * (octUp ? 2 : 1);
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.06, 1.05);
+  const sus = clamp(0.40 + dur * 0.30, 0.40, 2.40) * (isDing ? 1.40 : 1.0) * (isGhost ? 0.65 : 1.0);
+  const out = actx.createGain(); out.gain.setValueAtTime(v * (isDing ? 0.44 : 0.29), t0);
+  const pan = actx.createStereoPanner(); pan.pan.setValueAtTime(isDing ? 0 : n.pan, t0);
+  out.connect(pan); pan.connect(masterLP);
+  for (const [r, amp, dm] of [[1, 0.94, 1], [1.003, 0.18, 0.88], [2, 0.28, 0.70], [3, 0.45, 0.65]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq * r, t0);
+    const atk = r === 3 ? 0.020 : 0.005, dec = Math.max(0.06, sus * dm);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(amp, t0 + atk); g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dec);
+    o.connect(g); g.connect(out); o.start(t0); o.stop(t0 + atk + dec + 0.04);
+  }
+}
+
+function playPerc(kind, when, vel = 0.7) {
+  ensureAudio();
+  const t0 = Math.max(actx.currentTime + 0.002, when), v = clamp(vel, 0.05, 1.0);
+  if (kind === 'gu') {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(120, t0); o.frequency.exponentialRampToValueAtTime(60, t0 + 0.13);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(v * 0.52, t0 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+    o.connect(g); g.connect(masterLP); o.start(t0); o.stop(t0 + 0.24); return;
+  }
+  const ns = actx.createBufferSource(); ns.buffer = noiseBuf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = kind === 'tak' ? 2400 : 3800; bp.Q.value = 3.2;
+  const g = actx.createGain(); g.gain.setValueAtTime(v * (kind === 'tak' ? 0.34 : 0.22), t0);
+  ns.connect(bp); bp.connect(g); g.connect(masterLP); ns.start(t0);
+}
+
+// ==================== 2. INFINITE RECURSIVE PYRAMID + DIRECT NOTE OVERRIDES ====================
+const state = {
+  playing: false, playheadStep: 0, anchorStep: 0, anchorAudioTime: 0, nextSchedStep: 0,
+  nodes: new Map(), nextNodeId: 1, nextMetaNum: 1,
+  selectedIds: new Set(),
+  focusRootId: null, // null = top root view; or a Meta ID to zoom cleanly inside its subtree!
+  // Direct note-level overrides on the right waterfall!
+  directMuted: new Set(),  // `${step}:${lane}`
+  directAdded: new Map(),  // `${step}:${lane}` -> { step, lane, dur, vel }
+  futureNotes: [], pastNotes: [],
+  capture: [], captureLastMs: 0,
+  lociGlow: new Float32Array(9), lociHeat: new Float32Array(9),
+};
+const getCurrentStep = () => (!state.playing || !actx) ? state.playheadStep : state.anchorStep + Math.max(0, (actx.currentTime - state.anchorAudioTime) / TATUM);
+
+function addLeaf(name, kind, events, prom = 0.85, vari = 0.25, parentId = null) {
+  const id = state.nextNodeId++;
+  state.nodes.set(id, { id, name, level: 0, parentId, children: [], collapsed: false, prom, vari, kind, events, pulse: 0, rect: null });
+  if (parentId) { const p = state.nodes.get(parentId); if (p) { p.children.push(id); recomputeLevels(); } }
+  return id;
+}
+
+function recomputeLevels() {
+  const calc = (id) => {
+    const n = state.nodes.get(id); if (!n) return 0;
+    if (!n.children.length) { n.level = 0; return 0; }
+    n.level = 1 + Math.max(...n.children.map(calc));
+    return n.level;
+  };
+  for (const n of state.nodes.values()) if (n.parentId === null) calc(n.id);
+}
+
+// Collect all leaf IDs under a node (arbitrary depth!)
+function leafDescendants(nodeId) {
+  const n = state.nodes.get(nodeId); if (!n) return [];
+  if (!n.children.length) return [n.id];
+  return n.children.flatMap(leafDescendants);
+}
+
+function hasAncestor(nodeId, targetAncestorId) {
+  let cur = state.nodes.get(nodeId);
+  while (cur) { if (cur.id === targetAncestorId) return true; cur = cur.parentId ? state.nodes.get(cur.parentId) : null; }
+  return false;
+}
+
+// Group ANY 2+ selected nodes sharing the same parent (at ANY level — truly infinite depth!)
+function groupSelectedIntoMeta() {
+  const sel = [...state.selectedIds].map(id => state.nodes.get(id)).filter(Boolean);
+  if (sel.length < 2) return;
+  // Require selected nodes to share the same parent (defaults to top-level siblings, or siblings inside focused Meta)
+  const commonParent = sel[0].parentId;
+  const siblings = sel.filter(n => n.parentId === commonParent);
+  if (siblings.length < 2) return;
+
+  const id = state.nextNodeId++;
+  const meta = {
+    id, name: `META ${state.nextMetaNum++}`, level: 1, parentId: commonParent,
+    children: siblings.map(s => s.id),
+    collapsed: false, // user can double-click to collapse & keep growing infinitely without crowding!
+    prom: 0.90, vari: 0.50, pulse: 0, rect: null
+  };
+  for (const s of siblings) s.parentId = id;
+  if (commonParent !== null) {
+    const p = state.nodes.get(commonParent);
+    if (p) { p.children = p.children.filter(cid => !siblings.some(s => s.id === cid)); p.children.push(id); }
+  }
+  state.nodes.set(id, meta);
+  recomputeLevels();
+  state.selectedIds.clear(); state.selectedIds.add(id);
+  updateToolbar(); recomputeFuture();
+}
+
+// Fork / Clone selected node (leaf OR entire meta subtree!) with slight melodic/rhythmic variation so you can compose infinitely!
+function cloneSelected() {
+  const firstId = [...state.selectedIds][0], src = state.nodes.get(firstId);
+  if (!src) return;
+  const deepClone = (origId, newParentId) => {
+    const o = state.nodes.get(origId), id = state.nextNodeId++;
+    const evs = o.events ? o.events.map(e => ({
+      ...e,
+      pos: mod16(e.pos + (o.kind === 'bass' ? 0 : 2)),
+      noteIdx: e.noteIdx > 0 ? clamp(e.noteIdx + 1, 1, 8) : e.noteIdx
+    })) : undefined;
+    const copy = {
+      id, name: o.level === 0 ? `${o.name.slice(0, 6)}′` : `META ${state.nextMetaNum++}`,
+      level: o.level, parentId: newParentId, children: [], collapsed: o.collapsed,
+      prom: clamp(o.prom * 0.9, 0.3, 1), vari: clamp(o.vari + 0.12, 0, 1),
+      kind: o.kind, events: evs, pulse: 0, rect: null
+    };
+    state.nodes.set(id, copy);
+    if (o.children.length) copy.children = o.children.map(cid => deepClone(cid, id));
+    return id;
+  };
+  const newId = deepClone(src.id, src.parentId);
+  if (src.parentId !== null) state.nodes.get(src.parentId)?.children.push(newId);
+  recomputeLevels();
+  state.selectedIds.clear(); state.selectedIds.add(newId);
+  updateToolbar(); recomputeFuture();
+}
+
+// Gist Grid Learner (from #52) creates a new Leaf inside current focus root!
+function learnGistLeaf(rawNotes) {
+  if (!rawNotes.length) return;
+  const circ = (a, b) => { const d = Math.abs(a - b); return Math.min(d, 16 - d); };
+  let bestG = GRIDS[0], bestCost = 1e9;
+  for (const g of GRIDS) {
+    let c = Math.abs(g.slots.length - rawNotes.length) * 0.6;
+    for (const r of rawNotes) { let md = 99; for (const sl of g.slots) md = Math.min(md, circ(r.pos, sl)); c += md; }
+    if (c < bestCost) { bestCost = c; bestG = g; }
+  }
+  const map = new Map();
+  rawNotes.forEach((r, i) => {
+    let sl = bestG.slots[i % bestG.slots.length], md = 99;
+    for (const cand of bestG.slots) { const d = circ(r.pos, cand); if (d < md && !map.has(cand)) { md = d; sl = cand; } }
+    map.set(sl, { pos: sl, noteIdx: r.noteIdx, dur: r.noteIdx === 0 ? 4 : 2, vel: 0.88 });
+  });
+  addLeaf(bestG.name, 'melody', [...map.values()].sort((a, b) => a.pos - b.pos), 0.88, 0.25, state.focusRootId);
+  recomputeFuture();
+}
+
+function effectiveParams(node) {
+  let prom = node.prom, vari = node.vari;
+  let cur = node.parentId ? state.nodes.get(node.parentId) : null;
+  while (cur) {
+    prom *= cur.prom;
+    vari = clamp(vari + (cur.vari - 0.5) * 0.72, 0, 1);
+    cur = cur.parentId ? state.nodes.get(cur.parentId) : null;
+  }
+  return { prom: clamp(prom, 0, 1), vari: clamp(vari, 0, 1) };
+}
+
+function generateBar(barIdx) {
+  const barStart = barIdx * 16, ch = PROG[((barIdx % 4) + 4) % 4], out = [];
+  for (const node of state.nodes.values()) {
+    if (node.level !== 0) continue;
+    const { prom, vari } = effectiveParams(node);
+    if (prom < 0.04) continue;
+    for (let i = 0; i < node.events.length; i++) {
+      const ev = node.events[i];
+      let pos = ev.pos;
+      if (vari > 0.55 && pos !== 0 && hash01(barIdx * 19 + node.id, i * 7, 61) < (vari - 0.5) * 0.65) pos = mod16(pos + 1);
+      const step = barStart + pos;
+      let lane = ev.noteIdx ?? 0;
+      if (node.kind !== 'perc' && vari > 0.18 && lane > 0 && hash01(barIdx * 23 + i, node.id * 11, 41) < vari * 0.72) {
+        const pool = ch.pool.filter(p => p > 0);
+        lane = pool[Math.floor(hash01(barIdx * 7, pos * 13 + node.id, 17) * pool.length)];
+      }
+      const key = `${step}:${lane}`;
+      if (state.directMuted.has(key)) continue;
+      out.push({
+        key, step, lane, dur: ev.dur || 2, vel: clamp(ev.vel * prom, 0.08, 1),
+        kind: node.kind, percKind: ev.percKind, isGhost: Boolean(ev.isGhost),
+        octUp: vari > 0.76 && lane >= 4 && hash01(barIdx, pos + node.id, 99) > 0.65,
+        leafId: node.id, dingHz: ch.dingHz, direct: false
+      });
+    }
+  }
+  // Merge direct note-level additions on the waterfall!
+  for (const [key, d] of state.directAdded) {
+    if (d.step >= barStart && d.step < barStart + 16) {
+      out.push({ key, step: d.step, lane: d.lane, dur: d.dur, vel: d.vel, kind: 'melody', isGhost: false, octUp: false, leafId: -1, dingHz: ch.dingHz, direct: true });
+    }
+  }
+  out.sort((a, b) => a.step - b.step || a.lane - b.lane);
+  return out;
+}
+
+function recomputeFuture() {
+  const cur = getCurrentStep(), minS = Math.ceil(Math.max(state.nextSchedStep, cur + 0.01)), curBar = Math.floor(minS / 16);
+  for (const k of state.directMuted) if (Number(k.split(':')[0]) < minS) state.directMuted.delete(k);
+  for (const [k, d] of state.directAdded) if (d.step < minS) state.directAdded.delete(k);
+  const next = [];
+  for (let b = curBar; b <= curBar + 2; b++) {
+    for (const ev of generateBar(b)) if (ev.step >= minS) next.push(ev);
+  }
+  state.futureNotes = next;
+}
+
+// ==================== 3. SCHEDULER ====================
+let schedTimer = null;
+function scheduler() {
+  if (!state.playing || !actx) return;
+  const horizon = state.anchorStep + (actx.currentTime + LOOKAHEAD - state.anchorAudioTime) / TATUM;
+  while (state.futureNotes.length && state.futureNotes[0].step <= horizon) {
+    const ev = state.futureNotes.shift();
+    if (ev.step < state.nextSchedStep - 0.001) continue;
+    const t0 = Math.max(actx.currentTime + 0.003, state.anchorAudioTime + (ev.step - state.anchorStep) * TATUM + (Math.random() - 0.5) * 0.005);
+    if (ev.kind === 'perc') playPerc(ev.percKind || 'tak', t0, ev.vel);
+    else {
+      playPan(ev.lane, t0, ev.vel, ev.dur, { isGhost: ev.isGhost, octUp: ev.octUp, dingHz: ev.dingHz });
+      if (ev.kind === 'bass' && mod16(ev.step) === 0) playPerc('gu', t0, ev.vel * 0.72);
+    }
+    const ms = Math.max(0, (t0 - actx.currentTime) * 1000);
+    setTimeout(() => {
+      if (!state.playing) return;
+      if (ev.kind !== 'perc') state.lociGlow[ev.lane] = Math.max(state.lociGlow[ev.lane], ev.vel);
+      let cur = state.nodes.get(ev.leafId);
+      while (cur) { cur.pulse = Math.max(cur.pulse, ev.vel); cur = cur.parentId ? state.nodes.get(cur.parentId) : null; }
+      state.pastNotes.push(ev); if (state.pastNotes.length > 160) state.pastNotes.shift();
+    }, ms);
+    if (!state.futureNotes.length || state.futureNotes[0].step > ev.step + 0.001) state.nextSchedStep = ev.step + 0.5;
+  }
+  if (!state.futureNotes.length || state.futureNotes[state.futureNotes.length - 1].step < getCurrentStep() + FUTURE_STEPS + 8) recomputeFuture();
+}
+
+const playBtn = document.getElementById('playBtn'), playLbl = document.getElementById('playLbl');
+const metaBtn = document.getElementById('metaBtn'), cloneBtn = document.getElementById('cloneBtn'), upBtn = document.getElementById('upBtn');
+
+function updateToolbar() {
+  const sel = [...state.selectedIds].map(id => state.nodes.get(id)).filter(Boolean);
+  const canGroup = sel.length >= 2 && sel.every(n => n.parentId === sel[0].parentId);
+  metaBtn.disabled = !canGroup;
+  metaBtn.textContent = canGroup ? `+ META (${sel.length}) [G]` : '+ META (G)';
+  cloneBtn.disabled = sel.length !== 1;
+  upBtn.style.display = state.focusRootId !== null ? 'inline-flex' : 'none';
+}
+function togglePlay() {
+  ensureAudio(); state.playing = !state.playing;
+  if (state.playing) {
+    state.anchorStep = state.playheadStep; state.anchorAudioTime = actx.currentTime + 0.025;
+    state.nextSchedStep = Math.ceil(state.playheadStep - 0.001);
+    recomputeFuture(); scheduler(); schedTimer = setInterval(scheduler, 18);
+  } else { state.playheadStep = getCurrentStep(); clearInterval(schedTimer); schedTimer = null; }
+  playBtn.classList.toggle('on', state.playing); playLbl.textContent = state.playing ? 'PAUSE' : 'PLAY';
+}
+playBtn.addEventListener('click', togglePlay);
+metaBtn.addEventListener('click', groupSelectedIntoMeta);
+cloneBtn.addEventListener('click', cloneSelected);
+upBtn.addEventListener('click', () => { state.focusRootId = null; state.selectedIds.clear(); updateToolbar(); });
+
+// ==================== 4. SPLIT LAYOUT: INFINITE COLLAPSIBLE PYRAMID (LEFT) + DIRECT WATERFALL (RIGHT) ====================
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+const geo = { pyrW: 520, wfX0: 560, wfW: 320, gap: 36, nowY: 260, pxPerStep: 11 };
+
+function layoutCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  geo.wfW = clamp(Math.round(W * 0.34), 230, 380);
+  geo.pyrW = W - geo.wfW - 36;
+  geo.wfX0 = geo.pyrW + 24;
+  geo.gap = (geo.wfW - 24) / 8;
+  geo.nowY = Math.round(H * 0.44);
+  geo.pxPerStep = clamp((H - geo.nowY - 38) / FUTURE_STEPS, 8, 16);
+}
+window.addEventListener('resize', layoutCanvas); layoutCanvas();
+const wfLaneX = (i) => geo.wfX0 + 12 + i * geo.gap;
+const wfStepY = (s, cur) => geo.nowY + (s - cur) * geo.pxPerStep;
+
+// Compute visible nodes respecting COLLAPSED abstractions & focusRootId (prevents overcrowding at ANY depth!)
+function computeVisibleTree() {
+  const topRoots = state.focusRootId !== null
+    ? [state.nodes.get(state.focusRootId)].filter(Boolean)
+    : [...state.nodes.values()].filter(n => n.parentId === null);
+
+  const visible = [], edges = [];
+  const depthMap = new Map();
+  let maxDepth = 0;
+
+  const walk = (n, depth) => {
+    visible.push(n); depthMap.set(n.id, depth); maxDepth = Math.max(maxDepth, depth);
+    if (!n.collapsed && n.children.length) {
+      for (const cid of n.children) {
+        const c = state.nodes.get(cid);
+        if (c) { edges.push([n, c]); walk(c, depth + 1); }
+      }
+    }
+  };
+  for (const r of topRoots) walk(r, 0);
+
+  // Position top-down cleanly inside left pane (pyrW), auto-sizing card width so nothing overlaps!
+  const byRow = new Map();
+  for (const n of visible) {
+    const d = depthMap.get(n.id);
+    if (!byRow.has(d)) byRow.set(d, []);
+    byRow.get(d).push(n);
+  }
+  const topY = 74, botY = H - 56;
+  const rows = Math.max(1, maxDepth + 1);
+  for (let d = 0; d <= maxDepth; d++) {
+    const arr = byRow.get(d) || [];
+    const y = rows === 1 ? (topY + botY) * 0.5 : lerp(topY, botY, d / maxDepth);
+    const cellW = clamp((geo.pyrW - 36) / Math.max(1, arr.length) - 12, 86, 134);
+    const span = arr.length * (cellW + 12) - 12;
+    const xStart = 20 + (geo.pyrW - 24 - span) * 0.5;
+    arr.forEach((n, i) => {
+      const x = xStart + i * (cellW + 12);
+      n.rect = { x, y: y - 27, w: cellW, h: 54, pX0: x + 22, pX1: x + cellW - 28, pY: y - 4, vY: y + 14 };
+    });
+  }
+  return { visible, edges };
+}
+
+// ==================== 5. CALM NON-FLASHING INTERACTION (PYRAMID + DIRECT WATERFALL) ====================
+const drag = { mode: null, node: null, lastClickId: -1, lastClickT: 0 };
+const hover = { nodeId: -1, bar: null };
+
+function hitVisibleNode(mx, my, visible) {
+  for (const n of visible) {
+    const r = n.rect; if (!r) continue;
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+      const onP = Math.abs(my - r.pY) <= 8 && mx >= r.pX0 - 6 && mx <= r.pX1 + 6;
+      const onV = Math.abs(my - r.vY) <= 8 && mx >= r.pX0 - 6 && mx <= r.pX1 + 6;
+      return { node: n, bar: onP ? 'prom' : onV ? 'vari' : null };
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  ensureAudio();
+
+  // 1. RIGHT WATERFALL: Direct Note Control (click NOW = live play/learn; click FUTURE = direct toggle/add note!)
+  if (mx >= geo.wfX0 - 8) {
+    const cur = getCurrentStep(), lane = clamp(Math.round((mx - (geo.wfX0 + 12)) / geo.gap), 0, 8);
+    if (Math.abs(my - geo.nowY) <= 22) { performHomeRow(lane); return; }
+    if (my > geo.nowY + 8) {
+      const step = Math.max(Math.ceil(cur + 1), Math.round(cur + (my - geo.nowY) / geo.pxPerStep));
+      const key = `${step}:${lane}`;
+      const existing = state.futureNotes.find(n => n.key === key && n.kind !== 'perc');
+      if (existing) {
+        if (existing.direct) state.directAdded.delete(key);
+        else state.directMuted.add(key);
+      } else {
+        state.directMuted.delete(key);
+        state.directAdded.set(key, { step, lane, dur: 3, vel: 0.92 });
+      }
+      recomputeFuture();
+    }
+    return;
+  }
+
+  // 2. LEFT PYRAMID: Calm non-flashing P/V bar dragging + Multi-Select + Double-Click Fold/Unfold!
+  const { visible } = computeVisibleTree();
+  const hit = hitVisibleNode(mx, my, visible);
+  if (!hit) { state.selectedIds.clear(); updateToolbar(); return; }
+
+  const { node, bar } = hit;
+  // Right-click a Meta -> zoom directly into it (or ungroup if shift-RMB)
+  if (e.button === 2 && node.children.length) {
+    state.focusRootId = (state.focusRootId === node.id) ? null : node.id;
+    state.selectedIds.clear(); updateToolbar(); return;
+  }
+  if (bar) {
+    canvas.setPointerCapture(e.pointerId);
+    drag.mode = bar; drag.node = node;
+    const t = clamp((mx - node.rect.pX0) / (node.rect.pX1 - node.rect.pX0), 0, 1);
+    node[bar] = t; recomputeFuture(); return;
+  }
+
+  // Double-click any Meta node -> Collapse/Expand Abstraction (keeps infinite trees tidy!)
+  const now = performance.now();
+  if (node.children.length && drag.lastClickId === node.id && now - drag.lastClickT < 320) {
+    node.collapsed = !node.collapsed; drag.lastClickId = -1; return;
+  }
+  drag.lastClickId = node.id; drag.lastClickT = now;
+  if (state.selectedIds.has(node.id)) state.selectedIds.delete(node.id);
+  else state.selectedIds.add(node.id);
+  updateToolbar();
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag.mode && drag.node) {
+    const nr = drag.node.rect;
+    drag.node[drag.mode] = clamp((mx - nr.pX0) / (nr.pX1 - nr.pX0), 0, 1);
+    recomputeFuture(); return;
+  }
+  const { visible } = computeVisibleTree();
+  const hit = hitVisibleNode(mx, my, visible);
+  hover.nodeId = hit ? hit.node.id : -1; hover.bar = hit ? hit.bar : null;
+  canvas.style.cursor = hit?.bar ? 'ew-resize' : hit || mx >= geo.wfX0 - 8 ? 'pointer' : 'default';
+});
+canvas.addEventListener('pointerup', () => { drag.mode = null; drag.node = null; });
+
+function performHomeRow(lane) {
+  ensureAudio();
+  const cur = getCurrentStep(), ch = PROG[((Math.floor(cur / 16) % 4) + 4) % 4];
+  playPan(lane, actx.currentTime, 0.94, 3, { dingHz: ch.dingHz });
+  state.lociGlow[lane] = 1; state.lociHeat[lane] = 1;
+  state.capture.push({ pos: state.playing ? mod16(cur) : (state.capture.length * 3) % 16, noteIdx: lane });
+  state.captureLastMs = performance.now();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'g' && !metaBtn.disabled) { groupSelectedIntoMeta(); return; }
+  if (k === 'v' && !cloneBtn.disabled) { cloneSelected(); return; }
+  const lane = KEY_TO_LANE[k];
+  if (lane !== undefined) performHomeRow(lane);
+});
+
+// ==================== 6. CALM ARCHITECTURAL RENDERER (ZERO BOX FLASH!) ====================
+let lastMs = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.05, (nowMs - lastMs) / 1000); lastMs = nowMs;
+  if (state.capture.length && nowMs - state.captureLastMs > 950) { learnGistLeaf(state.capture); state.capture = []; }
+  for (const n of state.nodes.values()) n.pulse *= Math.exp(-dt * 5.2);
+  for (let i = 0; i < 9; i++) { state.lociGlow[i] *= Math.exp(-dt * 5.2); state.lociHeat[i] = Math.max(0, state.lociHeat[i] - dt * 2.5); }
+
+  const curStep = getCurrentStep();
+  const { visible, edges } = computeVisibleTree();
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  // Breadcrumb / depth readout
+  const maxLvl = Math.max(0, ...[...state.nodes.values()].map(n => n.level));
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.fillText(`HIERARCHY DEPTH: L${maxLvl} · ${state.nodes.size} NODES${state.focusRootId ? ` · ZOOM: ${state.nodes.get(state.focusRootId)?.name}` : ''} · (DBL-CLICK META TO FOLD)`, 20, 48);
+
+  // 1. Tree Edges (thickness = effective Prominence!)
+  for (const [p, c] of edges) {
+    const pr = p.rect, cr = c.rect; if (!pr || !cr) continue;
+    const eff = effectiveParams(c);
+    ctx.strokeStyle = `rgba(255,255,255,${(0.14 + eff.prom * 0.45).toFixed(3)})`;
+    ctx.lineWidth = 0.7 + eff.prom * 1.8;
+    ctx.beginPath(); ctx.moveTo(pr.x + pr.w * 0.5, pr.y + pr.h);
+    ctx.bezierCurveTo(pr.x + pr.w * 0.5, lerp(pr.y + pr.h, cr.y, 0.5), cr.x + cr.w * 0.5, lerp(pr.y + pr.h, cr.y, 0.5), cr.x + cr.w * 0.5, cr.y);
+    ctx.stroke();
+  }
+
+  // 2. Pyramid Nodes — CALM borders, ZERO whole-box flash when dragging P or V!
+  for (const n of visible) {
+    const r = n.rect; if (!r) continue;
+    const sel = state.selectedIds.has(n.id), isHov = hover.nodeId === n.id;
+    const draggingP = drag.node === n && drag.mode === 'prom', draggingV = drag.node === n && drag.mode === 'vari';
+    const leafCount = n.children.length ? leafDescendants(n.id).length : 0;
+
+    // Calm dark fill + clean border (only orange outline if selected for grouping!)
+    ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = sel ? '#ff5a1f' : (isHov ? 'rgba(255,255,255,0.58)' : `rgba(255,255,255,${n.level > 0 ? 0.34 : 0.22})`);
+    ctx.lineWidth = sel ? 1.3 : 0.9;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+
+    // Subtle firing dot in top-left corner (instead of flashing the entire card!)
+    ctx.fillStyle = `rgba(255,255,255,${(0.18 + n.pulse * 0.80).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(r.x + 8, r.y + 10, 2.2, 0, Math.PI * 2); ctx.fill();
+
+    // Title + Level / Fold badge
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fillText(n.name, r.x + 15, r.y + 10.5);
+    ctx.textAlign = 'right'; ctx.fillStyle = n.collapsed ? '#ff5a1f' : 'rgba(255,255,255,0.38)';
+    ctx.fillText(n.collapsed ? `[+${leafCount}]` : `L${n.level}`, r.x + r.w - 6, r.y + 10.5);
+
+    // Calm inline P (Prominence) & V (Variability) hairline bars: ONLY the active bar lights up!
+    const drawMiniBar = (lbl, val, y, active) => {
+      ctx.font = '8px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = active ? '#ff5a1f' : 'rgba(255,255,255,0.40)'; ctx.fillText(lbl, r.x + 7, y);
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(r.pX0, y); ctx.lineTo(r.pX1, y); ctx.stroke();
+      const kx = lerp(r.pX0, r.pX1, val);
+      ctx.strokeStyle = active ? '#ff5a1f' : 'rgba(255,255,255,0.70)'; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(r.pX0, y); ctx.lineTo(kx, y); ctx.stroke();
+      ctx.fillStyle = active ? '#ff5a1f' : '#fff';
+      ctx.beginPath(); ctx.arc(kx, y, active ? 3.5 : 2.3, 0, Math.PI * 2); ctx.fill();
+      ctx.textAlign = 'right'; ctx.fillStyle = active ? '#ff5a1f' : 'rgba(255,255,255,0.45)';
+      ctx.fillText(String(Math.round(val * 100)), r.x + r.w - 6, y);
+    };
+    drawMiniBar('P', n.prom, r.pY, draggingP || (isHov && hover.bar === 'prom'));
+    drawMiniBar('V', n.vari, r.vY, draggingV || (isHov && hover.bar === 'vari'));
+  }
+
+  // 3. RIGHT PANE: Direct Note Control Waterfall (hovering ANY Meta highlights its entire subtree's notes!)
+  const wfRight = geo.wfX0 + geo.wfW;
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(geo.wfX0 - 12, 46); ctx.lineTo(geo.wfX0 - 12, H - 24); ctx.stroke();
+  ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.34)';
+  ctx.fillText('DIRECT NOTES (CLICK FUTURE / TYPE A–L)', geo.wfX0, 48);
+
+  for (let i = 0; i < 9; i++) {
+    const x = wfLaneX(i);
+    ctx.strokeStyle = `rgba(255,255,255,${i === 0 || i === 4 ? 0.065 : 0.028})`;
+    ctx.beginPath(); ctx.moveTo(x, 58); ctx.lineTo(x, H - 30); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.fillStyle = mixInk(state.lociHeat[i], 0.34 + state.lociGlow[i] * 0.65);
+    ctx.fillText(NOTES[i].key, x, H - 16);
+  }
+  const activeInspect = drag.node ? drag.node.id : hover.nodeId;
+  for (const n of state.futureNotes) {
+    if (n.kind === 'perc') continue;
+    const y = wfStepY(n.step, curStep); if (y < geo.nowY || y > H - 30) continue;
+    const owned = activeInspect > 0 && hasAncestor(n.leafId, activeInspect);
+    const x = wfLaneX(n.lane), r = n.isGhost ? 1.8 : 3.4;
+    ctx.fillStyle = n.direct || owned ? '#ff5a1f' : '#000';
+    ctx.strokeStyle = mixInk(n.direct || owned ? 1 : 0, n.isGhost ? 0.32 : 0.88);
+    ctx.lineWidth = owned || n.direct ? 1.4 : 1.0;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  for (const n of state.pastNotes) {
+    if (n.kind === 'perc') continue;
+    const y = wfStepY(n.step, curStep); if (y < 58 || y >= geo.nowY) continue;
+    ctx.fillStyle = mixInk(n.direct ? 0.85 : 0, n.isGhost ? 0.25 : 0.72);
+    ctx.beginPath(); ctx.arc(wfLaneX(n.lane), y, n.isGhost ? 1.5 : 2.8, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.62)'; ctx.lineWidth = 1.1;
+  ctx.beginPath(); ctx.moveTo(geo.wfX0, geo.nowY + 0.5); ctx.lineTo(wfRight, geo.nowY + 0.5); ctx.stroke();
+
+  requestAnimationFrame(frame);
+}
+
+// Seed 4 starter leaves so user can immediately group, fold, fork, and build L1→L2→L3→L∞!
+addLeaf('DING',   'bass',   [{ pos: 0, noteIdx: 0, dur: 4, vel: 0.94 }, { pos: 6, noteIdx: 0, dur: 3, vel: 0.78 }, { pos: 12, noteIdx: 0, dur: 3, vel: 0.86 }], 0.90, 0.16);
+addLeaf('TAK',    'perc',   [{ pos: 3, vel: 0.58, percKind: 'click' }, { pos: 4, vel: 0.85, percKind: 'tak' }, { pos: 11, vel: 0.70, percKind: 'click' }, { pos: 12, vel: 0.86, percKind: 'tak' }], 0.80, 0.20);
+addLeaf('GHOST',  'bed',    [0,2,3,4,6,7,8,10,11,12,14,15].map((p, k) => ({ pos: p, noteIdx: [1,4,6,4][k % 4], dur: 1, vel: p % 4 === 3 ? 0.42 : 0.25, isGhost: true })), 0.78, 0.34);
+addLeaf('MELODY', 'melody', [{ pos: 0, noteIdx: 4, dur: 3, vel: 0.88 }, { pos: 3, noteIdx: 6, dur: 2, vel: 0.92 }, { pos: 6, noteIdx: 8, dur: 3, vel: 0.88 }, { pos: 10, noteIdx: 7, dur: 2, vel: 0.84 }], 0.86, 0.36);
+recomputeFuture();
+updateToolbar();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
