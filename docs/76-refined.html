@@ -16,6 +16,8 @@
   - top bar BPM control: type it, or wheel over it (shift = ×5). Echo time and sidechain release follow the tempo.
   - ctrl/cmd-click a box title: if that box is muted, unmute all; if it is playing, mute all
   - FAKEOUT bar is a real second build (riser + HPF sweep, rim roll 8ths -> 32nds, claps/kicks, motif stutter)
+  - drop harmony: riff kept <= G4, strong beats get a soft chord tone below (6th/3rd) instead of +8va, pickups anticipate the
+    next chord in the middle register, group octave-bloom only on middle-register chord tones, gentler upper partials
   - echoes yield while you play: none while a key is held, none within 6 steps (1.5 beats) of your last tap
 74 · DROP MODE (from 73-concept-a, feedback after 73)
   - build: no outside-in glow; only the energy bar along NOW + tape tremble
@@ -524,10 +526,10 @@
             const h2 = env(t, 0.02, (0.12 + 0.1 * bright) * v, tau * 0.6);
             h2.connect(out);
             osc("sine", f * 2.001, t, tau * 0.6, h2);
-            const h3 = env(t, 0.03, (0.07 + 0.08 * bright) * v, tau * 0.45);
+            const h3 = env(t, 0.03, (0.07 + 0.03 * bright) * v, tau * 0.45);
             h3.connect(out);
             osc("sine", f * 2.998, t, tau * 0.45, h3);
-            noiseHit(t, "bandpass", clamp(f * 3, 600, 2000), 2, (0.1 + 0.08 * bright) * v, 0.02, out);
+            noiseHit(t, "bandpass", clamp(f * 3, 600, 2000), 2, (0.1 + 0.04 * bright) * v, 0.02, out);
           },
           kick(when, v = 0.8) {
             ensure();
@@ -1074,7 +1076,7 @@
         for (const n of genBar(b)) {
           if (n.step !== step || n.muted) continue;
           Audio.pan(n.lane, when, n.vel, n.ring || (n.ghost ? 2 : 4), n.oct, false, n.bright || 0);
-          if (n.dbl) Audio.pan(n.lane, when, n.vel * 0.55, 4, 1, false, 1); // +8va doubling from bar 3
+          if (n.harm != null) Audio.pan(n.harm, when, n.vel * 0.42, 4); // soft chord tone under the hook (bar 3+)
           if (n.src === "roll" && VC.stutter && FX.len === 1 && FX.b > 0.9) Audio.pan(n.lane, when + Clock.stepDur() / 2, n.vel * 0.8, 1); // 32nd stutter
           const hold = n.src === "hold";
           const p = { step, lane: n.lane, vel: n.vel, ghost: n.ghost, src: n.src === "place" || hold ? "user" : n.src, auto: hold, lock: n.lock, idx: n.idx, pickup: n.pickup };
@@ -1348,7 +1350,7 @@
           if (n.varied) g.setLineDash([2, 2]);
           ring(g, p.x, p.y, r);
           g.setLineDash([]);
-          if (n.dbl) ring(g, p.x, p.y, r + 3);
+          if (n.harm != null) ring(g, p.x, p.y, r + 3);
           if (n.src === "place" || n.src === "hold") {
             g.fillStyle = ink(0.9);
             dot(g, p.x, p.y, 1.5);
@@ -2391,7 +2393,8 @@
         return { base: h[0].lane, cells: h.map((n, i) => ({ off: n.off, rel: rel[i] })) };
       }
       function hookNotes(b, k) {
-        const b0 = b * 16, pool = chordAt(b).pool.filter((l) => l > 0).sort((x, y) => x - y), out = [];
+        const full = chordAt(b).pool.filter((l) => l > 0).sort((x, y) => x - y);
+        const b0 = b * 16, pool = full.filter((l) => l <= 6), out = []; // riff lives in the middle register (≤ G4)
         const b0i = pool.reduce((bi, p, i) => (Math.abs(p - FX.hook.base) < Math.abs(pool[bi] - FX.hook.base) ? i : bi), 0);
         const halves = FX.drop.kind === "half" ? [0] : [0, 8];
         for (const half of halves)
@@ -2399,7 +2402,9 @@
             const shift = half === 8 ? (k % 4 === 3 ? -1 : 1) : 0; // call, then answer a chord tone up (down to resolve every 4th bar)
             const lane = pool[clamp(b0i + c.rel + shift, 0, pool.length - 1)];
             const s = half + c.off, m = METRIC[s];
-            out.push(mk(b0 + s, lane, 0.66 + 0.28 * m, "hook", { bright: 1, dbl: k >= 2 && m >= 0.8 }));
+            // harmony under strong beats from bar 3: the chord tone two below (a sixth), else one below (a third)
+            const li = full.indexOf(lane), harm = k >= 2 && m >= 0.8 ? (li >= 2 ? full[li - 2] : li >= 1 ? full[li - 1] : null) : null;
+            out.push(mk(b0 + s, lane, 0.62 + 0.24 * m, "hook", { bright: lane <= 4 ? 0.6 : 0.3, harm }));
           }
         return out;
       }
@@ -2409,13 +2414,18 @@
         const k = climaxBar(b0), pool = chordAt(b).pool, top = Math.max(...pool.filter((l) => l <= 8)), out = [];
         if (FX.hook) out.push(...hookNotes(b, k));
         for (const s of FX.drop.kind === "half" ? [0] : VC.ding) out.push(mk(b0 + s, 0, s ? 0.62 : 0.85, "drop"));
-        out.push(mk(b0 + 15, top, 0.55, "drop")); // "a"-16th suction into the next ONE
-        if (k >= 2) out.push(mk(b0 + 7, pool[1 % pool.length], 0.5, "drop"));
-        if (k >= 4) [3, 6, 9].forEach((s, i) => out.push(mk(b0 + s, pool[(i + 2) % pool.length], 0.32, "drop"))); // 3:2 friction at the peak
+        const nxt = chordAt(b + 1).pool.filter((l) => l > 0 && l <= 6), mid = (ps) => ps.reduce((a, c) => (Math.abs(c - 4) < Math.abs(a - 4) ? c : a));
+        out.push(mk(b0 + 15, mid(nxt), 0.5, "drop")); // "a"-16th suction: a middle tone of the chord it leads into
+        if (k >= 2) out.push(mk(b0 + 7, mid(pool.filter((l) => l > 0 && l <= 6)), 0.45, "drop"));
+        if (k >= 4) {
+          const midp = pool.filter((l) => l > 0 && l <= 6);
+          [3, 6, 9].forEach((s, i) => out.push(mk(b0 + s, midp[(i + 1) % midp.length], 0.3, "drop"))); // 3:2 friction at the peak (middle register)
+        }
         return out;
       }
       const climaxBoost = () => 0; // groups stay exact in the drop: the hook carries the new material
-      const bloomOct = (n) => inClimax(n.step) && (climaxBar(n.step) >= (VC.narrow ? 0 : 2)) && n.lock && n.idx % 2 === 0 ? 1 : 0;
+      const bloomOct = (n) =>
+        inClimax(n.step) && climaxBar(n.step) >= (VC.narrow ? 0 : 2) && n.lock && n.idx % 2 === 0 && n.lane >= 1 && n.lane <= 4 && chordAt(Math.floor(n.step / 16)).pool.includes(n.lane) ? 1 : 0;
 
       // ---------- percussion per phase ----------
       function drums(step, when) {
