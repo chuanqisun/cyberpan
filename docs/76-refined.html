@@ -3,64 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <title>76 · refined</title>
-    <!--
-76 · REFINED (feedback #75, built on 74)
-  - SHIFT+SPACE opens a STOP menu (pads like the drop): CUT · ECHO OUT · FADE. Click a pad, or release SPACE over one.
-      CUT       next bar line: final Ding + E1 sub + crash on the 1 (re-phased so it lands on i), then silence
-      ECHO OUT  next bar line: the last beat is thrown into a tempo-synced dotted-8th echo that rings over the empty bar
-      FADE      strip layers under a cooling LPF for >= 2 bars, land on the next i bar with a soft Ding
-    The tape never stops: the final hit rings out its bar, then a FULL EMPTY BAR, then the bare beat (Ding + drums + bass) carries on;
-    groups are muted (click a title to bring one back), planned notes cleared.
-  - the stop line flies in from the far future and wipes notes as it passes them (notes ahead of it keep showing the
-    old music until wiped; the base notes after the empty bar stay)
-  - top bar BPM control: type it, or wheel over it (shift = ×5). Echo time and sidechain release follow the tempo.
-  - ctrl/cmd-click a box title: if that box is muted, unmute all; if it is playing, mute all
-  - FAKEOUT bar is a real second build (riser + HPF sweep, rim roll 8ths -> 32nds, claps/kicks, motif stutter)
-  - drop harmony: riff kept <= G4, strong beats get a soft chord tone below (6th/3rd) instead of +8va, pickups anticipate the
-    next chord in the middle register, group octave-bloom only on middle-register chord tones, gentler upper partials
-  - ONE HUD (feedback): hold SPACE -> a HUD opens at the pointer with a dead-zone ring. Point UP = DROP (HALF/FULL/FAKEOUT,
-    starts the build), point DOWN = STOP (CUT/ECHO OUT/FADE). Left/centre/right is chosen by direction. Nothing can commit
-    inside the dead zone (60 px + a horizontal band). DROP: press = freeze, release mouse = drop; or release SPACE = drop on
-    the next bar. STOP: click, or release SPACE. Pointing back down cancels a running build. Shift+Space no longer special.
-  - stops get one more bar before they land (CUT/ECHO: the bar line after next; FADE: >= 3 bars of stripping)
-  - echoes yield while you play: none while a key is held, none within 6 steps (1.5 beats) of your last tap
-74 · DROP MODE (from 73-concept-a, feedback after 73)
-  - build: no outside-in glow; only the energy bar along NOW + tape tremble
-  - drop pads: as soon as a build starts, three pads (HALF / FULL / FAKEOUT) sit on the future tape. Point at one while it
-    charges; press & hold it = FREEZE (silence, the pad fills with charge); release the mouse = DROP of that kind.
-    Releasing SPACE without pressing a pad drops on the next bar line (pad under the pointer, else FULL).
-      HALF    half-time drop: kick on 1, rim on 3, long sub, notes thinned to the strong beats, heavy bounces twice a bar
-      FULL    the 73-A slam: 4-on-the-floor, notes jump on every kick
-      FAKEOUT one stark bar (a single rim slap, silence, a rising rim roll in beat 4), then the FULL slam on the next bar
-  - drop as many times as you like (build again during or after a climax)
-  - drop energy (#44 §1.3-1.4): big layered kick + sidechain pump (melody/bass duck on every kick), crash + E1 sub on the slam,
-    clap backbeat, open-hat offbeats, rolling offbeat bass (root / fifth, octave pickups from bar 3), stereo bloom.
-    HOOK: the motif trapped in the loop-roll becomes the drop riff (call → answer a chord tone up, snapped to each chord),
-    brighter attack, +8va doubling on strong beats from bar 3; groups play exactly (no extra variation in the drop).
-  - outro (Shift+Space): no screen tint, shorter (4-7 bars, still cadences VII -> i); afterwards groups are muted,
-    planned notes cleared, and tapping SPACE restarts on the next bar line in the initial ding + drums + bass state
-  - HELP button opens a user guide <dialog> declaratively (commandfor / command="show-modal", inline fallback)
-  - volume = dense 32-step meter (dim = available, bright = current); click/drag, wheel, arrow keys
-  GESTURE: tap SPACE = play/stop · hold SPACE = BUILD (loop-roll halving, rising Tak roll, HPF sweep) · while holding, click & hold
-  = FREEZE (time stops, reverb holds the chime, charge) · release mouse + SPACE = DROP (that instant is bar 1) · release SPACE
-  alone = FULL drop on the next bar line · SHIFT+SPACE = OUTRO (strip layers, LPF cool-down, VII -> i, last Ding) · Esc cancels.
-74 HOLD-TO-PLAY (feedback after 71: initial score had too many notes). Builds on 71 (side boxes, parabola attention,
-  extended register via variation, variable tape speed, tape-anchored marquees).
-  Score starts nearly empty (generator = ding on each downbeat only; drums + bass unchanged).
-  Hold A–L: the system decides WHEN to play each held key, planning three bars ahead (visible on the future tape as
-  white rings with a dot). Hold several keys: it chooses WHICH of them fits each moment. Works any time, any number of keys.
-  Planner works a bar at a time (stable: a bar is planned once unless keys change):
-    1. slots: score each step = metric weight (#41) + learned groove (onset histogram trained mostly by your
-       key presses, lightly by what it played) + best chord fit among held keys - crowding; keep the top N, min gap apart.
-       N = D·(1 + 3I + I per extra key), D = density (wheel while holding, 0.25-4, default 1 = sparse); gap 4 -> 1; intensity I ramps 0.25 -> 1 over 2 bars of holding.
-    2. keys: each slot gets the best held key: chord tone (non-chord tones only off the strong beats), rotation
-       (keys not heard lately), smooth motion (<=2 lanes, no immediate repeat). Strong beats may get a dyad
-       (both chord tones, not a 2nd apart) once intense.
-  Tap = always an immediate note (exactly as before). Holding adds planned notes on top, starting GRACE=2 steps
-  after the press, so a quick tap never doubles. Releasing clears that key's planned notes.
-  Hold notes enter the past as your notes (lockable; they train the groove) but do not echo.
-  Paused: keys play immediately as before.
-    -->
     <style>
       html,
       body {
