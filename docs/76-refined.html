@@ -18,6 +18,11 @@
   - FAKEOUT bar is a real second build (riser + HPF sweep, rim roll 8ths -> 32nds, claps/kicks, motif stutter)
   - drop harmony: riff kept <= G4, strong beats get a soft chord tone below (6th/3rd) instead of +8va, pickups anticipate the
     next chord in the middle register, group octave-bloom only on middle-register chord tones, gentler upper partials
+  - ONE HUD (feedback): hold SPACE -> a HUD opens at the pointer with a dead-zone ring. Point UP = DROP (HALF/FULL/FAKEOUT,
+    starts the build), point DOWN = STOP (CUT/ECHO OUT/FADE). Left/centre/right is chosen by direction. Nothing can commit
+    inside the dead zone (60 px + a horizontal band). DROP: press = freeze, release mouse = drop; or release SPACE = drop on
+    the next bar. STOP: click, or release SPACE. Pointing back down cancels a running build. Shift+Space no longer special.
+  - stops get one more bar before they land (CUT/ECHO: the bar line after next; FADE: >= 3 bars of stripping)
   - echoes yield while you play: none while a key is held, none within 6 steps (1.5 beats) of your last tap
 74 · DROP MODE (from 73-concept-a, feedback after 73)
   - build: no outside-in glow; only the energy bar along NOW + tape tremble
@@ -251,19 +256,15 @@
           </dl>
         </section>
         <section>
-          <h2>DROP</h2>
+          <h2>DROP / STOP (hold Space)</h2>
           <dl>
-            <dt>hold Space</dt><dd>build up</dd>
-            <dt>press a pad</dt><dd>freeze; hold to charge</dd>
-            <dt>release</dt><dd>drop: HALF · FULL · FAKEOUT</dd>
-            <dt>release Space</dt><dd>drop on next bar</dd>
-          </dl>
-        </section>
-        <section>
-          <h2>STOP</h2>
-          <dl>
-            <dt>⇧ Space + pad</dt><dd>CUT · ECHO OUT · FADE</dd>
-            <dt>then</dt><dd>the last hit rings, a full empty bar, then the bare beat</dd>
+            <dt>hold Space</dt><dd>menu opens at the pointer</dd>
+            <dt>point ↑</dt><dd>DROP: HALF · FULL · FAKEOUT (builds up)</dd>
+            <dt>press, release</dt><dd>freeze &amp; charge, then drop</dd>
+            <dt>release Space ↑</dt><dd>drop on the next bar</dd>
+            <dt>point ↓</dt><dd>STOP: CUT · ECHO OUT · FADE</dd>
+            <dt>click / release ↓</dt><dd>stop after one more bar, then rest a bar</dd>
+            <dt>centre ring</dt><dd>safe: release there = nothing</dd>
             <dt>Esc</dt><dd>close menu · cancel</dd>
           </dl>
         </section>
@@ -1479,19 +1480,22 @@
             FX.mouse = true; // re-grip the freeze
             return;
           }
-          if (e.button === 0 && FX.menu === "stop") {
-            const pad = padAt(...xy(e));
-            if (pad) {
+          if (e.button === 0 && FX.hud) {
+            const [x, y] = xy(e);
+            FX.mx = x;
+            FX.my = y;
+            hudMove();
+            const p = FX.hsel;
+            if (!p) return; // inside the dead zone: nothing happens
+            if (p.zone === "stop") {
               FX.spaceUsed = true;
-              commitStop(pad.kind);
+              closeHud();
+              commitStop(p.kind);
+              return;
             }
-            return;
-          }
-          if (e.button === 0 && (FX.mode === "build" || FX.mode === "armed")) {
-            // FREEZE: press & hold a drop pad (anywhere else is ignored while building)
-            const [x, y] = xy(e), pad = padAt(x, y);
-            if (!pad) return;
-            FX.kind = pad.kind;
+            if (FX.mode !== "build") return;
+            // FREEZE: press & hold on a DROP option
+            FX.kind = p.kind;
             FX.mouse = true;
             enterFreeze(x, y);
             try {
@@ -1560,11 +1564,7 @@
           const [x, y] = xy(e);
           FX.mx = x;
           FX.my = y;
-          if (padsLive() && FX.mode !== "freeze") {
-            const p = padAt(x, y), k = p ? p.kind : null;
-            if (k && k !== FX.hoverPad) Audio.click(0.7 + 0.35 * p.i);
-            FX.hoverPad = k;
-          }
+          hudMove();
           if (E.marq) {
             E.marq.x1 = x;
             E.marq.y1 = y;
@@ -1577,7 +1577,10 @@
         cv.addEventListener("pointerup", (e) => {
           if (FX.mouse && e.button === 0) {
             FX.mouse = false;
-            if (FX.mode === "freeze") dropFromFreeze(FX.kind); // release the pad = DROP
+            if (FX.mode === "freeze") {
+              closeHud();
+              dropFromFreeze(FX.kind); // release = DROP
+            }
             return;
           }
           const m = E.marq;
@@ -1736,14 +1739,11 @@
             FX.shift = e.shiftKey;
             FX.spaceStartedPlay = !Clock.playing && FX.mode !== "freeze";
             if (FX.spaceStartedPlay) toggle(); // tap from silence = play
-            else if (e.shiftKey && (FX.mode === "groove" || FX.mode === "climax")) {
-              FX.menu = "stop"; // STOP menu: point at CUT / ECHO OUT / FADE
-              const p = padAt(FX.mx, FX.my);
-              FX.hoverPad = p ? p.kind : null;
-            }
           } else if (e.key === "Escape") {
-            if (FX.menu) FX.menu = null;
-            else if (FX.mode !== "groove" && FX.mode !== "climax") cancelFX();
+            if (FX.hud && FX.mode !== "freeze") {
+              if (FX.mode === "build") cancelFX();
+              closeHud();
+            } else if (FX.mode !== "groove" && FX.mode !== "climax") cancelFX();
             E.sel = null;
             E.marq = null;
           } else if ((e.key === "Backspace" || e.key === "Delete") && L) {
@@ -1754,15 +1754,20 @@
         });
         addEventListener("blur", () => {
           Hold.releaseAll();
+          closeHud();
           FX.space = FX.mouse = false;
           if (FX.mode === "build" || FX.mode === "freeze") cancelFX();
         });
         addEventListener("keyup", (e) => {
           if ((guideOpen() || typing(e)) && !FX.space) return;
-          if (e.code === "Space" && FX.menu === "stop") {
+          if (e.code === "Space" && FX.hud && FX.mode !== "freeze") {
+            // release SPACE: commit what the pointer is on; in the dead zone nothing happens (a running build fizzles)
             FX.space = false;
-            FX.menu = null;
-            if (FX.hoverPad && !FX.spaceUsed && STOP_PADS.some((p) => p.kind === FX.hoverPad)) commitStop(FX.hoverPad); // released over a pad
+            const p = FX.hsel;
+            closeHud();
+            if (p && p.zone === "drop" && FX.mode === "build") releaseBuild(p.kind);
+            else if (p && p.zone === "stop" && !FX.spaceUsed) commitStop(p.kind);
+            else if (FX.mode === "build") cancelFX();
             return;
           }
           if (e.code === "Space") {
@@ -2137,12 +2142,11 @@
         const len = FX.len, latest = Math.max(...FX.rollSrc.map((n) => n.off)), start = Math.floor(latest / len) * len, off = mod(t - FX.rollT0, len) + start;
         return FX.rollSrc.filter((n) => n.off === off).map((n) => mk(t, n.lane, clamp(n.vel * (0.65 + 0.4 * FX.b), 0.2, 1), "roll"));
       }
-      function releaseBuild() {
-        if (FX.b < 0.15) return cancelFX(); // a tiny build just evaporates
+      function releaseBuild(kind = "full") {
+        if (FX.b < 0.08) return cancelFX(); // a build of a moment just evaporates
         let D = (Math.floor(POS / 16) + 1) * 16;
         if (D - POS < 1.5) D += 16;
-        const pad = padAt(FX.mx, FX.my);
-        setDrop(D, 0.35 + 0.45 * FX.b, pad ? pad.kind : "full");
+        setDrop(D, 0.35 + 0.45 * FX.b, kind);
         FX.mode = "armed";
       }
 
@@ -2158,12 +2162,38 @@
         { kind: "echo", label: "ECHO OUT" },
         { kind: "fade", label: "FADE" },
       ];
-      function padRects() {
-        const w = 112, h = 40, gap = 18, y = G.nowY + G.frontH * 0.4;
-        return (FX.menu === "stop" ? STOP_PADS : PADS).map((p, i) => ({ ...p, i, x: G.cx + (i - 1) * (w + gap) - w / 2, y, w, h }));
+      // ---- the HUD: one menu for DROP (up) and STOP (down), anchored where SPACE was held ----
+      const HUD = { dead: 60, band: 36, rowY: 118, dx: 136, side: 68, w: 116, h: 38 };
+      function openHud() {
+        const mx = FX.mx || G.cx, my = FX.my || G.nowY;
+        const ax = clamp(mx, HUD.dx + HUD.w / 2 + 12, W - HUD.dx - HUD.w / 2 - 12),
+          ay = clamp(my, HUD.rowY + HUD.h / 2 + 40, H - HUD.rowY - HUD.h / 2 - 12);
+        // if the anchor had to move away from the pointer, nothing arms until the pointer has visited the ring (safety)
+        FX.hud = { ax, ay, ready: Math.hypot(mx - ax, my - ay) < HUD.dead };
+        FX.hsel = null;
       }
-      const padAt = (x, y) => padRects().find((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) || null;
-      const padsLive = () => FX.menu === "stop" || FX.mode === "build" || FX.mode === "freeze" || (FX.mode === "armed" && !(FX.drop && POS >= FX.drop.step));
+      function hudPick() {
+        const h = FX.hud;
+        if (!h || !h.ready) return null;
+        const dx = FX.mx - h.ax, dy = FX.my - h.ay;
+        if (Math.hypot(dx, dy) < HUD.dead || Math.abs(dy) < HUD.band) return null; // dead zone + horizontal band
+        const zone = dy < 0 ? "drop" : "stop", i = dx < -HUD.side ? 0 : dx > HUD.side ? 2 : 1;
+        return { zone, i, kind: (zone === "drop" ? PADS : STOP_PADS)[i].kind };
+      }
+      function hudMove() {
+        const h = FX.hud;
+        if (!h || FX.mode === "freeze") return;
+        if (!h.ready && Math.hypot(FX.mx - h.ax, FX.my - h.ay) < HUD.dead) h.ready = true;
+        const p = hudPick(), was = FX.hsel;
+        if (p && (!was || was.kind !== p.kind)) Audio.click(0.7 + 0.35 * p.i, p.zone !== (was && was.zone));
+        FX.hsel = p;
+        if (p && p.zone === "drop" && (FX.mode === "groove" || FX.mode === "climax")) startBuild(); // pointing up = build
+        if (p && p.zone === "stop" && FX.mode === "build") cancelFX(); // pointing down calls the build off
+      }
+      const closeHud = () => {
+        FX.hud = null;
+        FX.hsel = null;
+      };
       function enterFreeze(x, y) {
         FX.mode = "freeze";
         FX.spaceUsed = true; // this SPACE press is spent: a new build needs a fresh press
@@ -2229,9 +2259,9 @@
       // ---------- STOP (feedback #75): CUT · ECHO OUT · FADE; tape keeps running, one empty bar, then the bare beat ----------
       function commitStop(kind) {
         const nb = (Math.floor(POS / 16) + 1) * 16;
-        let end = nb - POS < 3 ? nb + 16 : nb; // CUT / ECHO: the next bar line (or the one after if it is too close)
+        let end = (nb - POS < 3 ? nb + 16 : nb) + 16; // CUT / ECHO: one full bar more, then the bar line
         if (kind === "fade") {
-          let F = end / 16 + 2; // FADE: at least two bars of stripping, then the next i bar
+          let F = end / 16 + 2; // FADE: at least three bars of stripping (end already +1 bar), then the next i bar
           while (progIdx(F) !== 0 && progIdx(F) !== 3) F++;
           end = F * 16;
         }
@@ -2558,7 +2588,7 @@
         FX.events = FX.events.filter((ev) => (Audio.now() >= ev.at - 0.005 ? (ev.fn(), false) : true));
         if (FX.space && Clock.playing && !FX.spaceStartedPlay && !FX.spaceUsed && (FX.mode === "groove" || FX.mode === "climax")) {
           const held = t - FX.spaceAt;
-          if (!FX.shift && held > 180) startBuild();
+          if (held > 180 && !FX.hud) openHud(); // hold SPACE = HUD (nothing armed yet)
         }
         if (FX.mode === "build") {
           FX.b = clamp((POS - FX.t0) / BUILD_STEPS, 0, 1);
@@ -2680,26 +2710,47 @@
             line({ x: FX.mx, y: 0 }, { x: FX.mx, y: H });
           }
         }
-        if (padsLive()) {
-          // drop pads
-          const a = FX.mode === "freeze" || FX.menu === "stop" ? 1 : clamp(0.35 + FX.b * 3, 0, 1);
+        if (FX.hud) {
+          // HUD: dead-zone ring at the anchor, DROP row above, STOP row below
+          const h = FX.hud, sel = FX.hsel, frozen = FX.mode === "freeze";
+          g.fillStyle = "rgba(0,0,0,0.55)";
+          g.beginPath();
+          g.arc(h.ax, h.ay, HUD.dead, 0, Math.PI * 2);
+          g.fill();
+          g.strokeStyle = ink(h.ready ? 0.35 : 0.5 + 0.3 * Math.sin(t / 120));
+          ring(g, h.ax, h.ay, HUD.dead);
+          g.fillStyle = ink(0.6);
+          dot(g, h.ax, h.ay, 2);
           g.font = FONT;
           g.textAlign = "center";
           g.textBaseline = "middle";
-          for (const r of padRects()) {
-            const pressed = FX.mode === "freeze" && FX.kind === r.kind, hov = FX.mode !== "freeze" && FX.hoverPad === r.kind;
-            g.fillStyle = "#000";
-            g.fillRect(r.x, r.y, r.w, r.h);
-            if (pressed) {
-              g.fillStyle = hot(0.35 + 0.65 * FX.charge);
-              g.fillRect(r.x, r.y, r.w * FX.charge, r.h);
-            }
-            g.strokeStyle = pressed || hov ? HOT : ink((FX.mode === "freeze" ? 0.25 : 0.6) * a);
-            g.lineWidth = pressed || hov ? 2 : 1;
-            g.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-            g.lineWidth = 1;
-            g.fillStyle = pressed ? "#fff" : hov ? HOT : ink((FX.mode === "freeze" ? 0.3 : 0.85) * a);
-            g.fillText(r.label, r.x + r.w / 2, r.y + r.h / 2);
+          g.fillStyle = ink(0.4);
+          g.fillText("DROP ↑", h.ax, h.ay - HUD.dead + 14);
+          g.fillText("STOP ↓", h.ax, h.ay + HUD.dead - 14);
+          for (const [zone, list, dir] of [["drop", PADS, -1], ["stop", STOP_PADS, 1]]) {
+            const rowOn = !sel || sel.zone === zone, y = h.ay + dir * HUD.rowY;
+            if (frozen && zone === "stop") continue;
+            list.forEach((o, i) => {
+              const x = h.ax + (i - 1) * HUD.dx, on = sel && sel.zone === zone && sel.i === i, pressed = frozen && FX.kind === o.kind;
+              const rx = x - HUD.w / 2, ry = y - HUD.h / 2;
+              g.fillStyle = "#000";
+              g.fillRect(rx, ry, HUD.w, HUD.h);
+              if (pressed) {
+                g.fillStyle = hot(0.35 + 0.65 * FX.charge);
+                g.fillRect(rx, ry, HUD.w * FX.charge, HUD.h);
+              }
+              g.strokeStyle = on || pressed ? HOT : ink(rowOn ? 0.55 : 0.2);
+              g.lineWidth = on || pressed ? 2 : 1;
+              g.strokeRect(rx + 0.5, ry + 0.5, HUD.w - 1, HUD.h - 1);
+              g.lineWidth = 1;
+              g.fillStyle = pressed ? "#fff" : on ? HOT : ink(rowOn ? 0.85 : 0.3);
+              g.fillText(o.label, x, y);
+              if (on && !frozen) {
+                const L = Math.hypot(x - h.ax, y - h.ay);
+                g.strokeStyle = hot(0.6);
+                line({ x: h.ax + ((x - h.ax) / L) * HUD.dead, y: h.ay + ((y - h.ay) / L) * HUD.dead }, { x, y: y - (dir * HUD.h) / 2 });
+              }
+            });
           }
         }
         for (const r of FX.rings) {
