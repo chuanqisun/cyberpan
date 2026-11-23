@@ -1,6 +1,12 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>71 · 2G · extended register · variable tape speed</title>
 <!--
+71 · 2G rev7: hover/select also turns the lock's notes HOT everywhere (past tape, future tape, box mini notes).
+71 · 2G rev6: pickup → lead note = upside-down dashed arch in the lock's attention colour; on hover/select every
+  line a lock causes (attention, pickup, displacement + its dot) turns HOT.
+71 · 2G rev5: no pre-played motif (no echo curves at start); variance = dashed arch (cubic, shoulders up);
+  tape fixed at past 120 / future 96 / decel 2.0 (sliders removed).
+71 · 2G rev4: variance (varied note -> exact position) drawn as a dashed arc instead of a solid straight line.
 71 · 2G rev3: drag anchors live in tape space (wall: step+lane, floor: step+lane) and ride the tape every frame, while the
   other corner stays under the pointer — if the tape outruns the pointer the box flips through itself.
 71 · 2G rev2: extended notes have no track: all bass notes sit at one fixed gap left of the track, all highs one
@@ -41,11 +47,9 @@ Judge: does the perspective floor make influence (wall → floor lines) readable
 html,body{margin:0;height:100%;background:#000;color:#fff;font:11px monospace;overflow:hidden;user-select:none}
 #c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
 #hd{position:fixed;left:0;top:0;right:0;padding:6px 10px;color:rgba(255,255,255,.55);pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#ctl{position:fixed;right:10px;bottom:8px;color:rgba(255,255,255,.55)}#ctl input{vertical-align:middle;width:110px;accent-color:#888}
 #hd button{pointer-events:auto;font:11px monospace;background:#000;color:#fff;border:1px solid rgba(255,255,255,.45);padding:1px 8px;margin-right:10px;cursor:pointer}
 </style></head><body>
 <canvas id="c"></canvas>
-<div id="ctl">past <input id="past" type="range" min="40" max="160" value="96"> <span id="pastv"></span> &nbsp; future <input id="fut" type="range" min="24" max="96" value="56"> <span id="futv"></span> &nbsp; decel <input id="dec" type="range" min="0" max="40" value="20"> <span id="decv"></span></div>
 <div id="hd"><button id="play">PLAY</button>71 · 2G · <span id="seed"></span> · A–L play · drag over past = add group (free notes only; hold shift = include grouped) · box title: click = mute, ctrl/cmd-click = mute/unmute all · right-drag = delete notes (box / future) · box: click cell = add note, right-click note = remove · wheel on lock/chip = variability V ([ ]) · right-click lock = remove (Backspace) · right-click future note = mute · click empty future = place · Esc deselect · SPACE play</div>
 <script>
 // ===================== 66 SHARED CORE (audio · clock · theory) =====================
@@ -360,19 +364,13 @@ const Eng = {
   },
 };
 
-// pre-generated past: 4 bars, plus a short "played" motif in the last bar so echoes show immediately
-for (let b = -4; b < 0; b++) E.past.push(...baseBar(b));
-// seeded motif: 4 steps biased to strong metric positions, lanes from the bar's chord pool
-const MOTIF = [...Array(16).keys()].map(s => [s, hash01(s, 9, 31) * (1.25 - METRIC[s])]).sort((a, b) => a[1] - b[1]).slice(0, 4)
-  .map(([s]) => { const pool = chordAt(-1).pool; return [s - 16, pool[Math.floor(hash01(s, 9, 32) * pool.length)]]; });
-for (const [step, lane] of MOTIF) {
-  E.past = E.past.filter(n => n.step !== step);
-  E.past.push(mk(step, lane, .85, 'user'));
-}
+// pre-generated past: 8 bars, fills the 120-step wall (no pre-played motif, so the first render has no echo curves)
+for (let b = -8; b < 0; b++) E.past.push(...baseBar(b));
 
 // ---------------- shared drawing (UI supplies P(note) -> {x,y,s} | null) ----------------
 const alive = (n) => n.lock && n.lock.alive;
-const noteCol = (n, a) => alive(n) ? hueA(n.lock, a) : ink(a);
+// lock notes (past tape, future tape) take HOT while their lock is hovered/selected
+const noteCol = (n, a) => !alive(n) ? ink(a) : lockActive(n.lock) ? hot(a) : hueA(n.lock, a);
 function ring(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.stroke(); }
 function dot(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
 const straight = (g, a, b) => { g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); };
@@ -394,11 +392,13 @@ function drawLinks(g, P, fut, link = straight, srcOf = null) {
     const b = P(n); if (!b) continue;
     if (n.src === 'lock') {
       const a = !n.pickup && srcOf ? srcOf(n) : P(n.pickup ? n.parent : n.lock.last[n.idx]); if (!a) continue; // pickups hang off the note they ornament
-      g.strokeStyle = lockActive(n.lock) ? hot(n.pickup ? .35 : .75) : hueA(n.lock, n.pickup ? .18 : .42);
-      if (n.pickup) straight(g, a, b); else link(g, a, b, n);
+      // one colour per lock for every line it causes (attention, pickup, displacement); all switch to HOT on hover/select
+      const act = lockActive(n.lock), col = act ? hot(.75) : hueA(n.lock, .42);
+      g.strokeStyle = col;
+      if (n.pickup) varArc(g, b, a, true); else link(g, a, b, n); // pickup: upside-down dashed arch into the note it leads
       if (n.varied && !n.pickup) {
         const o = P(n.orig);
-        if (o) { g.strokeStyle = hueA(n.lock, .7); straight(g, b, o); g.fillStyle = hueA(n.lock, .8); dot(g, o.x, o.y, 1.5); }
+        if (o) { g.strokeStyle = act ? HOT : hueA(n.lock, .7); varArc(g, b, o); g.fillStyle = act ? HOT : hueA(n.lock, .8); dot(g, o.x, o.y, 1.5); }
       }
     } else if (n.src === 'echo') {
       const a = P(n.from); if (!a) continue;
@@ -408,6 +408,14 @@ function drawLinks(g, P, fut, link = straight, srcOf = null) {
   }
 }
 
+// variance: dashed arc from the varied note to where the exact copy would be; bulges toward NOW, taller for bigger moves
+// flip = hang below (pickup → lead note) instead of rising toward NOW (displacement)
+function varArc(g, b, o, flip = false) {
+  const h = clamp(Math.hypot(o.x - b.x, o.y - b.y) * .3, 8, 70);
+  const top = flip ? Math.min(G.nowY + G.frontH + 14, Math.max(b.y, o.y) + h) : Math.max(G.nowY + 2, Math.min(b.y, o.y) - h); // arch stays on the floor
+  g.setLineDash([2, 3]); g.beginPath(); g.moveTo(b.x, b.y);
+  g.bezierCurveTo(b.x, top, o.x, top, o.x, o.y); g.stroke(); g.setLineDash([]);
+}
 function drawNote(g, p, n, past, r, picked, dim = 1) {
   const a = (n.ghost ? .42 : .92) * dim;
   g.lineWidth = 1;
@@ -557,7 +565,7 @@ const cv = document.getElementById('c');
 //   wall:  y = nowY - v0·T·ln(1 + age/T)        (full speed at NOW, decelerates upward; T solved so PAST steps fit)
 //   floor: y = nowY + frontH·(e^(c·u) - 1)/(e^c - 1), u = d/FUT   exponential slow-down: speed ∝ e^(c·u), so a note
 //          decelerates by a factor e^c between the far edge and NOW (c = decel slider)
-let PAST = 96, FUT = 56, DECEL = 2;
+const PAST = 120, FUT = 96, DECEL = 2;
 let W = 0, H = 0, G = {};
 const bisect = (f, lo, hi, it = 60) => { for (let k = 0; k < it; k++) { const m = Math.sqrt(lo * hi); f(m) > 0 ? hi = m : lo = m; } return Math.sqrt(lo * hi); };
 function solveTape() {
@@ -689,7 +697,7 @@ function drawSideBoxes(g) {
     g.strokeStyle = act ? HOT : hueA(L, .9); g.beginPath(); g.moveTo(r.x, r.y + ph * SB.row); g.lineTo(r.x + r.w, r.y + ph * SB.row); g.stroke();
     L.notes.forEach((n, i) => {
       const p = sidePt(L, i), age = mod(ph - n.off, L.period), flash = age < 1.5 ? 1 - age / 1.5 : 0;
-      g.fillStyle = flash && !mu ? ink(.6 + flash * .4) : hueA(L, (n.vel < .5 ? .5 : .95) * (mu ? .35 : 1));
+      g.fillStyle = flash && !mu ? ink(.6 + flash * .4) : (act ? hot : (x) => hueA(L, x))((n.vel < .5 ? .5 : .95) * (mu ? .35 : 1));
       dot(g, p.x, p.y, (n.vel < .5 ? 1.6 : 2.4) + flash * 1.5);
       if (E.marq && E.marq.del && inMarq(p)) { g.strokeStyle = HOT; ring(g, p.x, p.y, 4); }
     });
@@ -720,9 +728,6 @@ function draw() {
   drawChips(g, 10, H - 18);
 }
 
-const slide = (id, set, fmt = (v) => v) => { const el = document.getElementById(id), v = document.getElementById(id + 'v');
-  const upd = () => { set(+el.value); v.textContent = fmt(+el.value); solveTape(); el.blur(); }; el.addEventListener('input', upd); upd(); };
-slide('past', v => { PAST = v; }); slide('fut', v => { FUT = v; }); slide('dec', v => { DECEL = v / 10; }, v => (v / 10).toFixed(1));
 document.getElementById('seed').textContent = 'seed ' + (SEED >>> 0).toString(36);
 wireInput(cv, { P, cellAt, draw, lockBox: sideBox });
 
