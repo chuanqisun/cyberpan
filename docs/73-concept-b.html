@@ -1,0 +1,2196 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>73 · B · drop the beat + outro · gravity · fakeout · exhale</title>
+    <!--
+73 · B DROP THE BEAT + OUTRO (doc #44 five-act arc): GRAVITY -> VACUUM -> FAKEOUT -> EXHALE
+  BUILD   harmony held on VII, dotted loop-roll (12 -> 6 -> 3) = 3:2 friction, dotted Tak grid, future tape sucked into NOW.
+  FREEZE  vacuum (all cut, near-black); only naked A-L strikes. DROP: one half-time bar, then the slam; notes explode radially.
+  OUTRO   rubato -6 % tempo, tails +40 %, bass kill, thinning, notes sink, VII -> i, last Ding.
+  GESTURE (same in 73 a/b/c): tap SPACE = play/stop · hold SPACE = BUILD · while holding, click & hold mouse = FREEZE ·
+  release mouse + SPACE = DROP (that instant becomes bar 1) · release SPACE without freezing = DROP on the next bar line ·
+  hold SHIFT+SPACE = OUTRO (phrase-aligned, lands on the tonic, stops) · Esc = cancel build/freeze/outro.
+  Top bar: PLAY + master volume (wheel over the slider, or wheel on empty canvas). All help text removed.
+73 · B HOLD-TO-PLAY (feedback after 71: initial score had too many notes). Builds on 71 (side boxes, parabola attention,
+  extended register via variation, variable tape speed, tape-anchored marquees).
+  Score starts nearly empty (generator = ding on each downbeat only; drums + bass unchanged).
+  Hold A–L: the system decides WHEN to play each held key, planning three bars ahead (visible on the future tape as
+  white rings with a dot). Hold several keys: it chooses WHICH of them fits each moment. Works any time, any number of keys.
+  Planner works a bar at a time (stable: a bar is planned once unless keys change):
+    1. slots: score each step = metric weight (#41) + learned groove (onset histogram trained mostly by your
+       key presses, lightly by what it played) + best chord fit among held keys - crowding; keep the top N, min gap apart.
+       N = D·(1 + 3I + I per extra key), D = density (wheel while holding, 0.25-4, default 1 = sparse); gap 4 -> 1; intensity I ramps 0.25 -> 1 over 2 bars of holding.
+    2. keys: each slot gets the best held key: chord tone (non-chord tones only off the strong beats), rotation
+       (keys not heard lately), smooth motion (<=2 lanes, no immediate repeat). Strong beats may get a dyad
+       (both chord tones, not a 2nd apart) once intense.
+  Tap = always an immediate note (exactly as before). Holding adds planned notes on top, starting GRACE=2 steps
+  after the press, so a quick tap never doubles. Releasing clears that key's planned notes.
+  Hold notes enter the past as your notes (lockable; they train the groove) but do not echo.
+  Paused: keys play immediately as before.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        color: #fff;
+        font: 11px monospace;
+        overflow: hidden;
+        user-select: none;
+      }
+      #c {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        touch-action: none;
+      }
+      #hd {
+        position: fixed;
+        left: 0;
+        top: 0;
+        right: 0;
+        padding: 6px 10px;
+        color: rgba(255, 255, 255, 0.55);
+        pointer-events: none;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #vol {
+        pointer-events: auto;
+        vertical-align: middle;
+        width: 120px;
+        accent-color: #aaa;
+      }
+      #hd button {
+        pointer-events: auto;
+        font: 11px monospace;
+        background: #000;
+        color: #fff;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        padding: 1px 8px;
+        margin-right: 10px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="hd"><button id="play">PLAY</button><input id="vol" type="range" min="0" max="100" value="80" title="volume" /></div>
+    <script>
+      // ===================== 66 SHARED CORE (audio · clock · theory) =====================
+      // E Kurd / Amara 9-tone pan, i–VI–VII–i one-bar harmonic cycle (#41), 16-step bars.
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const lerp = (a, b, t) => a + (b - a) * t;
+      const mod = (a, n) => ((a % n) + n) % n;
+      // per-load seed (feedback #67.4); ?seed=<base36> replays a specific start
+      const SEED = (() => {
+        const q = new URLSearchParams(location.search).get("seed");
+        return q ? parseInt(q, 36) | 0 : (Math.random() * 2 ** 31) | 0;
+      })();
+      const hash01 = (a, b = 0, c = 0) => {
+        let x = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647) + Math.imul(SEED, 1597334677)) | 0;
+        x = Math.imul(x ^ (x >>> 13), 1274126177);
+        return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+      };
+      const semiHz = (s) => 440 * Math.pow(2, s / 12);
+
+      // lane index 0..8 ; KEYS[i] plays lane i (home row)
+      const NOTES = [
+        ["E3", -17],
+        ["B3", -10],
+        ["C4", -9],
+        ["D4", -7],
+        ["E4", -5],
+        ["F#4", -3],
+        ["G4", -2],
+        ["A4", 0],
+        ["B4", 2],
+      ].map(([name, s], idx) => ({ name, idx, freq: semiHz(s), pan: (idx / 8 - 0.5) * 0.5 }));
+      const KEYS = "asdfghjkl";
+      // extended register (variation only): lanes -3..-1 below the ding, 9..11 above B4
+      const EXT = { [-3]: ["B2", -22], [-2]: ["C3", -21], [-1]: ["D3", -19], 9: ["C5", 3], 10: ["D5", 5], 11: ["E5", 7] };
+      const SEMI = (l) => (l in EXT ? EXT[l][1] : [-17, -10, -9, -7, -5, -3, -2, 0, 2][l]);
+      const noteAt = (l) => NOTES[l] || (EXT[l] && { name: EXT[l][0], idx: l, freq: semiHz(EXT[l][1]), pan: clamp((l / 8 - 0.5) * 0.5, -0.6, 0.6) });
+      const isExt = (l) => l < 0 || l > 8;
+      const EXT_GAP = 1.25; // ext notes sit this many lane-gaps outside the outer core lane
+      const VL = (l) => (l < -0.5 ? -EXT_GAP : l > 8.5 ? 8 + EXT_GAP : l); // visual lane
+      // same pitch class one octave away, landing in the extended register (null if none)
+      function octaveOf(lane, dir) {
+        const s = SEMI(lane);
+        for (const d of [dir, -dir]) for (const l of Object.keys(EXT).map(Number)) if (EXT[l][1] === s + 12 * d) return l;
+        return null;
+      }
+      // one chord per bar; pool = lanes that sound "right" in that bar; bassHz = sub root
+      const PROG = [
+        { sym: "i", pool: [0, 1, 4, 6, 8], bassHz: semiHz(-29) },
+        { sym: "VI", pool: [2, 4, 6, 8, 1], bassHz: semiHz(-33) },
+        { sym: "VII", pool: [3, 5, 7, 8, 1], bassHz: semiHz(-31) },
+        { sym: "i", pool: [0, 1, 4, 6, 5], bassHz: semiHz(-29) },
+      ];
+      // harmony segments: each drop re-phases the progression so the slam lands on i; a build can hold a chord (suspension)
+      const HARM = { segs: [{ from: -1e9, off: 0 }], hold: null };
+      const chordAt = (bar) => {
+        if (HARM.hold && bar >= HARM.hold.from && bar < HARM.hold.to) return PROG[HARM.hold.idx];
+        let off = 0;
+        for (const s of HARM.segs) if (bar >= s.from) off = s.off;
+        return PROG[mod(bar - off, PROG.length)];
+      };
+      // #41 metric weight per 16th: strong downbeats, strong "a" pickups (3,7,11,15), weak "e"
+      const METRIC = [1, 0.3, 0.55, 0.8, 0.85, 0.25, 0.55, 0.8, 0.95, 0.3, 0.5, 0.85, 0.85, 0.2, 0.55, 0.75];
+
+      // ----------------------------- AUDIO -----------------------------
+      const Audio = (() => {
+        let ctx = null,
+          master,
+          bus,
+          hpf,
+          lpf,
+          dry,
+          revSend,
+          revOut,
+          noise,
+          riserBP,
+          riserG,
+          ui,
+          conv,
+          naked,
+          vol = 0.8,
+          width = 1,
+          tail = 1;
+        function ensure() {
+          if (!ctx) {
+            ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const comp = ctx.createDynamicsCompressor();
+            comp.threshold.value = -10;
+            comp.ratio.value = 6;
+            comp.connect(ctx.destination);
+            master = ctx.createGain();
+            master.gain.value = 0.85 * vol;
+            master.connect(comp);
+            lpf = filt("lowpass", 18000, 0.7);
+            hpf = filt("highpass", 20, 0.7);
+            dry = ctx.createGain();
+            bus = ctx.createGain();
+            bus.connect(hpf);
+            hpf.connect(lpf);
+            lpf.connect(dry);
+            dry.connect(master);
+            const sr = ctx.sampleRate,
+              n = Math.floor(sr * 2.6),
+              ir = ctx.createBuffer(2, n, sr);
+            for (let c = 0; c < 2; c++) {
+              const d = ir.getChannelData(c);
+              let lp = 0;
+              for (let i = 0; i < n; i++) {
+                lp = lp * 0.55 + (Math.random() * 2 - 1) * 0.45;
+                d[i] = lp * Math.pow(1 - i / n, 2.4) * 0.5;
+              }
+            }
+            conv = ctx.createConvolver();
+            conv.buffer = ir;
+            revSend = ctx.createGain();
+            revSend.gain.value = 0.25;
+            revOut = ctx.createGain();
+            revOut.gain.value = 0.5;
+            lpf.connect(revSend);
+            revSend.connect(conv);
+            conv.connect(revOut);
+            revOut.connect(master);
+            noise = ctx.createBuffer(1, sr * 2, sr);
+            const nd = noise.getChannelData(0);
+            for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+            const rs = ctx.createBufferSource();
+            rs.buffer = noise;
+            rs.loop = true;
+            riserBP = filt("bandpass", 400, 2);
+            riserG = ctx.createGain();
+            riserG.gain.value = 0.0001;
+            rs.connect(riserBP);
+            riserBP.connect(riserG);
+            riserG.connect(master);
+            rs.start();
+            naked = ctx.createGain(); // bypasses the dry gate + HPF: notes that sound inside a freeze/vacuum
+            naked.connect(master);
+            const nakedSend = ctx.createGain();
+            nakedSend.gain.value = 0.6;
+            naked.connect(nakedSend);
+            nakedSend.connect(conv);
+            ui = ctx.createGain();
+            ui.gain.value = 0.2;
+            ui.connect(master);
+          }
+          if (ctx.state === "suspended") ctx.resume();
+          return ctx;
+        }
+        const filt = (type, f, q) => {
+          const b = ctx.createBiquadFilter();
+          b.type = type;
+          b.frequency.value = f;
+          b.Q.value = q;
+          return b;
+        };
+        const env = (t, a, p, d) => {
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.linearRampToValueAtTime(Math.max(0.0002, p), t + a);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(a + 0.01, d));
+          return g;
+        };
+        const T = (when) => Math.max(ctx.currentTime + 0.002, when == null ? 0 : when);
+        const osc = (type, f, t, d, out) => {
+          const o = ctx.createOscillator();
+          o.type = type;
+          o.frequency.setValueAtTime(f, t);
+          o.connect(out);
+          o.start(t);
+          o.stop(t + d + 0.05);
+          return o;
+        };
+        function noiseHit(t, type, f, q, peak, d, out = bus) {
+          const s = ctx.createBufferSource();
+          s.buffer = noise;
+          const b = filt(type, f, q),
+            g = env(t, 0.002, peak, d);
+          s.connect(b);
+          b.connect(g);
+          g.connect(out);
+          s.start(t);
+          s.stop(t + d + 0.03);
+        }
+        return {
+          ensure,
+          get ctx() {
+            return ctx;
+          },
+          now: () => (ctx ? ctx.currentTime : 0),
+          // handpan strike: lane 0..8, vel 0..1, durSteps controls ring length, octave shifts up 1 octave
+          get width() {
+            return width;
+          },
+          set width(v) {
+            width = v;
+          },
+          get tail() {
+            return tail;
+          },
+          set tail(v) {
+            tail = v;
+          },
+          setVolume(v) {
+            vol = clamp(v, 0, 1);
+            if (ctx) master.gain.setTargetAtTime(0.85 * vol, ctx.currentTime, 0.03);
+          },
+          get volume() {
+            return vol;
+          },
+          pan(lane, when, vel = 0.8, durSteps = 4, octave = 0, bare = false) {
+            ensure();
+            const n = noteAt(lane);
+            if (!n) return;
+            const t = T(when),
+              v = clamp(vel, 0.05, 1),
+              f = n.freq * (octave ? 2 : 1);
+            const tau = clamp(0.25 + durSteps * 0.22, 0.3, 3.6) * (lane <= 0 ? 1.3 : 1) * (lane > 8 ? 0.8 : 1) * tail;
+            const out = ctx.createGain(),
+              p = ctx.createStereoPanner();
+            p.pan.value = clamp(n.pan * width, -1, 1);
+            out.connect(p);
+            p.connect(bare ? naked : bus);
+            const g = env(t, 0.004, 0.26 * v, tau);
+            g.connect(out);
+            osc("sine", f, t, tau, g);
+            osc("sine", f + 0.7, t, tau, g);
+            const h2 = env(t, 0.02, 0.12 * v, tau * 0.6);
+            h2.connect(out);
+            osc("sine", f * 2.001, t, tau * 0.6, h2);
+            const h3 = env(t, 0.03, 0.07 * v, tau * 0.45);
+            h3.connect(out);
+            osc("sine", f * 2.998, t, tau * 0.45, h3);
+            noiseHit(t, "bandpass", clamp(f * 3, 600, 2000), 2, 0.1 * v, 0.02, out);
+          },
+          kick(when, v = 0.8) {
+            ensure();
+            const t = T(when),
+              g = env(t, 0.003, 0.7 * v, 0.3);
+            g.connect(bus);
+            const o = osc("sine", 130, t, 0.32, g);
+            o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+          },
+          hat(when, v = 0.4, open = false) {
+            ensure();
+            noiseHit(T(when), "highpass", open ? 6000 : 7500, 0.8, 0.12 * v, open ? 0.16 : 0.035);
+          },
+          tak(when, v = 0.6, pitch = 1) {
+            ensure();
+            const t = T(when);
+            noiseHit(t, "bandpass", 2400 * pitch, 1.6, 0.26 * v, 0.07);
+            const g = env(t, 0.002, 0.15 * v, 0.06);
+            g.connect(bus);
+            osc("triangle", 300 * pitch, t, 0.06, g);
+          },
+          // palm-muted dead stroke: pitched thud, no ring
+          dead(lane, when, v = 0.3) {
+            ensure();
+            const n = noteAt(lane);
+            if (!n) return;
+            const t = T(when),
+              g = env(t, 0.002, 0.22 * v, 0.07);
+            g.connect(bus);
+            osc("sine", n.freq, t, 0.07, g);
+            noiseHit(t, "bandpass", clamp(n.freq * 3, 600, 2000), 3, 0.12 * v, 0.02);
+          },
+          // drop: low end + dry bus snap back exactly at `when` (16 ms)
+          release(when) {
+            if (!ctx) return;
+            const t = Math.max(ctx.currentTime, when);
+            for (const [p, v] of [[hpf.frequency, 20], [riserG.gain, 0.0001], [dry.gain, 1], [revSend.gain, 0.25], [revOut.gain, 0.5]]) {
+              p.cancelScheduledValues(t);
+              p.setTargetAtTime(v, t, 0.005);
+            }
+            hpf.Q.value = 0.7;
+          },
+          sub(when, hz, durSec, v = 0.45) {
+            ensure();
+            const t = T(when),
+              g = env(t, 0.015, v, Math.max(0.1, durSec)),
+              lp = filt("lowpass", 220, 1);
+            lp.connect(g);
+            g.connect(bus);
+            osc("sine", hz, t, durSec, lp);
+            osc("triangle", hz * 2, t, durSec, lp);
+          },
+          impact(when, v = 1) {
+            ensure();
+            const t = T(when),
+              g = env(t, 0.004, 0.8 * v, 1.4);
+            g.connect(master);
+            const o = osc("sine", 120, t, 1.4, g);
+            o.frequency.exponentialRampToValueAtTime(41, t + 0.1);
+            noiseHit(t, "lowpass", 3000, 0.7, 0.3 * v, 1.6, master);
+          },
+          // UI detent click (haptic-ish); pitch 0.5..2
+          click(pitch = 1, strong = false) {
+            if (!ctx) return;
+            noiseHit(ctx.currentTime + 0.001, "bandpass", 2200 * pitch, 5, strong ? 0.25 : 0.12, strong ? 0.025 : 0.012, ui);
+          },
+          // continuous macro controls (0..1), smoothed
+          setRiser(x) {
+            if (!ctx) return;
+            const t = ctx.currentTime;
+            riserG.gain.setTargetAtTime(Math.max(0.0001, Math.pow(x, 1.5) * 0.22), t, 0.04);
+            riserBP.frequency.setTargetAtTime(300 + x * 4500, t, 0.04);
+          },
+          setHPF(x) {
+            if (!ctx) return;
+            hpf.frequency.setTargetAtTime(20 * Math.pow(70, clamp(x, 0, 1)), ctx.currentTime, 0.03);
+            hpf.Q.value = 0.7 + x * 3;
+          },
+          setLPF(x) {
+            if (!ctx) return;
+            lpf.frequency.setTargetAtTime(18000 * Math.pow(400 / 18000, clamp(x, 0, 1)), ctx.currentTime, 0.03);
+          },
+          setReverb(x) {
+            if (!ctx) return;
+            revSend.gain.setTargetAtTime(0.25 + x * 0.6, ctx.currentTime, 0.05);
+          },
+          // freeze: dry bus muted, reverb tail hangs
+          setFreeze(on, vacuum = false) {
+            if (!ctx) return;
+            const t = ctx.currentTime;
+            dry.gain.setTargetAtTime(on ? 0.0001 : 1, t, on ? 0.01 : 0.005);
+            revSend.gain.setTargetAtTime(on ? 0.0001 : 0.25, t, 0.01);
+            revOut.gain.setTargetAtTime(on ? (vacuum ? 0.12 : 0.7) : 0.5, t, vacuum ? 0.15 : 0.05);
+          },
+        };
+      })();
+
+      // ----------------------------- CLOCK -----------------------------
+      // Sample-accurate 16th-step scheduler. Clock.onStep(fn(step, when)) is called ~120ms ahead.
+      // Clock.pos() = fractional current step (for drawing). Clock.later(when, fn) runs fn when audio time arrives.
+      const Clock = (() => {
+        const subs = [];
+        let bpm = 105,
+          playing = false,
+          anchorStep = 0,
+          anchorTime = 0,
+          next = 0,
+          timer = null,
+          pausedAt = 0;
+        const stepDur = () => 60 / bpm / 4;
+        function tick() {
+          const ctx = Audio.ctx;
+          if (!playing || !ctx) return;
+          const horizon = ctx.currentTime + 0.12;
+          while (anchorTime + (next - anchorStep) * stepDur() < horizon) {
+            const when = anchorTime + (next - anchorStep) * stepDur();
+            for (const f of subs) f(next, when);
+            next++;
+          }
+        }
+        return {
+          get playing() {
+            return playing;
+          },
+          get bpm() {
+            return bpm;
+          },
+          stepDur,
+          setBpm(b) {
+            const p = this.pos();
+            bpm = b;
+            if (playing) {
+              anchorStep = p;
+              anchorTime = Audio.now();
+            }
+          },
+          onStep(f) {
+            subs.push(f);
+          },
+          pos() {
+            if (!playing || !Audio.ctx) return pausedAt;
+            return anchorStep + Math.max(0, (Audio.now() - anchorTime) / stepDur());
+          },
+          timeOf(step) {
+            return anchorTime + (step - anchorStep) * stepDur();
+          },
+          start() {
+            Audio.ensure();
+            if (playing) return;
+            playing = true;
+            anchorStep = pausedAt;
+            anchorTime = Audio.now() + 0.05;
+            next = Math.ceil(anchorStep);
+            timer = setInterval(tick, 25);
+            tick();
+          },
+          stop() {
+            if (!playing) return;
+            pausedAt = this.pos();
+            playing = false;
+            clearInterval(timer);
+          },
+          toggle() {
+            playing ? this.stop() : this.start();
+          },
+          seek(step) {
+            if (!playing) pausedAt = step;
+          },
+          later(when, fn) {
+            setTimeout(fn, Math.max(0, (when - Audio.now()) * 1000));
+          },
+        };
+      })();
+
+      // ----------------------------- CANVAS HELPERS -----------------------------
+      function setupCanvas(canvas, onResize) {
+        const ctx = canvas.getContext("2d");
+        const fit = () => {
+          const d = Math.min(2, devicePixelRatio || 1),
+            r = canvas.getBoundingClientRect();
+          canvas.width = r.width * d;
+          canvas.height = r.height * d;
+          ctx.setTransform(d, 0, 0, d, 0, 0);
+          onResize && onResize(r.width, r.height);
+        };
+        addEventListener("resize", fit);
+        fit();
+        return ctx;
+      }
+      const ink = (a) => `rgba(255,255,255,${clamp(a, 0, 1).toFixed(3)})`;
+      const HOT = "#ff5a1f";
+      const hot = (a) => `rgba(255,90,31,${clamp(a, 0, 1).toFixed(3)})`;
+      // ===================== END CORE =====================
+
+      // ---------------- WATERFALL ENGINE (identical in 66-concept-2-a/b/c) ----------------
+      // Future = generator (METRIC onsets, ~50% ghosts, stepwise pool melody, ding on 1)
+      //        + echoes of recent user notes (short memory, fades after 2 bars)
+      //        + lock re-emissions (permanent, variability V per lock). Deterministic hashing keeps notes stable.
+      const HUES = [
+        [110, 160, 210],
+        [140, 190, 120],
+        [190, 140, 205],
+        [205, 185, 110],
+      ];
+      const hueA = (L, a) => {
+        const [r, g, b] = HUES[L.hue];
+        return `rgba(${r},${g},${b},${clamp(a, 0, 1).toFixed(3)})`;
+      };
+      const FONT = "11px monospace";
+      const E = {
+        past: [],
+        locks: [],
+        placed: new Map(),
+        dismissed: new Set(),
+        nextStep: 0,
+        nextId: 1,
+        sel: null,
+        hover: null,
+        marq: null,
+        fvis: [],
+        chips: [],
+      };
+      let POS = 0; // fractional playhead step, refreshed every frame / event
+      const key = (step, lane) => step + ":" + lane;
+      const mk = (step, lane, vel, src, x) => Object.assign({ step, lane, vel, ghost: vel < 0.5, src }, x);
+      const barCache = new Map(), contentCache = new Map();
+      const bump = () => { barCache.clear(); contentCache.clear(); };
+      const bumpView = () => barCache.clear(); // hold plan changed, content did not
+
+      // sparse score: only the ding on each downbeat (the hold planner supplies the melody)
+      function baseBar(b) {
+        return [mk(b * 16, 0, 0.6, "gen")];
+      }
+
+      // user notes from the previous 1–2 bars echo at the same bar position, with decaying probability
+      function echoInto(b) {
+        const out = [];
+        for (const u of E.past) {
+          if (u.src !== "user" || u.auto) continue; // hold-placed notes do not echo
+          const age = b - Math.floor(u.step / 16);
+          if (age < 1 || age > 2 || hash01(u.step * 9 + u.lane, b, 21) > (age === 1 ? 0.8 : 0.35)) continue;
+          out.push(mk(b * 16 + mod(u.step, 16), u.lane, u.vel * (age === 1 ? 0.8 : 0.55), "echo", { from: u, age }));
+        }
+        return out;
+      }
+
+      function subst(lane, pool, V, r) {
+        const c = pool.filter((l) => l !== lane && l !== 0);
+        if (V >= 0.6) return c[Math.floor(r * c.length)];
+        c.sort((a, b) => Math.abs(a - lane) - Math.abs(b - lane));
+        return c[r < 0.7 ? 0 : Math.min(1, c.length - 1)];
+      }
+
+      // lock L re-emits its notes every period; V tiers (#52): pitch substitution → ±1 displacement → ghost pickups
+      function lockInto(L, b) {
+        if (L.muted) return [];
+        const out = [],
+          b0 = b * 16,
+          b1 = b0 + 16,
+          V = Math.min(1, L.V + climaxBoost(b * 16)); // climax: groups vary harder → fresh patterns
+        for (let k = Math.max(1, Math.floor((b0 - L.anchor) / L.period) - 1); L.anchor + k * L.period <= b1; k++) {
+          const base = L.anchor + k * L.period;
+          L.notes.forEach((n, i) => {
+            const h = (c) => hash01(L.id * 131 + i, k, c),
+              at = base + n.off,
+              head = mod(L.anchor + n.off, 16) === 0; // downbeat in absolute time (anchor may be off-bar)
+            const pool = chordAt(Math.floor(at / 16)).pool;
+            let lane = n.lane,
+              off = n.off;
+            if (V > 0 && h(1) < V && !(head && lane === 0)) lane = subst(n.lane, pool, V, h(2));
+            if (V > 0.35 && !(head && lane === 0) && h(7) < (V - 0.35) * 0.7) {
+              const o = octaveOf(lane, h(8) < 0.5 ? -1 : 1);
+              if (o != null) lane = o;
+            } // register leap
+            if (V > 0.3 && !head && h(3) < (V - 0.3) * 0.8) off += h(4) < 0.5 ? -1 : 1;
+            const step = base + off;
+            if (step >= b0 && step < b1)
+              out.push(mk(step, lane, n.vel, "lock", { lock: L, idx: i, k, varied: lane !== n.lane || off !== n.off, orig: { step: at, lane: n.lane } }));
+            if (V > 0.2 && h(5) < V * 0.5 && step - 1 >= b0 && step - 1 < b1)
+              out.push(
+                mk(step - 1, pool[Math.floor(h(6) * pool.length)], 0.28, "lock", { lock: L, idx: i, k, varied: true, pickup: true, parent: { step, lane } }),
+              );
+          });
+        }
+        return out;
+      }
+
+      // priority: placed > lock > lock pickup > echo > generated. Lock/echo steps silence generated notes on that step.
+      function contentBar(b) {
+        if (contentCache.has(b)) return contentCache.get(b);
+        const locks = E.locks.flatMap((L) => lockInto(L, b)),
+          echoes = echoInto(b),
+          m = new Map();
+        const lockSteps = new Set(locks.filter((n) => !n.pickup).map((n) => n.step)),
+          echoSteps = new Set(echoes.map((n) => n.step));
+        const put = (n) => m.set(key(n.step, n.lane), n);
+        baseBar(b)
+          .filter((n) => !lockSteps.has(n.step) && !echoSteps.has(n.step))
+          .forEach(put);
+        echoes.filter((n) => !lockSteps.has(n.step)).forEach(put);
+        locks
+          .filter((n) => n.pickup)
+          .forEach((n) => {
+            const o = m.get(key(n.step, n.lane));
+            if (!o || o.src === "gen") put(n);
+          });
+        locks.filter((n) => !n.pickup).forEach(put);
+        for (const n of climaxNotes(b)) {
+          const o = m.get(key(n.step, n.lane));
+          if (!o || o.src === "gen" || o.src === "echo") put(n);
+        }
+        for (const n of E.placed.values()) if (Math.floor(n.step / 16) === b) put(n);
+        const out = [...m.values()].sort((a, c) => a.step - c.step || a.lane - c.lane);
+        out.forEach((n) => {
+          n.muted = E.dismissed.has(key(n.step, n.lane));
+          n.oct = bloomOct(n);
+        });
+        contentCache.set(b, out);
+        return out;
+      }
+
+      // view = content + hold plan (plan sits above locks/echo, below user-placed notes)
+      function genBar(b) {
+        if (barCache.has(b)) return barCache.get(b);
+        const m = new Map(contentBar(b).map((n) => [key(n.step, n.lane), n]));
+        for (const [k, n] of E.plan)
+          if (Math.floor(n.step / 16) === b && !(m.get(k) && m.get(k).src === "place")) {
+            n.muted = E.dismissed.has(k);
+            m.set(k, n);
+          }
+        const out = fxView(b, [...m.values()]);
+        barCache.set(b, out);
+        return out;
+      }
+
+      // ===================== HOLD-TO-PLAY PLANNER =====================
+      const HOLD = {
+        keys: new Map(), // lane -> step it was pressed
+        sounded: new Set(), // lanes that have played since their press
+        since: 0, // step the current held phrase started (intensity clock)
+        releasedAt: -1e9,
+        cursor: 0, // planned up to (exclusive)
+        hist: METRIC.map((m) => m * 0.5), // learned groove: onset weight per 16th
+        density: 1, // wheel while holding: ×1.25 per notch, 0.25 … 4 (persists across holds)
+        GRACE: 2, // steps a key must be held before the planner adds notes for it
+        AHEAD: 48, // plan 3 bars ahead so the plan is readable on the decelerating floor
+      };
+      E.plan = new Map();
+      const holdI = (t) => 0.25 + 0.75 * clamp((t - HOLD.since) / 32, 0, 1);
+      function learn(step, w) {
+        for (let i = 0; i < 16; i++) HOLD.hist[i] *= 1 - w * 0.2;
+        HOLD.hist[mod(step, 16)] += w;
+        const mx = Math.max(...HOLD.hist);
+        if (mx > 1) HOLD.hist = HOLD.hist.map((v) => v / mx);
+      }
+      // most recent user/hold onsets before t: overall, per lane, and the last lane
+      function lastHold(t) {
+        const lane = new Map();
+        let any = -1e9, prev = null;
+        const see = (n) => {
+          if (n.step >= t) return;
+          if ((lane.get(n.lane) ?? -1e9) < n.step) lane.set(n.lane, n.step);
+          if (n.step > any) { any = n.step; prev = n.lane; }
+        };
+        for (const n of E.past) if (n.src === "user" && n.step > t - 48) see(n);
+        for (const n of E.plan.values()) see(n);
+        return { lane, any, prev };
+      }
+      // plan one bar (or its remainder from `from`): pick the N best slots, then give each slot the best held key
+      function planBar(b, from) {
+        const t0 = Math.max(from, b * 16), t1 = b * 16 + 16, pool = chordAt(b).pool, k = HOLD.keys.size, I = holdI(t0);
+        const D = HOLD.density;
+        // sparse by default: one key ~1-2 → 4 notes per bar at D=1; wheel scales D (0.25 … 4)
+        const N = Math.round(D * (1 + 3 * I + (k - 1) * I) * ((t1 - t0) / 16));
+        const gapAll = clamp(Math.round(4.5 - 1.5 * D * I), 1, 4); // quarters/8ths at low density, 16ths only when dense
+        const content = contentBar(b).filter((n) => !n.muted);
+        const fit = (l, m) => (pool.includes(l) ? 0.35 : m < 0.6 ? -0.1 : -0.8); // non-chord tones only off the strong beats
+        const lanes = [...HOLD.keys.keys()];
+        const slots = [];
+        for (let t = t0; t < t1; t++) {
+          const s = mod(t, 16), m = METRIC[s], occ = content.filter((n) => n.step === t).length;
+          slots.push({ t, sc: m + 0.6 * HOLD.hist[s] + Math.max(...lanes.map((l) => fit(l, m))) - 0.25 * occ + 0.15 * (hash01(t, k, 78) - 0.5) });
+        }
+        slots.sort((a, c) => c.sc - a.sc);
+        const lh = lastHold(t0), taken = [lh.any];
+        const chosen = [];
+        for (const sl of slots) {
+          if (chosen.length >= N || sl.sc < 0.5) break;
+          if (taken.some((u) => Math.abs(u - sl.t) < gapAll)) continue;
+          chosen.push(sl.t);
+          taken.push(sl.t);
+        }
+        chosen.sort((a, c) => a - c);
+        let prev = lh.prev;
+        const lastL = new Map(lh.lane);
+        for (const t of chosen) {
+          const m = METRIC[mod(t, 16)], occL = new Set(content.filter((n) => n.step === t).map((n) => n.lane));
+          const c = [...HOLD.keys]
+            .filter(([l, pressed]) => t >= pressed && !occL.has(l) && !E.dismissed.has(key(t, l)) && fit(l, m) > -0.5)
+            .map(([l, pressed]) => {
+              const since = t - Math.max(lastL.get(l) ?? -1e9, pressed - 10);
+              let sc = fit(l, m) + clamp(since / 16, 0, 1) * 0.5; // rotate through the held keys
+              if (k > 1 && prev != null) sc += l === prev ? -0.3 : Math.abs(l - prev) <= 2 ? 0.12 : 0; // smooth, not stuck
+              return { l, sc: sc + 0.1 * (hash01(t, l, 79) - 0.5) };
+            })
+            .sort((a, d) => d.sc - a.sc);
+          if (!c.length) continue;
+          const pick = [c[0]];
+          if (m >= 0.85 && I > 0.5 && D >= 1.5 && pool.includes(c[0].l)) {
+            const c2 = c.slice(1).find((x) => pool.includes(x.l) && ![1, 2].includes(Math.abs(SEMI(x.l) - SEMI(c[0].l))));
+            if (c2) pick.push(c2);
+          }
+          for (const { l } of pick) {
+            E.plan.set(key(t, l), mk(t, l, m < 0.4 ? 0.4 : 0.55 + 0.35 * m, "hold"));
+            lastL.set(l, t);
+            prev = l;
+          }
+        }
+      }
+      function extendPlan() {
+        const end = E.nextStep + HOLD.AHEAD;
+        if (!HOLD.keys.size) HOLD.cursor = Math.max(HOLD.cursor, E.nextStep);
+        else
+          while (HOLD.cursor < end) {
+            const b = Math.floor(HOLD.cursor / 16);
+            planBar(b, HOLD.cursor);
+            HOLD.cursor = b * 16 + 16;
+          }
+        bumpView();
+      }
+      function replan() {
+        for (const [k, n] of E.plan) if (n.step >= E.nextStep) E.plan.delete(k);
+        HOLD.cursor = E.nextStep;
+        extendPlan();
+      }
+      const Hold = {
+        press(l) {
+          Audio.ensure();
+          if (!HOLD.keys.size && E.nextStep - HOLD.releasedAt > 16) HOLD.since = E.nextStep;
+          HOLD.keys.set(l, E.nextStep + HOLD.GRACE); // planned notes start after a short hold, so a tap never doubles
+          HOLD.sounded.delete(l);
+          replan();
+        },
+        release(l) {
+          if (!HOLD.keys.has(l)) return;
+          HOLD.keys.delete(l);
+          for (const [k, n] of E.plan) if (n.lane === l && n.step >= E.nextStep) E.plan.delete(k);
+          if (!HOLD.keys.size) HOLD.releasedAt = E.nextStep;
+          replan();
+        },
+        setDensity(d) {
+          const nd = clamp(d, 0.25, 4);
+          if (nd === HOLD.density) return;
+          HOLD.density = nd;
+          Audio.click(0.6 + nd * 0.3);
+          replan();
+        },
+        releaseAll() {
+          for (const l of [...HOLD.keys.keys()]) this.release(l);
+        },
+      };
+
+      function futureNotes(to) {
+        const out = [];
+        for (let b = Math.floor(E.nextStep / 16); b * 16 < to; b++) for (const n of genBar(b)) if (n.step >= E.nextStep && n.step < to) out.push(n);
+        return out;
+      }
+
+      function schedStep(step, when) {
+        if (step < E.nextStep) return; // already scheduled before a pause
+        const s = mod(step, 16),
+          b = Math.floor(step / 16);
+        if (FX.outro && step >= FX.outro.end) {
+          // the music has ended: let the last Ding ring, then stop
+          if (!FX.outro.ending) {
+            FX.outro.ending = true;
+            Clock.later(when + 2.6, finishOutro);
+          }
+          E.nextStep = step + 1;
+          return;
+        }
+        if (FX.outro && step === FX.outro.final) at(when, () => shock(G.cx - 4 * G.gap, G.nowY, Math.hypot(W, H), 3.2, "rgba(255,255,255,", 2));
+        drums(step, when);
+        let placed = false;
+        for (const n of genBar(b)) {
+          if (n.step !== step || n.muted) continue;
+          Audio.pan(n.lane, when, n.vel, n.ring || (n.ghost ? 2 : 4), n.oct);
+          if (n.src === "roll" && VC.stutter && FX.len === 1 && FX.b > 0.9) Audio.pan(n.lane, when + Clock.stepDur() / 2, n.vel * 0.8, 1); // 32nd stutter
+          const hold = n.src === "hold";
+          const p = { step, lane: n.lane, vel: n.vel, ghost: n.ghost, src: n.src === "place" || hold ? "user" : n.src, auto: hold, lock: n.lock, idx: n.idx, pickup: n.pickup };
+          if (hold) {
+            E.plan.delete(key(step, n.lane));
+            HOLD.sounded.add(n.lane);
+            learn(step, 0.03);
+          }
+          E.past.push(p);
+          if (n.lock && !n.pickup) n.lock.last[n.idx] = p; // the lock carries itself forward
+          if (n.src === "place") {
+            E.placed.delete(key(step, n.lane));
+            placed = true;
+          }
+        }
+        E.nextStep = step + 1;
+        extendPlan();
+        if (s === 15) E.past = E.past.filter((n) => n.step > step - 16 * 12);
+        if (placed) bump();
+      }
+      Clock.onStep(schedStep);
+
+      const Eng = {
+        playKey(lane) {
+          Audio.ensure();
+          const bare = FX.mode === "freeze";
+          Audio.pan(lane, 0, 0.85, bare ? 12 : 4, 0, bare); // inside a freeze the strike sounds naked in the vacuum
+          if (bare) shock(G.cx + (lane - 4) * G.gap * FX.sx, G.nowY, 160, 1.2, "rgba(255,255,255,", 1.5);
+          const step = Math.round(Clock.pos()),
+            o = E.past.find((n) => n.step === step && n.lane === lane);
+          if (o) {
+            o.src = "user";
+            o.vel = 0.85;
+            o.ghost = false;
+          } else E.past.push(mk(step, lane, 0.85, "user"));
+          learn(step, 0.5);
+          bump();
+        },
+        makeLock(sel) {
+          sel = sel.filter((n) => n.step < E.nextStep || n.step < POS);
+          if (!sel.length) return null;
+          // sliding window: periods are whole bars, so the anchor need not sit on a bar line — re-emission keeps
+          // every note on its original beat. Wider than 32 steps: keep the 32-step stretch holding the most notes.
+          sel.sort((a, b) => a.step - b.step || a.lane - b.lane);
+          let lo = sel[0].step;
+          if (sel[sel.length - 1].step - lo >= 32) {
+            let best = -1;
+            for (const n of sel) {
+              const c = sel.filter((m) => m.step >= n.step && m.step < n.step + 32).length;
+              if (c > best) { best = c; lo = n.step; }
+            }
+          }
+          sel = sel.filter((n) => n.step >= lo && n.step < lo + 32);
+          const hi = sel[sel.length - 1].step,
+            period = hi - lo < 16 ? 16 : 32;
+          // tidiest anchor that still fits: bar line, else beat, else the first note itself
+          const anchor = [Math.floor(lo / 16) * 16, Math.floor(lo / 4) * 4, lo].find((a) => hi < a + period),
+            span = hi - anchor + 1,
+            id = E.nextId++;
+          const L = {
+            id,
+            hue: (id - 1) % HUES.length,
+            anchor,
+            period,
+            V: 0.2,
+            alive: true,
+            notes: sel.map((n) => ({ off: n.step - anchor, lane: n.lane, vel: n.vel })),
+            last: sel.slice(),
+          };
+          sel.forEach((n) => {
+            n.lock = L;
+          });
+          E.locks.push(L);
+          bump();
+          Audio.click(1.4, true);
+          return L;
+        },
+        removeLock(L) {
+          L.alive = false;
+          E.locks = E.locks.filter((x) => x !== L);
+          if (E.sel === L) E.sel = null;
+          if (E.hover === L) E.hover = null;
+          bump();
+          Audio.click(0.6, true);
+        },
+        // edit the locked pattern in place (period unchanged). L.last stays index-aligned with L.notes.
+        addNote(L, off, lane) {
+          if (off < 0 || off >= L.period || lane < 0 || lane > 8 || L.notes.some((n) => n.off === off && n.lane === lane)) return;
+          L.notes.push({ off, lane, vel: 0.85 });
+          L.last.push(undefined);
+          bump();
+          Audio.ensure();
+          Audio.pan(lane, 0, 0.5, 2);
+        },
+        removeNote(L, i) {
+          L.notes.splice(i, 1);
+          L.last.splice(i, 1);
+          if (!L.notes.length) return this.removeLock(L);
+          bump();
+          Audio.click(0.6);
+        },
+        removeNotes(L, idxs) {
+          if (!idxs.length) return;
+          idxs
+            .sort((a, b) => b - a)
+            .forEach((i) => {
+              L.notes.splice(i, 1);
+              L.last.splice(i, 1);
+            });
+          if (!L.notes.length) return this.removeLock(L);
+          bump();
+          Audio.click(0.6, true);
+        },
+        dismissMany(ns) {
+          for (const n of ns) {
+            const k = key(n.step, n.lane);
+            if (n.src === "place") E.placed.delete(k);
+            else E.dismissed.add(k);
+          }
+          if (ns.length) {
+            bump();
+            Audio.click(0.8, true);
+          }
+        },
+        toggleMute(L) {
+          L.muted = !L.muted;
+          bump();
+          Audio.click(L.muted ? 0.5 : 1.2, true);
+        },
+        // any muted -> unmute all; otherwise mute all
+        toggleMuteAll() {
+          const m = !E.locks.some((L) => L.muted);
+          E.locks.forEach((L) => {
+            L.muted = m;
+          });
+          bump();
+          Audio.click(m ? 0.5 : 1.2, true);
+        },
+        setV(L, v) {
+          const nv = Math.round(clamp(v, 0, 1) * 20) / 20;
+          if (nv === L.V) return;
+          L.V = nv;
+          bump();
+          Audio.click(0.7 + nv);
+        },
+        toggleDismiss(n) {
+          const k = key(n.step, n.lane);
+          if (n.src === "place") E.placed.delete(k);
+          else if (E.dismissed.has(k)) E.dismissed.delete(k);
+          else E.dismissed.add(k);
+          bump();
+          Audio.click(0.8);
+        },
+        place(step, lane) {
+          if (step < E.nextStep) return;
+          const k = key(step, lane);
+          E.dismissed.delete(k);
+          E.placed.set(k, mk(step, lane, 0.85, "place"));
+          bump();
+          Audio.pan(lane, 0, 0.4, 2);
+        },
+      };
+
+      // pre-generated past: 8 bars, fills the 120-step wall (no pre-played motif, so the first render has no echo curves)
+      for (let b = -8; b < 0; b++) E.past.push(...baseBar(b));
+
+      // ---------------- shared drawing (UI supplies P(note) -> {x,y,s} | null) ----------------
+      const alive = (n) => n.lock && n.lock.alive;
+      // lock notes (past tape, future tape) take HOT while their lock is hovered/selected
+      const noteCol = (n, a) => (!alive(n) ? ink(a) : lockActive(n.lock) ? hot(a) : hueA(n.lock, a));
+      function ring(g, x, y, r) {
+        g.beginPath();
+        g.arc(x, y, r, 0, Math.PI * 2);
+        g.stroke();
+      }
+      function dot(g, x, y, r) {
+        g.beginPath();
+        g.arc(x, y, r, 0, Math.PI * 2);
+        g.fill();
+      }
+      const straight = (g, a, b) => {
+        g.beginPath();
+        g.moveTo(a.x, a.y);
+        g.lineTo(b.x, b.y);
+        g.stroke();
+      };
+      const lockActive = (L) => L === E.hover || L === E.sel;
+
+      function inMarq(p, n) {
+        const m = E.marq;
+        if (!m || !p) return false;
+        if (m.zone === "floor")
+          return (
+            !!n && n.step >= Math.min(m.s0, m.s1) && n.step <= Math.max(m.s0, m.s1) && VL(n.lane) >= Math.min(m.l0, m.l1) && VL(n.lane) <= Math.max(m.l0, m.l1)
+          );
+        return p.x >= Math.min(m.x0, m.x1) && p.x <= Math.max(m.x0, m.x1) && p.y >= Math.min(m.y0, m.y1) && p.y <= Math.max(m.y0, m.y1);
+      }
+      // two layers: grouped (alive lock) vs free. Marquee picks free notes only; shift includes grouped ones.
+      const marqPick = (P) => E.past.filter((n) => n.step < POS && (E.marq.all || !alive(n)) && inMarq(P(n)));
+
+      // influence: lock notes -> most recent past instance; echoes -> the user note that caused them; varied -> tick to exact position
+      function drawLinks(g, P, fut, link = straight, srcOf = null) {
+        g.lineWidth = 1;
+        for (const n of fut) {
+          const b = P(n);
+          if (!b) continue;
+          if (n.src === "lock") {
+            const a = !n.pickup && srcOf ? srcOf(n) : P(n.pickup ? n.parent : n.lock.last[n.idx]);
+            if (!a) continue; // pickups hang off the note they ornament
+            // one colour per lock for every line it causes (attention, pickup, displacement); all switch to HOT on hover/select
+            const act = lockActive(n.lock),
+              col = act ? hot(0.75) : hueA(n.lock, 0.42);
+            g.strokeStyle = col;
+            if (n.pickup) varArc(g, b, a, true);
+            else link(g, a, b, n); // pickup: upside-down dashed arch into the note it leads
+            if (n.varied && !n.pickup) {
+              const o = P(n.orig);
+              if (o) {
+                g.strokeStyle = act ? HOT : hueA(n.lock, 0.7);
+                varArc(g, b, o);
+                g.fillStyle = act ? HOT : hueA(n.lock, 0.8);
+                dot(g, o.x, o.y, 1.5);
+              }
+            }
+          } else if (n.src === "echo") {
+            const a = P(n.from);
+            if (!a) continue;
+            g.strokeStyle = ink((0.32 / n.age) * clamp(1 - (POS - n.from.step) / 40, 0.15, 1));
+            g.setLineDash([2, 3]);
+            link(g, a, b, n);
+            g.setLineDash([]);
+          }
+        }
+      }
+
+      // variance: dashed arc from the varied note to where the exact copy would be; bulges toward NOW, taller for bigger moves
+      // flip = hang below (pickup → lead note) instead of rising toward NOW (displacement)
+      function varArc(g, b, o, flip = false) {
+        const h = clamp(Math.hypot(o.x - b.x, o.y - b.y) * 0.3, 8, 70);
+        const top = flip ? Math.min(G.nowY + G.frontH + 14, Math.max(b.y, o.y) + h) : Math.max(G.nowY + 2, Math.min(b.y, o.y) - h); // arch stays on the floor
+        g.setLineDash([2, 3]);
+        g.beginPath();
+        g.moveTo(b.x, b.y);
+        g.bezierCurveTo(b.x, top, o.x, top, o.x, o.y);
+        g.stroke();
+        g.setLineDash([]);
+      }
+      function drawNote(g, p, n, past, r, picked, dim = 1) {
+        const a = (n.ghost ? 0.42 : 0.92) * dim;
+        g.lineWidth = 1;
+        if (n.muted) {
+          g.strokeStyle = ink(0.3);
+          g.beginPath();
+          g.moveTo(p.x - r, p.y - r);
+          g.lineTo(p.x + r, p.y + r);
+          g.moveTo(p.x + r, p.y - r);
+          g.lineTo(p.x - r, p.y + r);
+          g.stroke();
+          return;
+        }
+        if (past) {
+          g.fillStyle = noteCol(n, a);
+          dot(g, p.x, p.y, r);
+          if (n.src === "user") {
+            g.strokeStyle = ink(0.6);
+            ring(g, p.x, p.y, r + 2.5);
+          }
+        } else {
+          g.strokeStyle = noteCol(n, a);
+          if (n.varied) g.setLineDash([2, 2]);
+          ring(g, p.x, p.y, r);
+          g.setLineDash([]);
+          if (n.src === "place" || n.src === "hold") {
+            g.fillStyle = ink(0.9);
+            dot(g, p.x, p.y, 1.5);
+          }
+          if (n.oct) ring(g, p.x, p.y, r + 3);
+        }
+        if (picked) {
+          g.strokeStyle = HOT;
+          ring(g, p.x, p.y, r + 3);
+        }
+      }
+
+      function drawNotes(g, P, fut, R) {
+        const del = E.marq && E.marq.del,
+          pick = E.marq && !del ? new Set(marqPick(P)) : null;
+        E.fvis = [];
+        const dimGrouped = E.marq && !E.marq.all && !del; // grouped layer recedes while a plain drag is in progress
+        for (const n of E.past) {
+          const p = P(n);
+          if (p) drawNote(g, p, n, true, R(n, p), pick && pick.has(n), dimGrouped && alive(n) ? 0.3 : 1);
+        }
+        for (const n of fut) {
+          const p = P(n);
+          if (!p) continue;
+          E.fvis.push({ n, x: p.x, y: p.y });
+          drawNote(g, p, n, false, R(n, p), del && !n.muted && inMarq(p, n));
+        }
+      }
+
+      // bounding box of the lock's most recent past instance (what the wheel/right-click/backspace act on)
+      function lockBox(L, P, pad = 7) {
+        let x0 = 1e9,
+          y0 = 1e9,
+          x1 = -1e9,
+          y1 = -1e9;
+        for (const n of L.last) {
+          const p = n && P(n);
+          if (!p) continue;
+          x0 = Math.min(x0, p.x);
+          y0 = Math.min(y0, p.y);
+          x1 = Math.max(x1, p.x);
+          y1 = Math.max(y1, p.y);
+        }
+        return x0 > x1 ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
+      }
+      function drawLockBoxes(g, P, pad) {
+        g.font = FONT;
+        g.textAlign = "left";
+        g.textBaseline = "bottom";
+        g.lineWidth = 1;
+        for (const L of E.locks) {
+          const r = lockBox(L, P, pad);
+          if (!r) continue;
+          const c = lockActive(L) ? HOT : hueA(L, 0.65);
+          g.strokeStyle = c;
+          g.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+          g.fillStyle = c;
+          g.fillText(`L${L.id} V${L.V.toFixed(2)}`, r.x0, r.y0 - 2);
+        }
+      }
+
+      function drawChips(g, x, y) {
+        g.font = FONT;
+        g.textAlign = "left";
+        g.textBaseline = "middle";
+        E.chips = [];
+        if (!E.locks.length) return;
+        for (const L of E.locks) {
+          const t = `L${L.id}  V ${L.V.toFixed(2)}  /${L.period}`,
+            w = g.measureText(t).width + 12;
+          g.strokeStyle = lockActive(L) ? HOT : hueA(L, 0.5);
+          g.strokeRect(x, y - 8, w, 16);
+          g.fillStyle = lockActive(L) ? HOT : hueA(L, 0.9);
+          g.fillText(t, x + 6, y);
+          E.chips.push({ L, x, y: y - 8, w, h: 16 });
+          x += w + 6;
+        }
+      }
+
+      function drawMarquee(g) {
+        const m = E.marq;
+        if (!m || !m.zone) return;
+        g.strokeStyle = hot(0.8);
+        g.lineWidth = 1;
+        g.setLineDash([4, 3]);
+        let at = { x: Math.min(m.x0, m.x1), y: Math.max(m.y0, m.y1) };
+        if (m.zone === "floor") at = drawTapeMarq(g, m) || at;
+        else g.strokeRect(Math.min(m.x0, m.x1), Math.min(m.y0, m.y1), Math.abs(m.x1 - m.x0), Math.abs(m.y1 - m.y0));
+        g.setLineDash([]);
+        g.font = FONT;
+        g.textAlign = "left";
+        g.textBaseline = "top";
+        g.fillStyle = hot(0.8);
+        g.fillText(m.del ? "delete" : m.all ? "+ grouped" : "free only", at.x, at.y + 3);
+      }
+
+      // ---------------- shared input ----------------
+      function wireInput(cv, UI) {
+        const xy = (e) => {
+          const r = cv.getBoundingClientRect();
+          return [e.clientX - r.left, e.clientY - r.top];
+        };
+        const chipAt = (x, y) => (E.chips.find((c) => x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) || {}).L;
+        const lockAt = (x, y) =>
+          chipAt(x, y) ||
+          E.locks.find((L) => {
+            const r = UI.lockBox ? UI.lockBox(L) : lockBox(L, UI.P);
+            return r && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+          });
+        const futAt = (x, y) => {
+          let best = null,
+            bd = 9;
+          for (const f of E.fvis) {
+            const d = Math.hypot(f.x - x, f.y - y);
+            if (d < bd) {
+              bd = d;
+              best = f.n;
+            }
+          }
+          return best;
+        };
+        cv.addEventListener("pointerdown", (e) => {
+          Audio.ensure();
+          POS = Clock.pos();
+          if (e.button === 0 && FX.mode === "freeze") {
+            FX.mouse = true; // re-grip the freeze
+            return;
+          }
+          if (e.button === 0 && FX.space && (FX.mode === "build" || FX.mode === "armed")) {
+            // FREEZE: hold breath at the apex
+            const [x, y] = xy(e);
+            FX.mouse = true;
+            enterFreeze(x, y);
+            try {
+              cv.setPointerCapture(e.pointerId);
+            } catch (_) {
+              /* synthetic */
+            }
+            return;
+          }
+          if (e.button === 2) {
+            const [x, y] = xy(e),
+              zone = E.locks.some((L) => {
+                const r = sideBox(L);
+                return r && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+              })
+                ? "box"
+                : zoneAt(x, y);
+            E.marq = { x0: x, y0: y, x1: x, y1: y, px: x, py: y, del: true, zone };
+            if (zone === "floor") {
+              const f = floorAt(x, y);
+              Object.assign(E.marq, { s0: f.step, l0: f.lane, s1: f.step, l1: f.lane });
+            }
+            try {
+              cv.setPointerCapture(e.pointerId);
+            } catch (_) {
+              /* synthetic */
+            }
+            return;
+          }
+          if (e.button !== 0) return;
+          const [x, y] = xy(e),
+            L = chipAt(x, y);
+          if (L) {
+            E.sel = L;
+            return;
+          }
+          const tl = sideTitleAt(x, y);
+          if (tl) {
+            if (e.ctrlKey || e.metaKey) Eng.toggleMuteAll();
+            else Eng.toggleMute(tl);
+            return;
+          }
+          const sc = sideCell(x, y);
+          if (sc) {
+            E.sel = sc.L;
+            if (sideExact(sc) < 0) Eng.addNote(sc.L, sc.off, sc.lane);
+            return;
+          }
+          const cell = UI.cellAt(x, y);
+          if (cell && cell.step >= E.nextStep) {
+            if (!futAt(x, y)) Eng.place(cell.step, cell.lane);
+            return;
+          }
+          if (zoneAt(x, y) !== "wall") {
+            E.sel = lockAt(x, y) || null;
+            return;
+          } // left drags must start on the past tape
+          E.marq = { x0: x, y0: y, x1: x, y1: y, px: x, py: y, all: e.shiftKey, zone: "wall", s0: POS - wallAge(G.nowY - y), l0: (x - G.cx) / G.gap + 4 };
+          try {
+            cv.setPointerCapture(e.pointerId);
+          } catch (_) {
+            /* synthetic pointers */
+          }
+        });
+        cv.addEventListener("pointermove", (e) => {
+          const [x, y] = xy(e);
+          FX.mx = x;
+          FX.my = y;
+          if (E.marq) {
+            E.marq.x1 = x;
+            E.marq.y1 = y;
+            E.marq.all = e.shiftKey;
+            syncMarq();
+          }
+          E.hover = lockAt(x, y) || null;
+          E.cell = sideCell(x, y);
+        });
+        cv.addEventListener("pointerup", (e) => {
+          if (FX.mouse && e.button === 0) {
+            FX.mouse = false;
+            if (FX.mode === "freeze" && !FX.space) dropFromFreeze(); // both released → DROP
+            return;
+          }
+          const m = E.marq;
+          if (!m) return;
+          POS = Clock.pos();
+          syncMarq();
+          const dragged = Math.abs(m.x1 - m.x0) > 4 || Math.abs(m.y1 - m.y0) > 4;
+          if (m.del) {
+            if (!dragged) rightClick(m.px, m.py);
+            else if (m.zone) {
+              for (const L of [...E.locks])
+                Eng.removeNotes(
+                  L,
+                  L.notes.map((_, i) => i).filter((i) => inMarq(sidePt(L, i))),
+                );
+              Eng.dismissMany(E.fvis.filter((f) => !f.n.muted && inMarq(f, f.n)).map((f) => f.n));
+            }
+            E.marq = null;
+            return;
+          }
+          if (dragged) Eng.makeLock(marqPick(UI.P));
+          else E.sel = lockAt(m.px, m.py) || null;
+          E.marq = null;
+        });
+        cv.addEventListener("contextmenu", (e) => e.preventDefault()); // right button handled via pointerdown/up (click vs drag)
+        function rightClick(x, y) {
+          const sc = sideCell(x, y);
+          if (sc) {
+            const i = sideNoteAt(sc);
+            if (i >= 0) Eng.removeNote(sc.L, i);
+            return;
+          }
+          const L = lockAt(x, y);
+          if (L) {
+            Eng.removeLock(L);
+            return;
+          }
+          const n = futAt(x, y);
+          if (n) Eng.toggleDismiss(n);
+        }
+        cv.addEventListener(
+          "wheel",
+          (e) => {
+            if (HOLD.keys.size) {
+              // holding keys: wheel = density of the auto-placed notes
+              e.preventDefault();
+              Hold.setDensity(HOLD.density * (e.deltaY < 0 ? 1.25 : 0.8));
+              return;
+            }
+            const [x, y] = xy(e),
+              L = lockAt(x, y);
+            e.preventDefault();
+            if (!L) return setVol(Audio.volume - Math.sign(e.deltaY) * 0.04); // empty canvas: master volume
+            Eng.setV(L, L.V - Math.sign(e.deltaY) * 0.05);
+          },
+          { passive: false },
+        );
+        const btn = document.getElementById("play");
+        const toggle = () => {
+          Clock.toggle();
+          if (!Clock.playing) Hold.releaseAll();
+          btn.textContent = Clock.playing ? "STOP" : "PLAY";
+        };
+        btn.addEventListener("click", () => {
+          if (FX.mode !== "groove" && FX.mode !== "climax") cancelFX();
+          toggle();
+          btn.blur();
+        });
+        const vol = document.getElementById("vol");
+        const setVol = (v) => {
+          Audio.setVolume(v);
+          vol.value = Math.round(Audio.volume * 100);
+        };
+        vol.addEventListener("input", () => {
+          Audio.setVolume(vol.value / 100);
+          vol.blur();
+        });
+        vol.addEventListener(
+          "wheel",
+          (e) => {
+            e.preventDefault();
+            setVol(Audio.volume - Math.sign(e.deltaY) * 0.04);
+          },
+          { passive: false },
+        );
+        addEventListener("keydown", (e) => {
+          if (e.key === "Shift" && E.marq) E.marq.all = true;
+          if (e.ctrlKey || e.metaKey || e.altKey) return;
+          const i = KEYS.indexOf(e.key.toLowerCase());
+          if (i >= 0) {
+            if (!e.repeat) {
+              Eng.playKey(i); // a tap always places (and sounds) a note
+              if (Clock.playing && FX.mode !== "outro") Hold.press(i); // holding adds planned notes on top
+            }
+            return;
+          }
+          const L = E.hover || E.sel;
+          if (e.code === "Space") {
+            e.preventDefault();
+            if (e.repeat || FX.space) return;
+            FX.space = true;
+            FX.spaceAt = performance.now();
+            FX.shift = e.shiftKey;
+            FX.spaceStartedPlay = !Clock.playing && FX.mode !== "freeze";
+            if (FX.spaceStartedPlay) toggle(); // tap from silence = play
+          } else if (e.key === "Escape") {
+            if (FX.mode !== "groove" && FX.mode !== "climax") cancelFX();
+            E.sel = null;
+            E.marq = null;
+          } else if ((e.key === "Backspace" || e.key === "Delete") && L) {
+            e.preventDefault();
+            Eng.removeLock(L);
+          } else if (e.key === "[" && L) Eng.setV(L, L.V - 0.05);
+          else if (e.key === "]" && L) Eng.setV(L, L.V + 0.05);
+        });
+        addEventListener("blur", () => {
+          Hold.releaseAll();
+          FX.space = FX.mouse = false;
+          if (FX.mode === "build" || FX.mode === "freeze") cancelFX();
+        });
+        addEventListener("keyup", (e) => {
+          if (e.code === "Space") {
+            const held = performance.now() - FX.spaceAt;
+            FX.space = false;
+            if (FX.mode === "build") {
+              if (!FX.mouse) releaseBuild(); // released without freezing → drop on the next bar line
+            } else if (FX.mode === "freeze") {
+              if (!FX.mouse) dropFromFreeze(); // both released → DROP
+            } else if (held < 180 && !FX.spaceStartedPlay && (FX.mode === "groove" || FX.mode === "climax")) toggle(); // tap = stop
+            return;
+          }
+          const i = KEYS.indexOf(e.key.toLowerCase());
+          if (i >= 0) Hold.release(i);
+          if (e.key === "Shift" && E.marq) E.marq.all = false;
+        });
+        const frame = () => {
+          POS = Clock.pos();
+          UI.draw();
+          requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      }
+      // ---------------- END ENGINE ----------------
+
+      // ---------------- 2A UI: vertical past wall + perspective future floor ----------------
+      const cv = document.getElementById("c");
+      // variable tape speed. v0 = wall speed at NOW (px/step).
+      //   wall:  y = nowY - v0·T·ln(1 + age/T)        (full speed at NOW, decelerates upward; T solved so PAST steps fit)
+      //   floor: y = nowY + frontH·(e^(c·u) - 1)/(e^c - 1), u = d/FUT   exponential slow-down: speed ∝ e^(c·u), so a note
+      //          decelerates by a factor e^c between the far edge and NOW (c = decel slider)
+      const PAST = 120,
+        FUT = 96,
+        DECEL = 2;
+      let W = 0,
+        H = 0,
+        G = {};
+      const bisect = (f, lo, hi, it = 60) => {
+        for (let k = 0; k < it; k++) {
+          const m = Math.sqrt(lo * hi);
+          f(m) > 0 ? (hi = m) : (lo = m);
+        }
+        return Math.sqrt(lo * hi);
+      };
+      function solveTape() {
+        const span = G.nowY - G.top;
+        G.v0 = span / 40;
+        G.T = G.v0 * PAST <= span + 1e-6 ? Infinity : bisect((T) => G.v0 * T * Math.log(1 + PAST / T) - span, 1e-3, 1e7); // f grows with T
+        G.c = DECEL;
+      }
+      const g = setupCanvas(cv, (w, h) => {
+        W = w;
+        H = h;
+        const nowY = Math.round(H * 0.54),
+          gap = Math.min(30, W / 22),
+          top = 34;
+        G = { nowY, gap, cx: W / 2, top, frontH: H - nowY - 44, flare: Math.min(2.4, (W * 0.47) / (gap * (4.5 + EXT_GAP))) };
+        solveTape();
+      });
+      const wallOff = (age) => (G.T === Infinity ? G.v0 * age : G.v0 * G.T * Math.log1p(age / G.T));
+      const qOf = (u) => (G.c < 1e-6 ? u : Math.expm1(G.c * u) / Math.expm1(G.c));
+      const uOf = (q) => (G.c < 1e-6 ? q : Math.log1p(q * Math.expm1(G.c)) / G.c);
+
+      // raw projection of (step, visual lane); P(note) maps the note's lane through VL first
+      function proj(step, vl) {
+        const d = step - POS;
+        if (d < 0) {
+          if (-d > PAST + 1e-6) return null;
+          return { x: G.cx + (vl - 4) * G.gap * FX.sx, y: G.nowY - wallOff(-d), s: 1 };
+        }
+        if (d > FUT + 1e-6) return null;
+        const q = qOf(Math.min(1, d / FUT)),
+          s = 1 + (G.flare - 1) * q;
+        return { x: G.cx + (vl - 4) * G.gap * s * FX.sx, y: G.nowY + q * G.frontH * FX.sy, s };
+      }
+      const P = (n) => {
+        const p = proj(n.step, VL(n.lane));
+        if (!p || n.step < POS) return p;
+        const o = fxOff(n, p);
+        return { x: p.x + o.dx, y: p.y + o.dy, s: p.s };
+      };
+      const wallAge = (off) => (G.T === Infinity ? off / G.v0 : G.T * Math.expm1(off / (G.v0 * G.T)));
+      // marquee anchor rides the tape: recompute its screen corner each frame (wall) / the pointer's tape coords (floor)
+      function syncMarq() {
+        const m = E.marq;
+        if (!m) return;
+        if (m.zone === "wall") {
+          m.x0 = G.cx + (m.l0 - 4) * G.gap;
+          m.y0 = G.nowY - wallOff(Math.max(0, POS - m.s0));
+        } else if (m.zone === "floor") {
+          const f = floorAt(m.x1, m.y1);
+          m.s1 = f.step;
+          m.l1 = f.lane;
+          const a = proj(clamp(m.s0, POS, POS + FUT), m.l0);
+          if (a) {
+            m.x0 = a.x;
+            m.y0 = a.y;
+          }
+        }
+      }
+      // inverse of the floor: screen -> continuous (step, lane), clamped onto the floor's depth range
+      function floorAt(x, y) {
+        const q = clamp((y - G.nowY) / G.frontH, 0, 1),
+          s = 1 + (G.flare - 1) * q;
+        return { step: POS + FUT * uOf(q), lane: (x - G.cx) / (G.gap * s) + 4 };
+      }
+      // which tape is under the pointer (drags must start on one): core track only
+      // drag start zone: the tape plus a generous margin (past lo/hi, and above/below the tape ends).
+      // Side boxes are checked first by the caller, so the margin never steals a box drag.
+      const ZONE_PAD = EXT_GAP + 1.5, ZONE_PAD_Y = 24; // lanes, px
+      function zoneAt(x, y) {
+        if (y <= G.nowY && y >= G.nowY - wallOff(PAST) - ZONE_PAD_Y && Math.abs(x - G.cx) <= (4.5 + ZONE_PAD) * G.gap) return "wall";
+        if (y > G.nowY && y <= G.nowY + G.frontH + ZONE_PAD_Y) {
+          const f = floorAt(x, y);
+          if (f.lane >= -0.5 - ZONE_PAD && f.lane <= 8.5 + ZONE_PAD) return "floor";
+        }
+        return null;
+      }
+      // perspective trapezoid for a floor marquee (corners in tape space, clamped to the visible floor)
+      function drawTapeMarq(g, m) {
+        const s0 = clamp(Math.min(m.s0, m.s1), POS, POS + FUT),
+          s1 = clamp(Math.max(m.s0, m.s1), POS, POS + FUT);
+        const l0 = Math.min(m.l0, m.l1),
+          l1 = Math.max(m.l0, m.l1);
+        const c = [proj(s0, l0), proj(s0, l1), proj(s1, l1), proj(s1, l0)];
+        if (c.some((v) => !v)) return null;
+        g.beginPath();
+        g.moveTo(c[0].x, c[0].y);
+        for (const v of c.slice(1)) g.lineTo(v.x, v.y);
+        g.closePath();
+        g.stroke();
+        return { x: c[3].x, y: c[3].y };
+      }
+      // placement only reaches the 9 core lanes
+      function cellAt(x, y) {
+        if (y <= G.nowY || y > G.nowY + G.frontH) return null;
+        const f = floorAt(x, y),
+          lane = Math.round(f.lane);
+        return lane < 0 || lane > 8 ? null : { step: Math.round(f.step), lane };
+      }
+      const R = (n, p) => (n.ghost ? 2.6 : 4.2) * p.s;
+      // parabola attention: control point sits on the NOW plane, pushed outward (away from the funnel centre)
+      // by an amount proportional to the wall→floor distance. Quadratic Bézier = exact parabola segment.
+      function parabola(g, a, b, n) {
+        const mx = (a.x + b.x) / 2,
+          side = Math.sign(mx - G.cx) || (n.lane < 4 || (n.lane === 4 && (n.idx || 0) % 2) ? -1 : 1);
+        const span = Math.abs(b.y - a.y),
+          cx = mx + side * (12 + span * 0.32),
+          cy = G.nowY;
+        g.beginPath();
+        g.moveTo(a.x, a.y);
+        g.quadraticCurveTo(cx, cy, b.x, b.y);
+        g.stroke();
+      }
+      const line = (a, b) => {
+        if (!a || !b) return;
+        g.beginPath();
+        g.moveTo(a.x, a.y);
+        g.lineTo(b.x, b.y);
+        g.stroke();
+      };
+
+      function drawGrid() {
+        g.lineWidth = 1;
+        g.font = FONT;
+        g.textBaseline = "middle";
+        g.textAlign = "right";
+        for (let l = 0; l < 9; l++) {
+          g.strokeStyle = ink(0.07);
+          line({ x: G.cx + (l - 4) * G.gap * FX.sx, y: G.nowY - wallOff(PAST) }, { x: G.cx + (l - 4) * G.gap * FX.sx, y: G.nowY });
+          line(proj(POS, l), proj(POS + FUT, l));
+        }
+        const first = Math.ceil((POS - PAST) / 4) * 4;
+        for (let st = first; st <= POS + FUT; st += 4) {
+          const a = proj(st, -0.5),
+            b = proj(st, 8.5);
+          if (!a || !b) continue;
+          const bar = mod(st, 16) === 0;
+          g.strokeStyle = ink(bar ? 0.2 : 0.06);
+          line(a, b);
+          if (bar) {
+            const t = proj(st, -EXT_GAP - 0.6);
+            g.fillStyle = ink(0.35);
+            g.fillText(`${st / 16} ${chordAt(st / 16).sym}`, t.x, t.y);
+          }
+        }
+      }
+
+      // ---------------- SIDE ATTENTION BOXES (68 · C/D) ----------------
+      // Each lock lives in a box in the side gutters (alternating left/right, stacked along the wall).
+      // Inside: a mini copy of the locked pattern (9 lane columns × period rows, time downward like the wall)
+      // with its own playhead sweeping the period. Attention lines leave from these mini notes into the floor.
+      // A faint dotted tether links each box to the lock's latest instance on the wall.
+      const SB = { col: 11, row: 5, gapY: 28, rects: new Map() };
+      function layoutSide() {
+        SB.rects.clear();
+        const wallL = G.cx - (4.5 + EXT_GAP) * G.gap,
+          wallR = G.cx + (4.5 + EXT_GAP) * G.gap,
+          w = SB.col * 9,
+          yy = [G.top + 14, G.top + 14];
+        E.locks.forEach((L, i) => {
+          const side = i % 2,
+            h = L.period * SB.row,
+            x = side ? wallR + 34 : wallL - 58 - w;
+          SB.rects.set(L, { x, y: yy[side], w, h, side });
+          yy[side] += h + SB.gapY;
+        });
+      }
+      const sideRect = (L) => SB.rects.get(L);
+      // pattern-area hit test -> { L, off, lane } (cell under pointer)
+      const sideCell = (x, y) => {
+        for (const [L, r] of SB.rects)
+          if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return { L, off: Math.floor((y - r.y) / SB.row), lane: Math.floor((x - r.x) / SB.col) };
+        return null;
+      };
+      const sideExact = (c) => c.L.notes.findIndex((n) => n.off === c.off && n.lane === c.lane);
+      const sideNoteAt = (c) => {
+        const ex = sideExact(c);
+        if (ex >= 0) return ex;
+        let best = -1,
+          bd = 1.6;
+        c.L.notes.forEach((n, i) => {
+          const d = Math.abs(n.off - c.off) + Math.abs(n.lane - c.lane) * 2;
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        });
+        return best;
+      };
+      const sideTitleAt = (x, y) => {
+        for (const [L, r] of SB.rects) if (x >= r.x - 4 && x <= r.x + r.w + 4 && y >= r.y - 16 && y < r.y) return L;
+        return null;
+      };
+      const sideBox = (L) => {
+        const r = sideRect(L);
+        return r && { x0: r.x - 4, y0: r.y - 16, x1: r.x + r.w + 4, y1: r.y + r.h + 4 };
+      };
+      const sidePt = (L, i) => {
+        const r = sideRect(L),
+          n = L.notes[i];
+        return r && n && { x: r.x + (VL(n.lane) + 0.5) * SB.col, y: r.y + (n.off + 0.5) * SB.row, s: 1 };
+      };
+      function drawSideBoxes(g) {
+        g.font = FONT;
+        g.textBaseline = "bottom";
+        g.lineWidth = 1;
+        for (const L of E.locks) {
+          const r = sideRect(L);
+          if (!r) continue;
+          const act = lockActive(L),
+            mu = L.muted,
+            c = act ? HOT : hueA(L, mu ? 0.3 : 0.65);
+          g.fillStyle = "#000";
+          g.fillRect(r.x, r.y, r.w, r.h);
+          g.strokeStyle = c;
+          g.strokeRect(r.x, r.y, r.w, r.h);
+          g.fillStyle = c;
+          g.textAlign = r.side ? "left" : "right";
+          g.fillText(`${mu ? "MUTED " : ""}L${L.id} V${L.V.toFixed(2)} /${L.period}`, r.side ? r.x : r.x + r.w, r.y - 3);
+          for (let b = mod(-L.anchor, 4) || 4; b < L.period; b += 4) {
+            g.strokeStyle = ink(0.1);
+            g.beginPath();
+            g.moveTo(r.x, r.y + b * SB.row);
+            g.lineTo(r.x + r.w, r.y + b * SB.row);
+            g.stroke();
+          }
+          const hc = E.cell && E.cell.L === L ? E.cell : null;
+          if (hc && !isExt(hc.lane)) {
+            g.strokeStyle = ink(0.5);
+            g.strokeRect(r.x + hc.lane * SB.col + 0.5, r.y + hc.off * SB.row + 0.5, SB.col - 1, SB.row - 1);
+          }
+          const ph = mod(POS - L.anchor, L.period);
+          g.strokeStyle = act ? HOT : hueA(L, 0.9);
+          g.beginPath();
+          g.moveTo(r.x, r.y + ph * SB.row);
+          g.lineTo(r.x + r.w, r.y + ph * SB.row);
+          g.stroke();
+          L.notes.forEach((n, i) => {
+            const p = sidePt(L, i),
+              age = mod(ph - n.off, L.period),
+              flash = age < 1.5 ? 1 - age / 1.5 : 0;
+            g.fillStyle = flash && !mu ? ink(0.6 + flash * 0.4) : (act ? hot : (x) => hueA(L, x))((n.vel < 0.5 ? 0.5 : 0.95) * (mu ? 0.35 : 1));
+            dot(g, p.x, p.y, (n.vel < 0.5 ? 1.6 : 2.4) + flash * 1.5);
+            if (E.marq && E.marq.del && inMarq(p)) {
+              g.strokeStyle = HOT;
+              ring(g, p.x, p.y, 4);
+            }
+          });
+          // dashed projection on the wall tape, easing toward the lock's latest notes
+          const t = lockBox(L, P, 6);
+          if (t)
+            L.wb = L.wb ? { x0: lerp(L.wb.x0, t.x0, 0.18), y0: lerp(L.wb.y0, t.y0, 0.18), x1: lerp(L.wb.x1, t.x1, 0.18), y1: lerp(L.wb.y1, t.y1, 0.18) } : t;
+          const w = L.wb;
+          if (!w || w.y1 < G.top) continue;
+          g.strokeStyle = act ? HOT : hueA(L, mu ? 0.25 : 0.7);
+          g.setLineDash([4, 3]);
+          g.strokeRect(w.x0, w.y0, w.x1 - w.x0, w.y1 - w.y0);
+          g.strokeStyle = hueA(L, act ? 0.5 : 0.2);
+          g.setLineDash([1, 3]);
+          g.beginPath();
+          g.moveTo(r.side ? r.x : r.x + r.w, r.y + r.h / 2);
+          g.lineTo(r.side ? w.x1 : w.x0, (w.y0 + w.y1) / 2);
+          g.stroke();
+          g.setLineDash([]);
+        }
+      }
+
+      const VARIANT = "b";
+      // ===================== 73 PERFORMANCE FX: build · freeze · drop · climax · outro (doc #44 five-act arc) =====================
+      // Gesture (all variants):  hold SPACE = BUILD (tension rises with hold time, ~2 bars to full)
+      //   + click & hold mouse = FREEZE (time stops, charge builds)  → release mouse AND space = DROP on that instant (bar 1)
+      //   release SPACE without freezing = DROP on the next bar line (quantized "fall-in"), tiny builds just cancel
+      //   hold SHIFT+SPACE ~0.6 s = OUTRO (phrase-aligned wind-down that lands on the tonic and stops) · Esc cancels build/freeze/outro
+      const VARIANTS = {
+        a: { // LOOP-ROLL → FREEZE → SLAM → STRIP
+          rolls: [8, 4, 2, 1], stutter: true, perc: "roll", delay: 0, vfx: "vertical", ding: [0, 8], outro: "strip",
+          suspend: false, vacuum: false, narrow: false, suck: false, chime: true,
+        },
+        b: { // GRAVITY → VACUUM → FAKEOUT → EXHALE
+          rolls: [12, 6, 3, 3], stutter: false, perc: "poly", delay: 1, vfx: "radial", ding: [0, 6, 12], outro: "exhale",
+          suspend: true, vacuum: true, narrow: false, suck: true, chime: false,
+        },
+        c: { // SPECTRAL TEAR → STEERED FREEZE → STEREO BLOOM → DECOMPRESS
+          rolls: null, stutter: false, perc: "palm", delay: 0, vfx: "lateral", ding: [0, 10], outro: "decompress",
+          suspend: false, vacuum: false, narrow: true, suck: false, chime: true, steer: true,
+        },
+      };
+      const VC = VARIANTS[VARIANT];
+      const BUILD_STEPS = 32, BASE_BPM = 105;
+      const FX = {
+        mode: "groove", // groove | build | freeze | armed | climax | outro
+        space: false, spaceAt: 0, spaceStartedPlay: false, shift: false, mouse: false, mx: 0, my: 0,
+        b: 0, t0: 0, len: 0, rollT0: 0, rollSrc: [], charge: 0, freezeAt: 0, steer: 0.5,
+        drop: null, outro: null, events: [], kicks: [], boom: null, lr: 1, shake: 0, flash: 0, rings: [],
+        sx: 1, sy: 1, prevMode: "groove",
+      };
+      const nowMs = () => performance.now();
+      const at = (when, fn) => FX.events.push({ at: when, fn });
+      const playBtn = () => document.getElementById("play");
+      const progIdx = (bar) => {
+        let off = 0;
+        for (const s of HARM.segs) if (bar >= s.from) off = s.off;
+        return mod(bar - off, PROG.length);
+      };
+      const shock = (x, y, r1, dur, col, w = 2) => FX.rings.push({ t: nowMs(), x, y, r1, dur, col, w });
+
+      // ---------- BUILD ----------
+      function startBuild() {
+        FX.prevMode = FX.mode;
+        FX.mode = "build";
+        FX.t0 = POS;
+        FX.b = 0;
+        FX.rollT0 = E.nextStep;
+        if (VC.rolls) {
+          const Wn = VC.rolls[0], w0 = FX.rollT0 - Wn;
+          FX.rollSrc = E.past.filter((n) => n.step >= w0 && n.step < FX.rollT0 && !n.muted && n.src !== "roll").map((n) => ({ off: n.step - w0, lane: n.lane, vel: n.vel }));
+          if (FX.rollSrc.length < 2) {
+            // too little played lately: add a chord-tone cell so the trap always has material
+            const pool = chordAt(Math.floor(FX.rollT0 / 16)).pool.filter((l) => l > 0);
+            [0, 3, 6, 9].filter((o) => o < Wn).forEach((o, i) => {
+              if (!FX.rollSrc.some((n) => n.off === Wn - 1 - o)) FX.rollSrc.push({ off: Wn - 1 - o, lane: i ? pool[i % pool.length] : 0, vel: 0.6 });
+            });
+          }
+          FX.len = VC.rolls[0];
+        }
+        if (VC.suspend) HARM.hold = { from: Math.floor(FX.rollT0 / 16) + 1, to: Infinity, idx: 2 }; // hang on VII, never resolve
+        bump();
+      }
+      // the trapped slice is len-aligned and always contains the most recent note
+      function rollAt(t) {
+        const len = FX.len, latest = Math.max(...FX.rollSrc.map((n) => n.off)), start = Math.floor(latest / len) * len, off = mod(t - FX.rollT0, len) + start;
+        return FX.rollSrc.filter((n) => n.off === off).map((n) => mk(t, n.lane, clamp(n.vel * (0.65 + 0.4 * FX.b), 0.2, 1), "roll"));
+      }
+      function releaseBuild() {
+        if (FX.b < 0.15) return cancelFX(); // a tiny build just evaporates
+        let D = (Math.floor(POS / 16) + 1) * 16;
+        if (D - POS < 1.5) D += 16;
+        setDrop(D, 0.35 + 0.45 * FX.b);
+        FX.mode = "armed";
+      }
+
+      // ---------- FREEZE ----------
+      function enterFreeze(x, y) {
+        FX.mode = "freeze";
+        FX.freezeAt = nowMs();
+        FX.mx = x;
+        FX.my = y;
+        Clock.stop();
+        Audio.setFreeze(true, VC.vacuum);
+        Audio.setRiser(0);
+        if (VC.chime) Audio.pan(8, 0, 0.55, 14, 0, true); // the compound-5th halo hangs in the hall
+        FX.flash = 0.25;
+        shock(G.cx, G.nowY, Math.max(W, H), 0.9, "rgba(255,255,255,", 1);
+      }
+      function dropFromFreeze() {
+        const D = Math.ceil(POS / 16 - 1e-6) * 16 || 16;
+        Clock.seek(D);
+        E.nextStep = D;
+        for (const [k, n] of E.plan) if (n.step < D) E.plan.delete(k);
+        HOLD.cursor = D;
+        setDrop(D, 0.55 + 0.45 * FX.charge);
+        FX.mode = "armed";
+        Clock.start();
+        playBtn().textContent = "STOP";
+      }
+
+      // ---------- DROP / CLIMAX ----------
+      function setDrop(step, e) {
+        const slam = step + VC.delay * 16, slamBar = slam / 16;
+        FX.drop = { step, slam, e };
+        if (VC.suspend) HARM.hold = { from: HARM.hold ? HARM.hold.from : step / 16, to: slamBar, idx: 2 };
+        else HARM.hold = null;
+        HARM.segs.push({ from: slamBar, off: mod(slamBar, PROG.length) }); // the slam lands on the tonic i
+        bump();
+        replan();
+      }
+      const inClimax = (step) => FX.drop && step >= FX.drop.slam && step < FX.drop.slam + 128;
+      const climaxBar = (step) => Math.floor((step - FX.drop.slam) / 16);
+      function onDropStep(when) {
+        // low end + dry bus return exactly on the downbeat
+        Audio.release(when);
+        FX.mode = "climax";
+        if (VC.delay) at(when, () => { FX.boom = { t: nowMs(), e: 0.25 }; FX.shake = 4; shock(G.cx, G.nowY, W * 0.4, 0.5, "rgba(255,255,255,", 1); });
+      }
+      function onSlam(when, e) {
+        at(when, () => {
+          FX.boom = { t: nowMs(), e };
+          FX.shake = 18 * e;
+          FX.flash = 0.4 * e;
+          shock(G.cx, G.nowY, Math.hypot(W, H), 0.7, "rgba(255,90,31,", 3);
+          shock(G.cx, G.nowY, Math.hypot(W, H) * 0.7, 1.1, "rgba(255,255,255,", 1.5);
+          if (VC.narrow) FX.tearAt = nowMs();
+        });
+      }
+      function kickFx(when, v) {
+        at(when, () => {
+          FX.kicks.push({ t: nowMs(), v });
+          FX.lr = -FX.lr;
+          FX.shake = Math.max(FX.shake, 2.5 * v);
+        });
+      }
+
+      // ---------- OUTRO ----------
+      function commitOutro() {
+        const start = (Math.floor(POS / 16) + 1) * 16, sb = start / 16;
+        let F = sb + 7;
+        while (progIdx(F) !== 3 || progIdx(F - 1) !== 2) F++; // ... VII → i : land on the tonic
+        HARM.hold = null;
+        FX.outro = { start, final: F * 16, end: F * 16 + 16 };
+        FX.mode = "outro";
+        Hold.releaseAll();
+        Audio.click(0.5, true);
+        bump();
+      }
+      const outroF = (step) => clamp((step - FX.outro.start) / (FX.outro.end - FX.outro.start), 0, 1);
+      const decompGrid = (f) => [1, 2, 4, 8, 16][Math.min(4, Math.floor(f * 5))];
+      function outroKeep(n, step) {
+        const f = outroF(step), s = mod(step, 16), m = METRIC[s];
+        if (VC.outro === "strip")
+          return f < 0.25 ? true : f < 0.5 ? !n.pickup && n.src !== "echo" && !n.ghost : f < 0.75 ? m >= 0.8 && !n.ghost : n.lane === 0 || (n.lock && s % 8 === 0);
+        if (VC.outro === "exhale") return f < 0.6 ? !n.ghost || f < 0.3 : f < 0.85 ? m >= 0.8 : s % 8 === 0;
+        return s % decompGrid(f) === 0; // decompress: 16ths → 8ths → quarters → halves → whole
+      }
+      function finishOutro() {
+        Clock.stop();
+        Audio.setLPF(0);
+        Audio.setHPF(0);
+        Audio.tail = 1;
+        Clock.setBpm(BASE_BPM);
+        FX.outro = null;
+        FX.mode = "groove";
+        FX.sx = FX.sy = 1;
+        playBtn().textContent = "PLAY";
+        bump();
+      }
+
+      function cancelFX() {
+        const wasFrozen = FX.mode === "freeze";
+        if (FX.mode === "outro") {
+          FX.outro = null;
+          Audio.setLPF(0);
+          Audio.tail = 1;
+          Clock.setBpm(BASE_BPM);
+        }
+        FX.mode = FX.drop && inClimax(POS) ? "climax" : "groove";
+        FX.b = 0;
+        if (VC.suspend) HARM.hold = null;
+        Audio.setFreeze(false);
+        Audio.setHPF(0);
+        Audio.setRiser(0);
+        if (wasFrozen) Clock.start();
+        bump();
+      }
+
+      // ---------- view filters (called from genBar) ----------
+      function fxView(b, notes) {
+        const b0 = b * 16;
+        if ((FX.mode === "build" || FX.mode === "armed" || FX.mode === "freeze") && VC.rolls) {
+          const until = FX.drop && FX.mode === "armed" ? FX.drop.step : Infinity;
+          const keep = notes.filter((n) => n.step < FX.rollT0 || n.step >= until || n.src === "place" || n.src === "hold");
+          for (let t = Math.max(b0, FX.rollT0); t < Math.min(b0 + 16, until); t++) keep.push(...rollAt(t));
+          notes = keep;
+        }
+        if (FX.drop && VC.delay && b0 >= FX.drop.step && b0 < FX.drop.slam)
+          notes = notes.filter((n) => METRIC[mod(n.step, 16)] >= 0.8 || n.src === "place" || n.src === "hold"); // half-time pocket
+        if (FX.outro && b0 + 16 > FX.outro.start) {
+          if (b0 >= FX.outro.end) return [];
+          if (b0 === FX.outro.final) return [mk(b0, 0, 0.9, "gen", { ring: 16 }), mk(b0, 4, 0.32, "gen", { ring: 16 })];
+          notes = notes.filter((n) => n.step < FX.outro.start || outroKeep(n, n.step));
+        }
+        return notes.sort((a, c) => a.step - c.step || a.lane - c.lane);
+      }
+      // climax content: new patterns that the explosion settles into
+      function climaxNotes(b) {
+        const b0 = b * 16;
+        if (!inClimax(b0)) return [];
+        const k = climaxBar(b0), pool = chordAt(b).pool, top = Math.max(...pool.filter((l) => l <= 8)), out = [];
+        for (const s of VC.ding) out.push(mk(b0 + s, 0, s ? 0.62 : 0.85, "drop"));
+        out.push(mk(b0 + 15, top, 0.55, "drop")); // "a"-16th suction into the next ONE
+        if (k >= 2) out.push(mk(b0 + 7, pool[1 % pool.length], 0.5, "drop"));
+        if (k >= 4) [3, 6, 9].forEach((s, i) => out.push(mk(b0 + s, pool[(i + 2) % pool.length], 0.32, "drop"))); // 3:2 friction at the peak
+        return out;
+      }
+      const climaxBoost = (step) => (inClimax(step) ? (climaxBar(step) < 4 ? 0.3 : 0.15) : 0);
+      const bloomOct = (n) => inClimax(n.step) && (climaxBar(n.step) >= (VC.narrow ? 0 : 2)) && n.lock && n.idx % 2 === 0 ? 1 : 0;
+
+      // ---------- percussion per phase ----------
+      function drums(step, when) {
+        const s = mod(step, 16), b = Math.floor(step / 16), sd = Clock.stepDur();
+        if (FX.drop && step === FX.drop.step && FX.mode === "armed") onDropStep(when);
+        if (FX.drop && step === FX.drop.slam) {
+          Audio.impact(when, FX.drop.e);
+          Audio.sub(when, chordAt(b).bassHz / 2, sd * 16, 0.6); // E1 sub under the Ding
+          Audio.kick(when, 1);
+          onSlam(when, FX.drop.e);
+        }
+        const mode = FX.mode;
+        if (mode === "build" || mode === "armed" && !(FX.drop && step >= FX.drop.step)) {
+          const B = FX.b, rel = step - FX.rollT0;
+          if (B < 0.75 && s % 4 === 0) Audio.kick(when, 0.55 * (1 - B));
+          if (VC.perc === "roll") {
+            const iv = { 8: 4, 4: 2, 2: 1, 1: 1 }[FX.len];
+            if (mod(rel, iv) === 0) Audio.tak(when, 0.14 + 0.36 * B, 1 + 0.45 * B);
+            if (FX.len === 1 && B > 0.9) Audio.tak(when + sd / 2, 0.3 + 0.2 * B, 1.5);
+          } else if (VC.perc === "poly") {
+            if (mod(rel, B > 0.75 ? 1 : 3) === 0) Audio.tak(when, 0.14 + 0.36 * B, 1 + 0.4 * B); // dotted-8th 3:2 friction → full roll
+          } else {
+            const pool = chordAt(b).pool;
+            Audio.dead(pool[mod(step, pool.length)], when, 0.1 + 0.32 * B); // palm-muted 16th bed rising
+            if (B > 0.4 && s % 4 === 0) Audio.pan(8, when, 0.15 + 0.3 * B, 8, 1); // compound-5th shimmer
+          }
+          return;
+        }
+        if (mode === "climax" && FX.drop && step >= FX.drop.step) {
+          if (step < FX.drop.slam) {
+            // B fakeout: one bar of half-time dub pocket
+            if (s === 0) { Audio.kick(when, 0.8); Audio.sub(when, chordAt(b).bassHz, sd * 16, 0.4); }
+            if (s === 8) Audio.tak(when, 0.45);
+            if (s % 4 === 2) Audio.hat(when, 0.1);
+            return;
+          }
+          const k = climaxBar(step), env = 1 - k / 9;
+          if (s % 4 === 0) { Audio.kick(when, 0.85); kickFx(when, 0.35 + 0.65 * env); }
+          if (s === 0 && step !== FX.drop.slam) Audio.sub(when, chordAt(b).bassHz, sd * 15, 0.4);
+          if (s === 4 || s === 12) Audio.tak(when, 0.36);
+          Audio.hat(when, s % 2 ? 0.16 : 0.07);
+          if (k >= 2 && s % 4 === 2) Audio.hat(when, 0.24, true);
+          if (k >= 4 && s % 3 === 0) Audio.tak(when, 0.12, 1.3);
+          return;
+        }
+        if (mode === "outro" && FX.outro && step >= FX.outro.start) {
+          const f = outroF(step), o = VC.outro;
+          if (step >= FX.outro.final) return; // only the Ding speaks in the last bar
+          if (o === "exhale" && s === 0) { Clock.setBpm(BASE_BPM * (1 - 0.06 * f)); Audio.tail = 1 + 0.4 * f; }
+          const g = o === "decompress" ? decompGrid(f) : 1;
+          const sub = o === "strip" ? f < 0.5 : o === "exhale" ? f < 0.5 : g < 8;
+          const kick = o === "strip" ? (s === 0 && f < 0.75) || (s === 8 && f < 0.5) : o === "exhale" ? (s === 0 && f < 0.85) || (s === 8 && f < 0.6) : s % Math.max(8, g) === 0 && g < 16;
+          const tak = (s === 4 || s === 12) && (o === "strip" ? f < 0.5 : o === "exhale" ? f < 0.4 : g <= 4);
+          const hat = s % 2 && (o === "strip" ? f < 0.25 : o === "exhale" ? f < 0.3 : g <= 1);
+          if (s === 0 && sub) Audio.sub(when, chordAt(b).bassHz, sd * 15, 0.3 * (1 - f));
+          if (kick) Audio.kick(when, (s ? 0.3 : 0.5) * (1 - 0.5 * f));
+          if (tak) Audio.tak(when, 0.28 * (1 - f));
+          if (hat) Audio.hat(when, (s % 4 === 3 ? 0.22 : 0.1) * (1 - f));
+          return;
+        }
+        // groove
+        if (s === 0) { Audio.sub(when, chordAt(b).bassHz, sd * 15, 0.3); Audio.kick(when, 0.5); }
+        if (s === 8) Audio.kick(when, 0.3);
+        if (s === 4 || s === 12) Audio.tak(when, 0.28);
+        if (s % 2) Audio.hat(when, s % 4 === 3 ? 0.22 : 0.1);
+      }
+
+      // ---------- per-frame update ----------
+      function fxUpdate() {
+        const t = nowMs();
+        FX.events = FX.events.filter((ev) => (Audio.now() >= ev.at - 0.005 ? (ev.fn(), false) : true));
+        if (FX.space && Clock.playing && !FX.spaceStartedPlay && (FX.mode === "groove" || FX.mode === "climax")) {
+          const held = t - FX.spaceAt;
+          if (FX.shift ? held > 600 : held > 180) FX.shift ? commitOutro() : startBuild();
+        }
+        if (FX.mode === "build") {
+          FX.b = clamp((POS - FX.t0) / BUILD_STEPS, 0, 1);
+          if (VC.rolls) {
+            const B = FX.b, nl = VC.rolls[B < 0.3 ? 0 : B < 0.55 ? 1 : B < 0.8 ? 2 : 3];
+            if (nl !== FX.len) { FX.len = nl; bumpView(); }
+          }
+        }
+        if (FX.mode === "build" || FX.mode === "armed" && !(FX.drop && POS >= FX.drop.step)) {
+          Audio.setHPF((VC.narrow ? 0.8 : 0.7) * FX.b);
+          Audio.setRiser(FX.b);
+        }
+        if (FX.mode === "freeze") {
+          FX.charge = clamp((t - FX.freezeAt) / 1800, 0, 1);
+          if (VC.steer) { FX.steer = clamp(FX.mx / W, 0, 1); Audio.setLPF(0.15 + 0.55 * (1 - FX.steer)); }
+        }
+        if (FX.mode === "climax" && FX.drop && POS > FX.drop.slam + 128) { FX.mode = "groove"; bump(); }
+        if (FX.mode === "outro" && FX.outro) {
+          const f = outroF(POS);
+          Audio.setLPF(VC.outro === "exhale" ? 0.3 + 0.3 * f : 0.3 + 0.38 * f);
+        }
+        if (VC.steer && FX.mode === "climax" && FX.prevLPF !== 0) { Audio.setLPF(0); FX.prevLPF = 0; }
+        if (FX.mode === "freeze") FX.prevLPF = 1;
+        // tape squeeze springs
+        const sp = FX.boom ? (() => { const u = (t - FX.boom.t) / 1000; return Math.exp(-u * 2.2) * Math.cos(u * 9); })() : 0;
+        if (VC.narrow) {
+          FX.sx = FX.mode === "build" || FX.mode === "armed" && !(FX.drop && POS >= FX.drop.step) ? 1 - 0.65 * FX.b
+            : FX.mode === "freeze" ? 0.3
+            : FX.mode === "outro" && FX.outro ? 1 - 0.75 * outroF(POS)
+            : 1 + 0.45 * sp;
+        }
+        if (VC.suck) {
+          FX.sy = FX.mode === "build" || FX.mode === "armed" && !(FX.drop && POS >= FX.drop.step) ? 1 - 0.5 * FX.b : FX.mode === "freeze" ? 0.45 : 1 + 0.3 * sp;
+        }
+        Audio.width = VC.narrow ? clamp(FX.sx * 1.2, 0.2, 1.7) : 1;
+        FX.kicks = FX.kicks.filter((k) => t - k.t < 1200);
+        FX.shake *= 0.88;
+        FX.flash *= 0.8;
+        FX.rings = FX.rings.filter((r) => t - r.t < r.dur * 1000);
+      }
+
+      // note displacement: violent jumps on every kick + explosion spring after the slam; tremble while tense
+      function fxOff(n, p) {
+        const t = nowMs(), h1 = hash01(n.step, n.lane, 401), h2 = hash01(n.step, n.lane, 402);
+        let imp = 0;
+        for (const k of FX.kicks) { const u = (t - k.t) / 1000; if (u >= 0) imp += k.v * Math.exp(-u * 10); }
+        let sp = 0;
+        if (FX.boom) { const u = (t - FX.boom.t) / 1000; sp = FX.boom.e * Math.exp(-u * 2.4) * Math.cos(u * 13); }
+        const A = 30 * imp * (0.4 + 0.9 * h1) + 140 * sp * (0.4 + 0.9 * h2);
+        let dx = 0, dy = 0;
+        if (VC.vfx === "vertical") dy -= A;
+        else if (VC.vfx === "radial") {
+          const vx = p.x - G.cx, vy = p.y - G.nowY, L = Math.hypot(vx, vy) || 1;
+          dx += (vx / L) * A;
+          dy += (vy / L) * A;
+        } else dx += (n.lane < 4 ? -1 : n.lane > 4 ? 1 : h1 < 0.5 ? -1 : 1) * A * FX.lr;
+        const tense = FX.mode === "freeze" ? 2 + 7 * FX.charge : FX.mode === "build" || FX.mode === "armed" ? 4 * FX.b * FX.b : 0;
+        if (tense) {
+          const f = Math.floor(t / 40);
+          dx += (hash01(n.step, n.lane, f) - 0.5) * 2 * tense;
+          dy += (hash01(n.lane, n.step, f + 7) - 0.5) * 2 * tense;
+        }
+        if (FX.mode === "outro" && FX.outro && VC.outro === "exhale") dy += 26 * outroF(POS) * (0.5 + h1); // notes sink as it exhales
+        return { dx, dy };
+      }
+
+      // ---------- overlays ----------
+      function drawFxUnder() {
+        // outro end line: where the music stops, approaching NOW
+        if (FX.outro) {
+          const a = proj(FX.outro.end, -1.5), z = proj(FX.outro.end, 9.5);
+          if (a && z) {
+            g.strokeStyle = ink(0.9);
+            g.lineWidth = 2;
+            line(a, z);
+            g.lineWidth = 1;
+          }
+        }
+      }
+      function drawFxOver() {
+        const t = nowMs();
+        const tense = FX.mode === "build" || FX.mode === "armed" && !(FX.drop && POS >= FX.drop.step) ? FX.b : 0;
+        if (tense > 0) {
+          const gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.25, W / 2, H / 2, Math.max(W, H) * 0.75);
+          gr.addColorStop(0, "rgba(255,90,31,0)");
+          gr.addColorStop(1, `rgba(255,90,31,${(0.32 * tense * tense).toFixed(3)})`);
+          g.fillStyle = gr;
+          g.fillRect(0, 0, W, H);
+          // energy bar grows outward along NOW
+          const w = (4.4 + EXT_GAP) * G.gap * tense;
+          g.strokeStyle = HOT;
+          g.lineWidth = 3;
+          line({ x: G.cx - w, y: G.nowY }, { x: G.cx + w, y: G.nowY });
+          g.lineWidth = 1;
+        }
+        if (FX.mode === "freeze") {
+          g.fillStyle = `rgba(0,0,0,${(VC.vacuum ? 0.7 : 0.35) + 0.2 * FX.charge})`;
+          g.fillRect(0, 0, W, H);
+          const w = (4.4 + EXT_GAP) * G.gap;
+          g.strokeStyle = ink(0.95);
+          g.lineWidth = 3;
+          line({ x: G.cx - w * FX.charge, y: G.nowY }, { x: G.cx + w * FX.charge, y: G.nowY });
+          g.lineWidth = 1;
+          // charge ring at the hand
+          const r = 14 + 70 * FX.charge + Math.sin(t / 60) * 2 * FX.charge;
+          g.strokeStyle = hot(0.5 + 0.5 * FX.charge);
+          g.lineWidth = 2;
+          ring(g, FX.mx, FX.my, r);
+          g.lineWidth = 1;
+          g.strokeStyle = ink(0.3);
+          ring(g, FX.mx, FX.my, 84);
+          if (VC.steer) {
+            g.strokeStyle = ink(0.35);
+            line({ x: FX.mx, y: 0 }, { x: FX.mx, y: H });
+          }
+        }
+        if (FX.mode === "outro" && FX.outro) {
+          const f = outroF(POS);
+          g.fillStyle = `rgba(0,8,24,${(0.45 * f).toFixed(3)})`;
+          g.fillRect(0, 0, W, H);
+        }
+        for (const r of FX.rings) {
+          const u = (t - r.t) / (r.dur * 1000), e = 1 - Math.pow(1 - u, 3);
+          g.strokeStyle = r.col + (1 - u).toFixed(3) + ")";
+          g.lineWidth = r.w * (1 - u) + 0.5;
+          g.beginPath();
+          g.arc(r.x, r.y, r.r1 * e, 0, Math.PI * 2);
+          g.stroke();
+        }
+        g.lineWidth = 1;
+        if (FX.flash > 0.01) {
+          g.fillStyle = `rgba(255,255,255,${FX.flash.toFixed(3)})`;
+          g.fillRect(0, 0, W, H);
+        }
+      }
+
+      function draw() {
+        fxUpdate();
+        layoutSide();
+        syncMarq();
+        g.fillStyle = "#000";
+        g.fillRect(0, 0, W, H);
+        g.save();
+        if (FX.shake > 0.3) g.translate((Math.random() - 0.5) * 2 * FX.shake, (Math.random() - 0.5) * 2 * FX.shake);
+        drawGrid();
+        drawFxUnder();
+        const fut = futureNotes(POS + FUT + 1);
+        drawLinks(g, P, fut, parabola, (n) => sidePt(n.lock, n.idx));
+        // NOW line + key letters (above the curves, under the notes)
+        g.strokeStyle = ink(0.85);
+        g.lineWidth = 1;
+        line({ x: G.cx + (-EXT_GAP - 4.4) * G.gap, y: G.nowY }, { x: G.cx + (EXT_GAP + 4.4) * G.gap, y: G.nowY });
+        g.font = FONT;
+        g.textAlign = "center";
+        g.textBaseline = "top";
+        g.fillStyle = ink(0.45);
+        for (let l = 0; l < 9; l++) {
+          const held = HOLD.keys.has(l),
+            x = G.cx + (l - 4) * G.gap * FX.sx;
+          g.fillStyle = held ? ink(1) : ink(0.45);
+          g.fillText(KEYS[l].toUpperCase(), x, G.nowY + 3);
+          if (held) {
+            g.strokeStyle = ink(0.9);
+            line({ x: x - 5, y: G.nowY + 16 }, { x: x + 5, y: G.nowY + 16 });
+          }
+        }
+        g.fillStyle = ink(0.22);
+        g.fillText("lo", G.cx + (-EXT_GAP - 4) * G.gap, G.nowY + 3);
+        g.fillText("hi", G.cx + (EXT_GAP + 4) * G.gap, G.nowY + 3);
+        if (HOLD.keys.size) {
+          // density meter (log scale 0.25 … 4) beside the NOW line
+          const x0 = G.cx + (EXT_GAP + 4.8) * G.gap, y0 = G.nowY - 4, w = 60, f = (Math.log2(HOLD.density) + 2) / 4;
+          g.strokeStyle = ink(0.4);
+          g.strokeRect(x0, y0, w, 8);
+          g.fillStyle = ink(0.85);
+          g.fillRect(x0 + 1, y0 + 1, (w - 2) * f, 6);
+          g.textAlign = "left";
+          g.textBaseline = "middle";
+          g.fillText(`×${HOLD.density.toFixed(2)}`, x0 + w + 6, G.nowY);
+        }
+        drawNotes(g, P, fut, R);
+        drawSideBoxes(g);
+        g.restore();
+        drawFxOver();
+        drawMarquee(g);
+        drawChips(g, 10, H - 18);
+      }
+
+      wireInput(cv, { P, cellAt, draw, lockBox: sideBox });
+    </script>
+  </body>
+</html>
