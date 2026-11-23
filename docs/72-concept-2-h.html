@@ -507,7 +507,7 @@
           L.notes.forEach((n, i) => {
             const h = (c) => hash01(L.id * 131 + i, k, c),
               at = base + n.off,
-              head = mod(n.off, 16) === 0;
+              head = mod(L.anchor + n.off, 16) === 0; // downbeat in absolute time (anchor may be off-bar)
             const pool = chordAt(Math.floor(at / 16)).pool;
             let lane = n.lane,
               off = n.off;
@@ -758,15 +758,29 @@
         makeLock(sel) {
           sel = sel.filter((n) => n.step < E.nextStep || n.step < POS);
           if (!sel.length) return null;
-          const anchor = Math.floor(Math.min(...sel.map((n) => n.step)) / 16) * 16;
-          sel = sel.filter((n) => n.step - anchor < 32).sort((a, b) => a.step - b.step || a.lane - b.lane);
-          const span = sel[sel.length - 1].step - anchor + 1,
+          // sliding window: periods are whole bars, so the anchor need not sit on a bar line — re-emission keeps
+          // every note on its original beat. Wider than 32 steps: keep the 32-step stretch holding the most notes.
+          sel.sort((a, b) => a.step - b.step || a.lane - b.lane);
+          let lo = sel[0].step;
+          if (sel[sel.length - 1].step - lo >= 32) {
+            let best = -1;
+            for (const n of sel) {
+              const c = sel.filter((m) => m.step >= n.step && m.step < n.step + 32).length;
+              if (c > best) { best = c; lo = n.step; }
+            }
+          }
+          sel = sel.filter((n) => n.step >= lo && n.step < lo + 32);
+          const hi = sel[sel.length - 1].step,
+            period = hi - lo < 16 ? 16 : 32;
+          // tidiest anchor that still fits: bar line, else beat, else the first note itself
+          const anchor = [Math.floor(lo / 16) * 16, Math.floor(lo / 4) * 4, lo].find((a) => hi < a + period),
+            span = hi - anchor + 1,
             id = E.nextId++;
           const L = {
             id,
             hue: (id - 1) % HUES.length,
             anchor,
-            period: span <= 16 ? 16 : 32,
+            period,
             V: 0.2,
             alive: true,
             notes: sel.map((n) => ({ off: n.step - anchor, lane: n.lane, vel: n.vel })),
@@ -1503,7 +1517,7 @@
           g.fillStyle = c;
           g.textAlign = r.side ? "left" : "right";
           g.fillText(`${mu ? "MUTED " : ""}L${L.id} V${L.V.toFixed(2)} /${L.period}`, r.side ? r.x : r.x + r.w, r.y - 3);
-          for (let b = 4; b < L.period; b += 4) {
+          for (let b = mod(-L.anchor, 4) || 4; b < L.period; b += 4) {
             g.strokeStyle = ink(0.1);
             g.beginPath();
             g.moveTo(r.x, r.y + b * SB.row);
