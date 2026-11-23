@@ -2,6 +2,8 @@
 
 A cybernetic handpan DJ interface built around a continuous time-tape: a vertical **past wall** above the `NOW` plane and a decelerating perspective **future floor** below it. Play live on the home row, lock past phrases into self-varying attention boxes, steer harmonic density in real time, and trigger quantized drops or stops from a single radial HUD.
 
+[Try it live](https://chuanqisun.github.io/orbital-strike/)
+
 ## Interactions
 
 ### 1. Direct Play Notes
