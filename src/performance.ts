@@ -72,6 +72,11 @@ export function createPerformance(
     rings: [] as { t: number; x: number; y: number; r1: number; dur: number; col: string; w: number }[],
   };
 
+  let frameKickImpulse = 0;
+  let frameBoomSpring = 0;
+  let frameTense = 0;
+  let frameBucket = 0;
+
   const scheduleVisual = (when: number, fn: () => void) => state.events.push({ at: when, fn });
 
   const shock = (x: number, y: number, r1: number, dur: number, col: string, w = 2) =>
@@ -233,38 +238,43 @@ export function createPerformance(
     state.shake *= 0.88;
     state.flash *= 0.8;
     state.rings = state.rings.filter((r) => t - r.t < r.dur * 1000);
-  };
 
-  const noteOffset = (note: { step: number; lane: number }) => {
-    const t = nowMs();
-    const h1 = hash01(note.step, note.lane, 401);
-    const h2 = hash01(note.step, note.lane, 402);
-
+    // Precompute frame-constant visual impulse terms once per frame instead of per note
     let kickImpulse = 0;
     for (const kick of state.kicks) {
       const u = (t - kick.t) / 1000;
       if (u >= 0) kickImpulse += kick.v * Math.exp(-u * 10);
     }
+    frameKickImpulse = kickImpulse;
 
     let boomSpring = 0;
     if (state.boom) {
       const u = (t - state.boom.t) / 1000;
       boomSpring = state.boom.e * Math.exp(-u * 2.4) * Math.cos(u * 13);
     }
+    frameBoomSpring = boomSpring;
 
-    let dx = 0;
-    let dy = -(30 * kickImpulse * (0.4 + 0.9 * h1) + 140 * boomSpring * (0.4 + 0.9 * h2));
-
-    const tense =
+    frameTense =
       state.mode === "freeze"
         ? 2 + 7 * state.charge
         : state.mode === "build" || state.mode === "armed"
           ? 4 * state.build * state.build
           : 0;
-    if (tense) {
-      const frame = Math.floor(t / 40);
-      dx += (hash01(note.step, note.lane, frame) - 0.5) * 2 * tense;
-      dy += (hash01(note.lane, note.step, frame + 7) - 0.5) * 2 * tense;
+    frameBucket = Math.floor(t / 40);
+  };
+
+  const noteOffset = (note: { step: number; lane: number }) => {
+    if (!frameKickImpulse && !frameBoomSpring && !frameTense) return { dx: 0, dy: 0 };
+
+    const h1 = hash01(note.step, note.lane, 401);
+    const h2 = hash01(note.step, note.lane, 402);
+
+    let dx = 0;
+    let dy = -(30 * frameKickImpulse * (0.4 + 0.9 * h1) + 140 * frameBoomSpring * (0.4 + 0.9 * h2));
+
+    if (frameTense) {
+      dx += (hash01(note.step, note.lane, frameBucket) - 0.5) * 2 * frameTense;
+      dy += (hash01(note.lane, note.step, frameBucket + 7) - 0.5) * 2 * frameTense;
     }
 
     return { dx, dy };
@@ -329,9 +339,15 @@ export function createPerformance(
 
     const windowLen = ROLL_LENGTHS[0];
     const windowStart = state.rollOrigin - windowLen;
-    state.rollSrc = engine.state.past
-      .filter((n) => n.step >= windowStart && n.step < state.rollOrigin && !n.muted && n.src !== "roll")
-      .map((n) => ({ off: n.step - windowStart, lane: n.lane, vel: n.vel }));
+    const rollBySlot = new Map<string, { off: number; lane: number; vel: number }>();
+    for (const n of engine.state.past) {
+      if (n.step < windowStart || n.step >= state.rollOrigin || n.muted || n.src === "roll") continue;
+      const off = n.step - windowStart;
+      const key = `${off}:${n.lane}`;
+      const prev = rollBySlot.get(key);
+      if (!prev || n.vel > prev.vel) rollBySlot.set(key, { off, lane: n.lane, vel: n.vel });
+    }
+    state.rollSrc = [...rollBySlot.values()];
 
     if (state.rollSrc.length < 2) {
       const pool = harmony.chordAt(Math.floor(state.rollOrigin / 16)).pool.filter((l) => l > 0);
@@ -423,7 +439,16 @@ export function createPerformance(
     if (state.mode === "build" || state.mode === "armed" || state.mode === "freeze") {
       const until = state.drop && state.mode === "armed" ? state.drop.step : Infinity;
       const kept = notes.filter((n) => n.step < state.rollOrigin || n.step >= until || isPlayerNote(n));
-      for (let t = Math.max(b0, state.rollOrigin); t < Math.min(b0 + 16, until); t++) kept.push(...rollAt(t));
+      const keptSlots = new Set(kept.map((n) => `${n.step}:${n.lane}`));
+      for (let t = Math.max(b0, state.rollOrigin); t < Math.min(b0 + 16, until); t++) {
+        for (const rn of rollAt(t)) {
+          const slot = `${rn.step}:${rn.lane}`;
+          if (!keptSlots.has(slot)) {
+            keptSlots.add(slot);
+            kept.push(rn);
+          }
+        }
+      }
       notes = kept;
     }
 

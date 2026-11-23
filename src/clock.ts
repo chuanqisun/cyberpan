@@ -19,9 +19,16 @@ export function createClock(audio: AudioEngine) {
 
   function tick() {
     if (!playing || !audio.isReady()) return;
-    const horizon = audio.now() + 0.12;
-    while (anchorTime + (nextStep - anchorStep) * stepDur() < horizon) {
-      const when = anchorTime + (nextStep - anchorStep) * stepDur();
+    const now = audio.now();
+    const sd = stepDur();
+    if (now - (anchorTime + (nextStep - anchorStep) * sd) > 0.5) {
+      // Tab was backgrounded or main thread stalled; re-anchor cleanly instead of firing a burst of stale steps
+      anchorStep = nextStep;
+      anchorTime = now + 0.02;
+    }
+    const horizon = now + 0.12;
+    while (anchorTime + (nextStep - anchorStep) * sd < horizon) {
+      const when = anchorTime + (nextStep - anchorStep) * sd;
       for (const handler of subscribers) handler(nextStep, when);
       nextStep++;
     }

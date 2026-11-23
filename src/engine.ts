@@ -390,11 +390,18 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
     fx?.scheduleDrums(step, when);
 
     let placedConsumed = false;
-    for (const note of genBar(bar)) {
-      if (note.step !== step || note.muted) continue;
+    const stepNotes = genBar(bar).filter((note) => note.step === step && !note.muted);
+    const playedLanes = new Set<number>();
+    for (const note of stepNotes) {
+      if (!note.oct) playedLanes.add(note.lane);
+    }
 
+    for (const note of stepNotes) {
       audio.pan(note.lane, when, note.vel, note.ring || (note.ghost ? 2 : 4), note.oct ?? 0, false, note.bright ?? 0);
-      if (note.harm != null) audio.pan(note.harm, when, note.vel * 0.42, 4);
+      if (note.harm != null && !playedLanes.has(note.harm)) {
+        playedLanes.add(note.harm);
+        audio.pan(note.harm, when, note.vel * 0.42, 4);
+      }
       if (note.src === "roll" && fx?.isRollStutter()) audio.pan(note.lane, when + clock.stepDur() / 2, note.vel * 0.8, 1);
 
       const isHold = note.src === "hold";
@@ -424,7 +431,21 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
 
     state.nextStep = step + 1;
     extendPlan();
-    if (stepInBar === 15) state.past = state.past.filter((n) => n.step > step - 16 * 12);
+    if (stepInBar === 15) {
+      const minStep = step - 16 * 12;
+      state.past = state.past.filter((n) => n.step > minStep);
+      const minBar = bar - 2;
+      for (const cachedBar of contentCache.keys()) {
+        if (cachedBar < minBar) contentCache.delete(cachedBar);
+      }
+      for (const cachedBar of barCache.keys()) {
+        if (cachedBar < minBar) barCache.delete(cachedBar);
+      }
+      for (const k of state.dismissed) {
+        const s = Number(k.slice(0, k.indexOf(":")));
+        if (s < minStep) state.dismissed.delete(k);
+      }
+    }
     if (placedConsumed) invalidate();
   }
 
@@ -650,6 +671,7 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
 
   function extendPlan() {
     const end = state.nextStep + HOLD_AHEAD;
+    let changed = false;
     if (!state.holdKeys.size) {
       holdCursor = Math.max(holdCursor, state.nextStep);
     } else {
@@ -657,9 +679,12 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
         const bar = Math.floor(holdCursor / 16);
         planBar(bar, holdCursor);
         holdCursor = bar * 16 + 16;
+        changed = true;
       }
     }
-    invalidateView();
+    if (changed || state.holdKeys.size > 0 || state.nextStep - lastTap <= ECHO_QUIET + 16) {
+      invalidateView();
+    }
   }
 }
 
