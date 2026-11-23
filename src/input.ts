@@ -53,6 +53,11 @@ export function wireInput(
     return [e.clientX - r.left, e.clientY - r.top] as const;
   };
 
+  const syncModifiers = (e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+    engine.state.shiftKey = e.shiftKey;
+    engine.state.ctrlKey = e.ctrlKey || e.metaKey;
+  };
+
   const lockAt = (x: number, y: number) =>
     engine.state.locks.find((lock) => {
       const r = layout.sideBoxBounds(lock);
@@ -135,7 +140,8 @@ export function wireInput(
     const [x, y] = pointerPos(e);
     const titleLock = layout.sideTitleAt(x, y);
     if (titleLock) {
-      if (e.ctrlKey || e.metaKey) engine.toggleMuteAll(titleLock);
+      if (e.ctrlKey || e.metaKey) engine.toggleMuteOthers(titleLock);
+      else if (e.shiftKey) engine.toggleMuteAll(titleLock);
       else engine.toggleMute(titleLock);
       return;
     }
@@ -186,8 +192,16 @@ export function wireInput(
       renderer.syncMarquee();
     }
 
+    syncModifiers(e);
     engine.state.hover = lockAt(x, y) ?? null;
+    engine.state.hoverTitle = layout.sideTitleAt(x, y);
     engine.state.hoverCell = layout.sideCellAt(x, y);
+  });
+
+  canvas.addEventListener("pointerleave", () => {
+    engine.state.hover = null;
+    engine.state.hoverTitle = null;
+    engine.state.hoverCell = null;
   });
 
   canvas.addEventListener("pointerup", (e) => {
@@ -249,6 +263,7 @@ export function wireInput(
   const isTyping = (e: KeyboardEvent) => (e.target as HTMLElement | null)?.tagName === "INPUT";
 
   addEventListener("keydown", (e) => {
+    syncModifiers(e);
     if (guideDialog.open || isTyping(e)) return;
     if (e.key === "Shift" && engine.state.marquee) engine.state.marquee.all = true;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -291,6 +306,7 @@ export function wireInput(
   });
 
   addEventListener("keyup", (e) => {
+    syncModifiers(e);
     if ((guideDialog.open || isTyping(e)) && !fx.state.space) return;
 
     if (e.code === "Space" && fx.state.hud && fx.state.mode !== "freeze") {
@@ -322,6 +338,11 @@ export function wireInput(
   });
 
   addEventListener("blur", () => {
+    engine.state.shiftKey = false;
+    engine.state.ctrlKey = false;
+    engine.state.hover = null;
+    engine.state.hoverTitle = null;
+    engine.state.hoverCell = null;
     engine.releaseAllHold();
     fx.closeHud();
     fx.state.space = fx.state.mouse = false;

@@ -20,8 +20,8 @@ class PanSynthProcessor extends AudioWorkletProcessor {
     super();
 
     this.active = new Uint8Array(MAX_VOICES); // 0 = free, 1 = sounding, 2 = damping/releasing
+    this.activeCount = 0;
     this.pitchKey = new Int32Array(MAX_VOICES);
-    this.bare = new Uint8Array(MAX_VOICES);
     this.startDelay = new Int32Array(MAX_VOICES);
     this.triggerFrame = new Float64Array(MAX_VOICES);
 
@@ -78,9 +78,8 @@ class PanSynthProcessor extends AudioWorkletProcessor {
     // Fast decorrelated PRNG state (xorshift32)
     this.rng = 0x9e3779b9;
 
-    // Smoothed polyphony auto-leveling gains per output bus (0 = musicBus, 1 = nakedBus)
-    this.busGain0 = 1.0;
-    this.busGain1 = 1.0;
+    // Smoothed polyphony auto-leveling gain
+    this.busGain = 1.0;
 
     this.port.onmessage = (ev) => {
       const msg = ev.data;
@@ -110,7 +109,6 @@ class PanSynthProcessor extends AudioWorkletProcessor {
       tau: ev.tau,
       bright: ev.bright,
       pan: ev.pan,
-      bare: ev.bare ? 1 : 0,
     };
     const h = this.heap;
     h.push(item);
@@ -197,12 +195,10 @@ class PanSynthProcessor extends AudioWorkletProcessor {
 
     for (let v = 0; v < MAX_VOICES; v++) {
       if (this.active[v] !== 1) continue;
-      if (this.pitchKey[v] === ev.key && this.bare[v] === ev.bare) {
-        // Coalesce identical-pitch notes triggered at virtually the same sample
+      if (this.pitchKey[v] === ev.key) {
         if (ev.frame - this.triggerFrame[v] < dedupeWindow) {
           return;
         }
-        // Smoothly damp previous ring on this same tone field
         this.active[v] = 2;
         this.dampMul[v] = Math.min(this.dampMul[v], samePitchDamp);
         continue;
@@ -215,13 +211,14 @@ class PanSynthProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Enforce soft active cap while leaving headroom slots for smooth click-free fade-outs
     if (soundingCount >= SOFT_VOICES && quietestSounding >= 0) {
       this.active[quietestSounding] = 2;
       this.dampMul[quietestSounding] = Math.min(this.dampMul[quietestSounding], stealDamp);
     }
 
     const v = this.allocateSlot();
+    if (this.active[v] === 0) this.activeCount++;
+
     const nyquistLimit = sr * 0.44;
     const freq = Math.max(20, Math.min(nyquistLimit / 3.1, ev.freq));
     const vel = Math.max(0.05, Math.min(1, ev.vel));
@@ -230,7 +227,6 @@ class PanSynthProcessor extends AudioWorkletProcessor {
 
     this.active[v] = 1;
     this.pitchKey[v] = ev.key;
-    this.bare[v] = ev.bare;
     this.startDelay[v] = delaySamples;
     this.triggerFrame[v] = ev.frame;
 
@@ -249,7 +245,6 @@ class PanSynthProcessor extends AudioWorkletProcessor {
     this.inc3[v] = Math.min(nyquistLimit, freq * 2.001) / sr;
     this.inc4[v] = Math.min(nyquistLimit, freq * 2.998) / sr;
 
-    // Envelope helper matching original linear attack + exponential decay to 0.0001
     const initEnv = (atkSec, peak, decSec, eArr, stepArr, decArr, atkArr) => {
       const p = Math.max(0.0002, peak);
       const atkSamps = Math.max(1, Math.round(atkSec * sr));
@@ -285,60 +280,48 @@ class PanSynthProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
-    const out0 = outputs[0];
-    const out1 = outputs[1];
-    const L0 = out0 && out0[0];
-    const R0 = out0 && out0[1];
-    const L1 = out1 && out1[0];
-    const R1 = out1 && out1[1];
-    const blockLen = L0 ? L0.length : 128;
+    const out = outputs[0];
+    const dstL = out && out[0];
+    const dstR = out && out[1];
+    if (!dstL || !dstR) return true;
 
+    const blockLen = dstL.length;
     const blockStart = currentFrame;
     const blockEnd = blockStart + blockLen;
 
-    // Trigger all scheduled events falling within this render quantum at exact sample offsets
     while (this.heap.length > 0 && this.heap[0].frame < blockEnd) {
       const ev = this.popEvent();
       const delay = Math.max(0, ev.frame - blockStart);
       this.triggerVoice(ev, delay);
     }
 
-    if (L0) L0.fill(0);
-    if (R0) R0.fill(0);
-    if (L1) L1.fill(0);
-    if (R1) R1.fill(0);
-
-    // Compute per-bus envelope load for smooth polyphony auto-leveling
-    let load0 = 0;
-    let load1 = 0;
-    for (let v = 0; v < MAX_VOICES; v++) {
-      if (this.active[v] === 0) continue;
-      const w = this.voiceAmplitude(v);
-      if (this.bare[v]) load1 += w;
-      else load0 += w;
+    if (this.activeCount === 0) {
+      if (this.busGain < 0.9999) {
+        this.busGain += (1.0 - this.busGain) * 0.03;
+      } else {
+        this.busGain = 1.0;
+      }
+      return true;
     }
 
-    const targetGain0 = load0 <= 1.1 ? 1.0 : 1.0 / Math.sqrt(1 + (load0 - 1.1) * 0.55);
-    const targetGain1 = load1 <= 1.1 ? 1.0 : 1.0 / Math.sqrt(1 + (load1 - 1.1) * 0.55);
+    dstL.fill(0);
+    dstR.fill(0);
 
-    const prevG0 = this.busGain0;
-    const prevG1 = this.busGain1;
-    this.busGain0 += (targetGain0 - prevG0) * (targetGain0 < prevG0 ? 0.2 : 0.03);
-    this.busGain1 += (targetGain1 - prevG1) * (targetGain1 < prevG1 ? 0.2 : 0.03);
+    let load = 0;
+    for (let v = 0; v < MAX_VOICES; v++) {
+      if (this.active[v] !== 0) load += this.voiceAmplitude(v);
+    }
 
-    const g0Step = (this.busGain0 - prevG0) / blockLen;
-    const g1Step = (this.busGain1 - prevG1) / blockLen;
+    const targetGain = load <= 1.1 ? 1.0 : 1.0 / Math.sqrt(1 + (load - 1.1) * 0.55);
+    const prevG = this.busGain;
+    this.busGain += (targetGain - prevG) * (targetGain < prevG ? 0.2 : 0.03);
+    const gStep = (this.busGain - prevG) / blockLen;
 
     let rng = this.rng;
     const sin = SIN_TABLE;
 
     for (let v = 0; v < MAX_VOICES; v++) {
       if (this.active[v] === 0) continue;
-
-      const isBare = this.bare[v] === 1;
-      const dstL = isBare ? L1 : L0;
-      const dstR = isBare ? R1 : R0;
-      if (!dstL || !dstR) continue;
 
       const start = this.startDelay[v];
       this.startDelay[v] = 0;
@@ -389,12 +372,10 @@ class PanSynthProcessor extends AudioWorkletProcessor {
       const dampMul = this.dampMul[v];
 
       for (let i = start; i < blockLen; i++) {
-        // Advance envelopes
         if (e1Atk > 0) { e1 += e1Step; e1Atk--; } else { e1 *= e1Dec; }
         if (e2Atk > 0) { e2 += e2Step; e2Atk--; } else { e2 *= e2Dec; }
         if (e3Atk > 0) { e3 += e3Step; e3Atk--; } else { e3 *= e3Dec; }
 
-        // Wavetable linear-interpolated sine lookup for all 4 partials
         let p = ph1 * TABLE_SIZE;
         let idx = p | 0;
         const s1 = sin[idx] + (p - idx) * (sin[idx + 1] - sin[idx]);
@@ -405,30 +386,29 @@ class PanSynthProcessor extends AudioWorkletProcessor {
 
         let sample = (s1 + s2) * e1;
 
+        ph1 += inc1; if (ph1 >= 1) ph1 -= 1;
+        ph2 += inc2; if (ph2 >= 1) ph2 -= 1;
+
         if (e2 > 0.00005 || e2Atk > 0) {
           p = ph3 * TABLE_SIZE;
           idx = p | 0;
           sample += (sin[idx] + (p - idx) * (sin[idx + 1] - sin[idx])) * e2;
+          ph3 += inc3; if (ph3 >= 1) ph3 -= 1;
         }
 
         if (e3 > 0.00005 || e3Atk > 0) {
           p = ph4 * TABLE_SIZE;
           idx = p | 0;
           sample += (sin[idx] + (p - idx) * (sin[idx + 1] - sin[idx])) * e3;
+          ph4 += inc4; if (ph4 >= 1) ph4 -= 1;
         }
 
-        ph1 += inc1; if (ph1 >= 1) ph1 -= 1;
-        ph2 += inc2; if (ph2 >= 1) ph2 -= 1;
-        ph3 += inc3; if (ph3 >= 1) ph3 -= 1;
-        ph4 += inc4; if (ph4 >= 1) ph4 -= 1;
-
-        // Mallet strike transient (runs only for first ~20ms of note)
         if (hasNoise && (enAtk > 0 || en > 0.0001)) {
           if (enAtk > 0) { en += enStep; enAtk--; } else { en *= enDec; }
           rng ^= rng << 13;
           rng ^= rng >>> 17;
           rng ^= rng << 5;
-          const white = (rng | 0) * 4.656612875245797e-10; // [-1, 1]
+          const white = (rng | 0) * 4.656612875245797e-10;
           let y = nb0 * white + nb2 * nx2 - na1 * ny1 - na2 * ny2;
           if (y > -1e-12 && y < 1e-12) y = 0;
           nx2 = nx1; nx1 = white;
@@ -443,9 +423,9 @@ class PanSynthProcessor extends AudioWorkletProcessor {
         dstR[i] += sample * gR;
       }
 
-      // Write back state or deactivate cleanly once decayed below -80 dB
       if ((e1Atk === 0 && e1 < 0.00012 && e2Atk === 0 && e2 < 0.00012 && e3Atk === 0 && e3 < 0.00012 && enAtk === 0 && en < 0.00012) || damp < 0.0005) {
         this.active[v] = 0;
+        this.activeCount--;
       } else {
         this.ph1[v] = ph1;
         this.ph2[v] = ph2;
@@ -469,21 +449,12 @@ class PanSynthProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Apply per-sample interpolated polyphony leveling gain to each bus
-    if (L0 && R0 && (prevG0 !== 1.0 || g0Step !== 0)) {
-      let g = prevG0;
+    if (prevG !== 1.0 || gStep !== 0) {
+      let g = prevG;
       for (let i = 0; i < blockLen; i++) {
-        L0[i] *= g;
-        R0[i] *= g;
-        g += g0Step;
-      }
-    }
-    if (L1 && R1 && (prevG1 !== 1.0 || g1Step !== 0)) {
-      let g = prevG1;
-      for (let i = 0; i < blockLen; i++) {
-        L1[i] *= g;
-        R1[i] *= g;
-        g += g1Step;
+        dstL[i] *= g;
+        dstR[i] *= g;
+        g += gStep;
       }
     }
 

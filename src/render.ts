@@ -22,7 +22,13 @@ import { EXT_GAP, isExtendedLane, KEYS, visualLane, type Harmony } from "./theor
 export function createRenderer(layout: Layout<Lock>, harmony: Harmony, engine: Engine, fx: Performance) {
   const ctx = layout.ctx;
 
-  const isLockActive = (lock: Lock) => lock === engine.state.hover || lock === engine.state.sel;
+  const isLockActive = (lock: Lock) => {
+    if (engine.state.hoverTitle && !engine.state.marquee) {
+      if (engine.state.ctrlKey) return lock !== engine.state.hoverTitle;
+      if (engine.state.shiftKey) return true;
+    }
+    return lock === engine.state.hover || lock === engine.state.sel;
+  };
 
   const noteColor = (note: Note, alpha: number) =>
     !isAliveLock(note) ? ink(alpha) : isLockActive(note.lock!) ? hot(alpha) : hueAlpha(note.lock!.hue, alpha);

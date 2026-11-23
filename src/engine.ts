@@ -112,7 +112,10 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
     pos: 0,
     sel: null as Lock | null,
     hover: null as Lock | null,
+    hoverTitle: null as Lock | null,
     hoverCell: null as SideCell | null,
+    shiftKey: false,
+    ctrlKey: false,
     marquee: null as Marquee | null,
     visibleFuture: [] as VisibleFutureNote[],
     holdKeys: new Map<number, number>(),
@@ -249,6 +252,7 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
     state.locks = state.locks.filter((item) => item !== lock);
     if (state.sel === lock) state.sel = null;
     if (state.hover === lock) state.hover = null;
+    if (state.hoverTitle === lock) state.hoverTitle = null;
     invalidate();
     audio.click(0.6, true);
   };
@@ -293,6 +297,18 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
       lock.muted = muted;
     });
     applyMute(muted);
+  };
+
+  const toggleMuteOthers = (target: Lock) => {
+    const others = state.locks.filter((lock) => lock !== target);
+    if (!others.length) return;
+    const targetMuted = Boolean(target.muted);
+    const hasSameAsTarget = others.some((lock) => Boolean(lock.muted) === targetMuted);
+    const nextMuted = hasSameAsTarget ? !targetMuted : targetMuted;
+    others.forEach((lock) => {
+      lock.muted = nextMuted;
+    });
+    applyMute(nextMuted);
   };
 
   const setVariability = (lock: Lock, value: number) => {
@@ -375,6 +391,7 @@ export function createEngine(audio: AudioEngine, clock: Clock, harmony: Harmony)
     removeLockNotes,
     toggleMute,
     toggleMuteAll,
+    toggleMuteOthers,
     setVariability,
     toggleDismiss,
     dismissMany,

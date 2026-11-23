@@ -40,7 +40,8 @@ export function createAudio() {
   let echoSend!: GainNode;
   let echoDelay!: DelayNode;
   let nakedBus!: GainNode;
-  let workletNode: AudioWorkletNode | null = null;
+  let workletMusic: AudioWorkletNode | null = null;
+  let workletNaked: AudioWorkletNode | null = null;
   let workletReady: Promise<void> = Promise.resolve();
 
   let volume = 0.8;
@@ -137,8 +138,9 @@ export function createAudio() {
       const pitchKey = lane * 2 + (octave ? 1 : 0);
 
       // Fast path: zero-allocation AudioWorklet polyphonic handpan synth
-      if (workletNode) {
-        workletNode.port.postMessage({
+      const targetWorklet = bare ? workletNaked : workletMusic;
+      if (targetWorklet) {
+        targetWorklet.port.postMessage({
           type: "pan",
           t,
           key: pitchKey,
@@ -147,7 +149,6 @@ export function createAudio() {
           tau,
           bright: clamp(bright, 0, 1),
           pan: panVal,
-          bare,
         });
         return;
       }
@@ -537,7 +538,7 @@ export function createAudio() {
     compressor.release.value = 0.1;
 
     const postCompTrim = c.createGain();
-    postCompTrim.gain.value = 0.85;
+    postCompTrim.gain.value = 0.95;
 
     const softClipPre = c.createGain();
     softClipPre.gain.value = 1 / SOFT_CLIP_MAX_IN;
@@ -634,14 +635,20 @@ export function createAudio() {
         .then(() => {
           URL.revokeObjectURL(url);
           if (ctx !== c) return;
-          const node = new AudioWorkletNode(c, PAN_WORKLET_NAME, {
+          const musicNode = new AudioWorkletNode(c, PAN_WORKLET_NAME, {
             numberOfInputs: 0,
-            numberOfOutputs: 2,
-            outputChannelCount: [2, 2],
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
           });
-          node.connect(musicBus, 0);
-          node.connect(nakedBus, 1);
-          workletNode = node;
+          musicNode.connect(musicBus);
+          const nakedNode = new AudioWorkletNode(c, PAN_WORKLET_NAME, {
+            numberOfInputs: 0,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+          });
+          nakedNode.connect(nakedBus);
+          workletMusic = musicNode;
+          workletNaked = nakedNode;
         })
         .catch(() => {
           URL.revokeObjectURL(url);
