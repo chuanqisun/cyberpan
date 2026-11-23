@@ -7,7 +7,74 @@
     <title>cyber-handpan</title>
   </head>
   <body>
-    <div id="app"></div>
+    <canvas id="canvas"></canvas>
+
+    <div id="header">
+      <button id="play">PLAY</button>
+      <button id="help" commandfor="guide" command="show-modal">HELP</button>
+      <div id="volume" role="slider" tabindex="0" aria-label="Master volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="80"></div>
+      <label class="bpm">
+        BPM <input id="bpm" type="number" min="60" max="180" step="1" value="105" aria-label="Tempo in BPM" />
+      </label>
+    </div>
+
+    <dialog id="guide" aria-labelledby="guide-title">
+      <header>
+        <h1 id="guide-title">GUIDE</h1>
+        <button commandfor="guide" command="close" autofocus>CLOSE</button>
+      </header>
+      <div class="cols">
+        <section>
+          <h2>PLAY</h2>
+          <dl>
+            <dt>Space</dt><dd>play / stop</dd>
+            <dt>BPM</dt><dd>type, or scroll (⇧ ×5)</dd>
+            <dt>volume</dt><dd>click, drag or scroll</dd>
+          </dl>
+        </section>
+        <section>
+          <h2>NOTES</h2>
+          <dl>
+            <dt>A – L</dt><dd>play a note now</dd>
+            <dt>hold a key</dt><dd>keeps playing it in time</dd>
+            <dt>hold several</dt><dd>plays whichever fits the chord</dd>
+            <dt>scroll + hold</dt><dd>more / fewer notes</dd>
+          </dl>
+        </section>
+        <section>
+          <h2>FUTURE TAPE</h2>
+          <dl>
+            <dt>click</dt><dd>place a note</dd>
+            <dt>right-click</dt><dd>mute / unmute a note</dd>
+            <dt>right-drag</dt><dd>mute an area</dd>
+          </dl>
+        </section>
+        <section>
+          <h2>GROUPS</h2>
+          <dl>
+            <dt>drag on past</dt><dd>make a group (⇧ = include grouped notes)</dd>
+            <dt>box cell</dt><dd>click add · right-click remove</dd>
+            <dt>box title</dt><dd>click mute · ⌃/⌘ mute all or unmute all</dd>
+            <dt>scroll, [ ]</dt><dd>variation</dd>
+            <dt>⌫, right-click title</dt><dd>delete group</dd>
+          </dl>
+        </section>
+        <section>
+          <h2>DROP / STOP (hold Space)</h2>
+          <dl>
+            <dt>hold Space</dt><dd>menu opens at the pointer</dd>
+            <dt>point ↑</dt><dd>DROP: HALF · FULL · FAKEOUT (builds up)</dd>
+            <dt>press, release</dt><dd>freeze &amp; charge, then drop</dd>
+            <dt>release Space ↑</dt><dd>drop on the next bar</dd>
+            <dt>point ↓</dt><dd>STOP: CUT · ECHO OUT · FADE</dd>
+            <dt>click / release ↓</dt><dd>stop after one more bar, then rest a bar</dd>
+            <dt>centre ring</dt><dd>safe: release there = nothing</dd>
+            <dt>Esc</dt><dd>close menu · cancel</dd>
+          </dl>
+        </section>
+      </div>
+    </dialog>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

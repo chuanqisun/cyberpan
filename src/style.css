@@ -8,7 +8,8 @@ body {
   overflow: hidden;
   user-select: none;
 }
-#c {
+
+#canvas {
   position: fixed;
   inset: 0;
   width: 100%;
@@ -16,7 +17,8 @@ body {
   display: block;
   touch-action: none;
 }
-#hd {
+
+#header {
   position: fixed;
   left: 0;
   top: 0;
@@ -30,81 +32,8 @@ body {
   gap: 12px;
   white-space: nowrap;
 }
-#vol {
-  pointer-events: auto;
-  display: inline-flex;
-  gap: 1px;
-  height: 14px;
-  padding: 2px 0;
-  vertical-align: middle;
-  cursor: pointer;
-  outline: none;
-}
-#vol i {
-  width: 3px;
-  background: rgba(255, 255, 255, 0.16);
-}
-#vol i.on {
-  background: rgba(255, 255, 255, 0.88);
-}
-#vol:focus-visible i.on {
-  background: #ff5a1f;
-}
-#guide {
-  background: #000;
-  color: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  font: 11px/1.5 monospace;
-  width: min(780px, 92vw);
-  max-height: min(78vh, 620px);
-  overflow: auto;
-  padding: 14px 20px 16px;
-}
-#guide::backdrop {
-  background: rgba(0, 0, 0, 0.6);
-}
-#guide header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-#guide h1 {
-  font: inherit;
-  color: #fff;
-  letter-spacing: 0.1em;
-  margin: 0;
-}
-#guide .cols {
-  columns: 2 300px;
-  column-gap: 32px;
-}
-#guide section {
-  break-inside: avoid;
-  margin-bottom: 12px;
-}
-#guide h2 {
-  font: inherit;
-  color: #ff5a1f;
-  letter-spacing: 0.1em;
-  margin: 0 0 3px;
-}
-#guide dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 15ch 1fr;
-  gap: 1px 10px;
-}
-#guide dt {
-  color: #fff;
-}
-#guide dd {
-  margin: 0;
-}
-#guide kbd {
-  font: inherit;
-  color: #fff;
-}
+
+#header button,
 #guide button {
   font: 11px monospace;
   background: #000;
@@ -113,10 +42,17 @@ body {
   padding: 1px 8px;
   cursor: pointer;
 }
-#hd label.bpm {
+
+#header button,
+#header label.bpm,
+#volume {
   pointer-events: auto;
+}
+
+#header label.bpm {
   color: rgba(255, 255, 255, 0.55);
 }
+
 #bpm {
   font: 11px monospace;
   width: 4ch;
@@ -127,17 +63,100 @@ body {
   text-align: right;
   -moz-appearance: textfield;
 }
+
 #bpm::-webkit-outer-spin-button,
 #bpm::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
-#hd button {
-  pointer-events: auto;
-  font: 11px monospace;
-  background: #000;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  padding: 1px 8px;
+
+#volume {
+  display: inline-flex;
+  gap: 1px;
+  height: 14px;
+  padding: 2px 0;
+  vertical-align: middle;
   cursor: pointer;
+  outline: none;
+}
+
+#volume i {
+  width: 3px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+#volume i.on {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+#volume:focus-visible i.on {
+  background: #ff5a1f;
+}
+
+#guide {
+  background: #000;
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  font: 11px/1.5 monospace;
+  width: min(780px, 92vw);
+  max-height: min(78vh, 620px);
+  overflow: auto;
+  padding: 14px 20px 16px;
+}
+
+#guide::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#guide header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+#guide h1,
+#guide h2 {
+  font: inherit;
+  letter-spacing: 0.1em;
+}
+
+#guide h1 {
+  color: #fff;
+  margin: 0;
+}
+
+#guide h2 {
+  color: #ff5a1f;
+  margin: 0 0 3px;
+}
+
+#guide .cols {
+  columns: 2 300px;
+  column-gap: 32px;
+}
+
+#guide section {
+  break-inside: avoid;
+  margin-bottom: 12px;
+}
+
+#guide dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 15ch 1fr;
+  gap: 1px 10px;
+}
+
+#guide dt,
+#guide kbd {
+  color: #fff;
+}
+
+#guide kbd {
+  font: inherit;
+}
+
+#guide dd {
+  margin: 0;
 }
