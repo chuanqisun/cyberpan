@@ -1,3 +1,3 @@
-# Cyberpan
+# Orbital Strike DJ
 
-Cybernetically Instrumented Handpan
+A cybernetic DJ interface.
